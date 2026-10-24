@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/noido-engine", "crates/engine-hayro", "crates/noido-core"]
+members = ["crates/noido-engine", "crates/engine-hayro", "crates/noido-core", "crates/noido-render"]
 
 [workspace.package]
 version = "0.1.0"

@@ -1,0 +1,16 @@
+[package]
+name = "noido-render"
+description = "noido render thread: owns the document and renders pages on request"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+noido-engine.workspace = true
+
+[dev-dependencies]
+engine-hayro.workspace = true
+
+[lints]
+workspace = true
