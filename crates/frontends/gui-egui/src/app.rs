@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use eframe::egui::{
     self, Color32, ColorImage, Rect, ScrollArea, Sense, TextureHandle, TextureOptions, pos2, vec2,
 };
-use noido_core::{Layout, MAX_RENDER_SIDE, RenderTracker, render_scale};
+use noido_core::{
+    Key, Keymap, Layout, MAX_RENDER_SIDE, RenderTracker, render_scale, scroll_target,
+};
 use noido_engine::Size;
 use noido_render::{DocumentInfo, RenderRequest, Renderer};
 
@@ -18,6 +20,9 @@ pub struct NoidoApp {
     layout: Layout,
     tracker: RenderTracker,
     textures: HashMap<usize, TextureHandle>,
+    keymap: Keymap,
+    /// Last frame's visible part of the scroll content.
+    viewport: Rect,
 }
 
 impl NoidoApp {
@@ -29,7 +34,37 @@ impl NoidoApp {
             page_sizes: info.page_sizes,
             tracker: RenderTracker::new(page_count),
             textures: HashMap::new(),
+            keymap: Keymap::native(),
+            viewport: Rect::NOTHING,
         }
+    }
+
+    /// The scroll offset requested by this frame's key presses, if any.
+    fn scroll_from_keys(&self, ctx: &egui::Context) -> Option<f32> {
+        if ctx.text_edit_focused() || !self.viewport.is_positive() {
+            return None;
+        }
+        let start = self.viewport.min.y;
+        let offset = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Key {
+                        key, pressed: true, ..
+                    } => core_key(*key),
+                    _ => None,
+                })
+                .filter_map(|key| self.keymap.action(key))
+                .fold(start, |offset, action| {
+                    scroll_target(
+                        action,
+                        offset,
+                        self.viewport.height(),
+                        self.layout.content_height(),
+                    )
+                })
+        });
+        (offset != start).then_some(offset)
     }
 
     fn receive_renders(&mut self, ctx: &egui::Context) {
@@ -52,6 +87,7 @@ impl NoidoApp {
     }
 
     fn pages(&mut self, ui: &mut egui::Ui, viewport: Rect) {
+        self.viewport = viewport;
         self.layout.set_available_width(ui.available_width());
         let (content, _) = ui.allocate_exact_size(
             vec2(ui.available_width(), self.layout.content_height()),
@@ -105,10 +141,21 @@ impl NoidoApp {
 impl eframe::App for NoidoApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_renders(ui.ctx());
+        let key_scroll = self.scroll_from_keys(ui.ctx());
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-            ScrollArea::vertical()
-                .auto_shrink(false)
-                .show_viewport(ui, |ui, viewport| self.pages(ui, viewport));
+            let mut scroll_area = ScrollArea::vertical().auto_shrink(false);
+            if let Some(offset) = key_scroll {
+                scroll_area = scroll_area.vertical_scroll_offset(offset);
+            }
+            scroll_area.show_viewport(ui, |ui, viewport| self.pages(ui, viewport));
         });
+    }
+}
+
+fn core_key(key: egui::Key) -> Option<Key> {
+    match key {
+        egui::Key::PageUp => Some(Key::PageUp),
+        egui::Key::PageDown => Some(Key::PageDown),
+        _ => None,
     }
 }
