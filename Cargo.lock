@@ -383,6 +383,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "noido-core"
+version = "0.1.0"
+dependencies = [
+ "noido-engine",
+]
+
+[[package]]
 name = "noido-engine"
 version = "0.1.0"
 dependencies = [
