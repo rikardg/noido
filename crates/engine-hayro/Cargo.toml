@@ -1,0 +1,14 @@
+[package]
+name = "engine-hayro"
+description = "noido PDF engine backed by hayro (pure Rust)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+noido-engine.workspace = true
+hayro.workspace = true
+
+[lints]
+workspace = true
