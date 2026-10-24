@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/noido-engine"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+noido-engine = { path = "crates/noido-engine" }
+engine-hayro = { path = "crates/engine-hayro" }
+noido-render = { path = "crates/noido-render" }
+noido-core = { path = "crates/noido-core" }
+hayro = "0.8"
+eframe = "0.37"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
