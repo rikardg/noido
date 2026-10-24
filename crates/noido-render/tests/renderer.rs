@@ -166,3 +166,32 @@ fn coalesces_to_latest_per_page() {
         vec![(0, 1.0), (0, 3.0), (1, 1.0)]
     );
 }
+
+#[test]
+fn skips_pages_outside_keep_range() {
+    let engine = GateEngine {
+        entered: Arc::new(AtomicBool::new(false)),
+        gate: Arc::new(Barrier::new(2)),
+        rendered: Arc::new(Mutex::new(Vec::new())),
+    };
+    let (renderer, _) = Renderer::start(Arc::new(engine.clone()), fixture(), no_waker()).unwrap();
+
+    renderer.request(RenderRequest {
+        page: 0,
+        scale: 1.0,
+    });
+    while !engine.entered.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    renderer.request(RenderRequest {
+        page: 1,
+        scale: 1.0,
+    });
+    renderer.set_keep(0..1);
+    engine.gate.wait();
+
+    assert_eq!(recv(&renderer).page, 0);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(renderer.try_recv().is_none());
+    assert_eq!(*engine.rendered.lock().unwrap(), vec![(0, 1.0)]);
+}

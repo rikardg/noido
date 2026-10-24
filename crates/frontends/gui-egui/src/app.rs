@@ -64,6 +64,11 @@ impl NoidoApp {
             visible.start.saturating_sub(extra)..(visible.end + extra).min(page_count)
         };
 
+        // Set before requesting: the render thread skips pages outside this
+        // range, and the tracker forgets them below, so none stays pending.
+        let keep = around(KEEP);
+        self.renderer.set_keep(keep.clone());
+
         let display_scale = self.layout.scale() * ui.ctx().pixels_per_point();
         if display_scale > 0.0 {
             let sizes = &self.page_sizes;
@@ -74,7 +79,7 @@ impl NoidoApp {
                 self.renderer.request(RenderRequest { page, scale });
             }
         }
-        for page in self.tracker.forget_outside(around(KEEP)) {
+        for page in self.tracker.forget_outside(keep) {
             self.textures.remove(&page);
         }
 

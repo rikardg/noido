@@ -1,8 +1,9 @@
 //! The render thread. PDF engines are not thread-safe, so one thread opens
 //! the document, owns it, and renders pages on request.
 
-use std::sync::Arc;
+use std::ops::Range;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use noido_engine::{Document, EngineError, PdfEngine, PixelRect, Rgba8Image, Size};
@@ -28,6 +29,7 @@ pub struct DocumentInfo {
 pub struct Renderer {
     jobs: Sender<RenderRequest>,
     results: Receiver<RenderedPage>,
+    keep: Arc<Mutex<Range<usize>>>,
 }
 
 impl Renderer {
@@ -41,6 +43,8 @@ impl Renderer {
         let (jobs, job_rx) = mpsc::channel();
         let (result_tx, results) = mpsc::channel();
         let (opened_tx, opened_rx) = mpsc::sync_channel(1);
+        let keep = Arc::new(Mutex::new(0..usize::MAX));
+        let thread_keep = keep.clone();
 
         thread::Builder::new()
             .name("noido-render".into())
@@ -55,19 +59,39 @@ impl Renderer {
                         return;
                     }
                 };
-                run(document.as_ref(), &job_rx, &result_tx, &*waker);
+                run(
+                    document.as_ref(),
+                    &job_rx,
+                    &result_tx,
+                    &thread_keep,
+                    &*waker,
+                );
             })
             .map_err(|e| EngineError::Open(format!("cannot start render thread: {e}")))?;
 
         let info = opened_rx
             .recv()
             .map_err(|_| EngineError::Open("render thread stopped while opening".into()))??;
-        Ok((Renderer { jobs, results }, info))
+        Ok((
+            Renderer {
+                jobs,
+                results,
+                keep,
+            },
+            info,
+        ))
     }
 
     pub fn request(&self, req: RenderRequest) {
         // A send error means the thread is gone; there is nothing to report to.
         let _ = self.jobs.send(req);
+    }
+
+    /// Pages outside `keep` are dropped from the queue without rendering and
+    /// without a result. Set it before requesting pages for the same range,
+    /// and forget pending requests outside it.
+    pub fn set_keep(&self, keep: Range<usize>) {
+        *self.keep.lock().unwrap() = keep;
     }
 
     pub fn try_recv(&self) -> Option<RenderedPage> {
@@ -90,6 +114,7 @@ fn run(
     document: &dyn Document,
     jobs: &Receiver<RenderRequest>,
     results: &Sender<RenderedPage>,
+    keep: &Mutex<Range<usize>>,
     waker: &dyn Fn(),
 ) {
     while let Ok(first) = jobs.recv() {
@@ -102,6 +127,9 @@ fn run(
             }
         }
         for RenderRequest { page, scale } in batch {
+            if !keep.lock().unwrap().contains(&page) {
+                continue;
+            }
             let result = document.page_size(page).and_then(|size| {
                 document.render_tile(page, scale, PixelRect::full_page(size, scale))
             });
