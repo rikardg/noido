@@ -1,0 +1,22 @@
+[package]
+name = "gui-egui"
+description = "noido desktop frontend built on egui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "noido"
+path = "src/main.rs"
+
+[dependencies]
+noido-engine.workspace = true
+engine-hayro.workspace = true
+noido-render.workspace = true
+noido-core.workspace = true
+eframe.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

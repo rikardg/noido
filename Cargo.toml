@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/noido-engine", "crates/engine-hayro", "crates/noido-core", "crates/noido-render"]
+members = [
+    "crates/noido-engine",
+    "crates/engine-hayro",
+    "crates/noido-core",
+    "crates/noido-render",
+    "crates/frontends/gui-egui",
+]
 
 [workspace.package]
 version = "0.1.0"
