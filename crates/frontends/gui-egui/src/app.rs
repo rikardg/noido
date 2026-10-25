@@ -15,11 +15,12 @@ use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
 use noido_state::{DocKey, Store};
 
 /// Spreads (pages in single mode) rendered at full resolution around the
-/// current one, after the visible ones: the current spread, then three ahead
-/// and one behind in the direction of travel (see [`window_order`]).
-const PREFETCH_BUDGET: usize = 5;
-/// Spreads on each side of the current one whose full renders are kept.
-const KEEP: usize = 4;
+/// current one, after the visible ones: the current spread, then six ahead
+/// and three behind in the direction of travel (see [`window_order`]).
+const PREFETCH_BUDGET: usize = 10;
+/// Spreads on each side of the current one whose full renders are kept; more
+/// than the window reaches ahead, so moving back and forth doesn't re-render.
+const KEEP: usize = 8;
 /// Trackpad scroll distance, in UI points, that flips one page in paged mode
 /// (about one mouse wheel step).
 const TRACKPAD_FLIP_DISTANCE: f32 = 125.0;
@@ -597,6 +598,33 @@ mod tests {
         }
     }
 
+    /// Like [`BlankEngine`], with 30 pages.
+    struct BlankEngine30;
+    struct BlankDocument30;
+
+    impl PdfEngine for BlankEngine30 {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(BlankDocument30))
+        }
+    }
+
+    impl Document for BlankDocument30 {
+        fn page_count(&self) -> usize {
+            30
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument.page_size(page)
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            scale: f32,
+            tile: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            BlankDocument.render_tile(page, scale, tile)
+        }
+    }
+
     /// Like [`BlankEngine`], but every render waits until the gate's sender
     /// is dropped.
     struct GatedEngine(Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>);
@@ -1050,14 +1078,19 @@ mod tests {
     }
 
     #[test]
-    fn renders_three_spreads_ahead_and_one_behind() {
-        let mut h = fitted_paged();
-        for _ in 0..5 {
+    fn renders_the_window_ahead_and_keeps_within_reach() {
+        // 30 pages, so the window doesn't reach both ends.
+        let mut h = Harness::build_with(Arc::new(BlankEngine30), |app| app);
+        h.press(egui::Key::C, Modifiers::NONE);
+        h.press(egui::Key::F, Modifiers::NONE);
+        h.frames(2, vec![]);
+        for _ in 0..12 {
             h.press(egui::Key::PageDown, Modifiers::NONE);
         }
-        assert_eq!(h.app.view.current_spread(), Some(5));
-        let ready = |h: &Harness| (4..=8).all(|page| h.app.textures.contains_key(&page));
-        for _ in 0..200 {
+        assert_eq!(h.app.view.current_spread(), Some(12));
+        let window = window_order(30, 12, Direction::Forward, PREFETCH_BUDGET);
+        let ready = |h: &Harness| window.iter().all(|page| h.app.textures.contains_key(page));
+        for _ in 0..400 {
             if ready(&h) {
                 break;
             }
@@ -1066,8 +1099,15 @@ mod tests {
         }
         let mut pages: Vec<_> = h.app.textures.keys().copied().collect();
         pages.sort();
-        assert!(ready(&h), "textures: {pages:?}");
-        assert!(!pages.contains(&9), "rendered beyond the window: {pages:?}");
-        assert!(!pages.contains(&0), "kept beyond the window: {pages:?}");
+        assert!(ready(&h), "window {window:?}, textures {pages:?}");
+        let keep = window_keep(30, 12, KEEP);
+        assert!(
+            pages.iter().all(|page| keep.contains(page)),
+            "kept beyond {keep:?}: {pages:?}"
+        );
+        assert!(
+            !pages.contains(&(12 + 7)),
+            "rendered beyond the window: {pages:?}"
+        );
     }
 }
