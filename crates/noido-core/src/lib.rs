@@ -1,5 +1,6 @@
 //! noido viewer state, independent of any UI toolkit.
 
+mod column;
 mod keymap;
 mod layout;
 mod menu;
@@ -9,6 +10,7 @@ mod tracker;
 mod view;
 mod window;
 
+pub use column::*;
 pub use keymap::*;
 pub use layout::*;
 pub use menu::*;
