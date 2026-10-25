@@ -104,6 +104,17 @@ when it is fixed.
 - Several full-render threads, each with its own `Document`, sharing the
   priority queue, so one slow page (150–900 ms for art-heavy books) doesn't
   hold up the next. Only if renders still feel slow after the priority fix.
+- **Notes in a right sidebar.** The left sidebar holds search results,
+  thumbnails and the outline; the right one holds the reader's notes:
+  bookmarks, freeform notes, lasso captures (a region of the page) and text
+  selections. Later: combine these, e.g. a selection or lasso capture with a
+  note attached, or a bookmark with a comment.
+- **ActualText in hayro.** hayro reads `/Span <</ActualText …>>` but doesn't
+  pass it to the device, so books typeset with ligature fonts lose letters in
+  extracted text (Vaesen: ~3.5 % of words; no other test file uses it). See
+  `docs/investigations/2026-10-25-text-extraction.md`. Upstream issue or PR,
+  or wait for hayro; the text API should let a glyph run carry replacement
+  text so this slots in later.
 
 ## Far future
 
