@@ -2598,4 +2598,63 @@ mod tests {
         );
         assert_eq!(h.app.chosen, None);
     }
+
+    /// Ten Letter pages; each render takes 150 ms.
+    struct SlowEngine;
+
+    impl PdfEngine for SlowEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(SlowEngine))
+        }
+    }
+
+    impl Document for SlowEngine {
+        fn page_count(&self) -> usize {
+            BlankDocument.page_count()
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument.page_size(page)
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            scale: f32,
+            tile: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            BlankDocument.render_tile(page, scale, tile)
+        }
+    }
+
+    #[test]
+    fn render_arriving_while_closed_is_requested_again() {
+        let mut h = Harness::build(|app| {
+            let renderer = Renderer::start_background(
+                Arc::new(SlowEngine),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            );
+            app.with_sidebar_renderer(renderer)
+        });
+        h.press(egui::Key::F9, Modifiers::NONE);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        // Closed while the first render is on its way; it arrives meanwhile.
+        h.press(egui::Key::F9, Modifiers::NONE);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        h.frames(2, vec![]);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        let all_sharp = |h: &Harness| {
+            let drawn = drawn_pages(h);
+            !drawn.is_empty() && h.app.sidebar_view.sharp_pages() == drawn
+        };
+        for _ in 0..3 {
+            h.until(all_sharp);
+        }
+        assert!(
+            all_sharp(&h),
+            "drawn {:?} sharp {:?}",
+            drawn_pages(&h),
+            h.app.sidebar_view.sharp_pages()
+        );
+    }
 }

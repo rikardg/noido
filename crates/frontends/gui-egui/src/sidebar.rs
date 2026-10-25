@@ -90,16 +90,18 @@ impl SidebarView {
             return;
         };
         while let Some(rendered) = renderer.try_recv() {
+            // Scrolled away or closed meanwhile: the tracker has forgotten
+            // the page, so it is asked for again when it comes back.
+            if !self.visible.contains(&rendered.page) {
+                continue;
+            }
             match rendered.result {
                 Ok(image) => {
                     self.tracker.mark_ready(rendered.page, rendered.scale);
-                    // Scrolled away or closed meanwhile.
-                    if self.visible.contains(&rendered.page) {
-                        let name = format!("sidebar-{}", rendered.page);
-                        let size = layout.page_size(rendered.page);
-                        let image = PageImage::load(ctx, name, &image, size, rendered.scale);
-                        self.sharp.insert(rendered.page, image);
-                    }
+                    let name = format!("sidebar-{}", rendered.page);
+                    let size = layout.page_size(rendered.page);
+                    let image = PageImage::load(ctx, name, &image, size, rendered.scale);
+                    self.sharp.insert(rendered.page, image);
                 }
                 Err(e) => {
                     eprintln!("noido: thumbnail of page {}: {e}", rendered.page + 1);
