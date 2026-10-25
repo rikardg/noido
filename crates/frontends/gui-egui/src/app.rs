@@ -2678,4 +2678,41 @@ mod tests {
         wheel_sidebar(&mut h, -2_000.0);
         assert!(!fade_left_of(&h, h.app.sidebar.width + 1.0));
     }
+
+    /// Rectangles painted in the selection colour last frame.
+    fn selection_rects(h: &Harness) -> Vec<Rect> {
+        let fill = h.ctx.global_style().visuals.selection.bg_fill;
+        h.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                // Not the title bar's buttons.
+                egui::Shape::Rect(r) if r.fill == fill && r.rect.min.y >= TITLE_BAR_HEIGHT => {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn current_page_has_frame_and_number_pill() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        click_thumbnail(&mut h, 1);
+        let (_, thumb) = h.app.sidebar_view.drawn()[1];
+        let rects = selection_rects(&h);
+        let frame = thumb.expand(sidebar::HIGHLIGHT);
+        assert!(rects.contains(&frame), "{rects:?} vs {frame:?}");
+        // A pill behind the number, under the frame, narrower than the page.
+        let pill = rects
+            .iter()
+            .find(|r| r.min.y >= frame.max.y && r.max.y <= thumb.max.y + noido_core::LABEL_HEIGHT)
+            .unwrap_or_else(|| panic!("no pill in {rects:?}"));
+        assert!(
+            pill.width() < thumb.width() / 2.0 && pill.height() > 12.0,
+            "{pill:?}"
+        );
+        assert!((pill.center().x - thumb.center().x).abs() < 0.5);
+        // Only the current page has them.
+        assert_eq!(rects.len(), 2, "{rects:?}");
+    }
 }

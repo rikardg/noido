@@ -17,7 +17,9 @@ use crate::image::PageImage;
 
 /// How far the current page's highlight reaches around its thumbnail, and
 /// its corner radius, in points.
-const HIGHLIGHT: f32 = 4.0;
+pub const HIGHLIGHT: f32 = 6.0;
+/// Space between a highlighted page number and the edge of its pill.
+const PILL_PADDING: egui::Vec2 = egui::vec2(8.0, 2.0);
 
 /// What the sidebar needs from the app each frame.
 pub struct Input<'a> {
@@ -215,7 +217,7 @@ impl SidebarView {
         let outline = ui.visuals().widgets.noninteractive.bg_stroke.color;
         let selection = ui.visuals().selection;
         let text = ui.visuals().text_color();
-        let font = egui::TextStyle::Small.resolve(ui.style());
+        let font = egui::TextStyle::Body.resolve(ui.style());
         let mut clicked = None;
         self.drawn.clear();
         for page in visible {
@@ -254,17 +256,24 @@ impl SidebarView {
                 Stroke::new(1.0, outline),
                 egui::StrokeKind::Outside,
             );
-            painter.text(
-                content.min + vec2(label.x + label.width / 2.0, label.y + label.height / 2.0),
-                egui::Align2::CENTER_CENTER,
-                (page + 1).to_string(),
-                font.clone(),
-                if current {
-                    selection.stroke.color
-                } else {
-                    text
-                },
-            );
+            // Centred below the highlight's reach into the number's row.
+            let centre = content.min
+                + vec2(
+                    label.x + label.width / 2.0,
+                    label.y + HIGHLIGHT + (label.height - HIGHLIGHT) / 2.0,
+                );
+            let colour = if current {
+                selection.stroke.color
+            } else {
+                text
+            };
+            let galley = painter.layout_no_wrap((page + 1).to_string(), font.clone(), colour);
+            let number = Rect::from_center_size(centre, galley.size());
+            if current {
+                let pill = number.expand2(PILL_PADDING);
+                painter.rect_filled(pill, pill.height() / 2.0, selection.bg_fill);
+            }
+            painter.galley(number.min, galley, colour);
             self.drawn.push((page, rect));
         }
         clicked

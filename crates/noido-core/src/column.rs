@@ -10,7 +10,7 @@ use crate::PageRect;
 /// Space around the thumbnails and above the first, in UI points.
 pub const COLUMN_MARGIN: f32 = 12.0;
 /// Height of the page number row under each thumbnail, in UI points.
-pub const LABEL_HEIGHT: f32 = 20.0;
+pub const LABEL_HEIGHT: f32 = 26.0;
 /// Space between a page number and the next thumbnail, in UI points.
 pub const COLUMN_GAP: f32 = 12.0;
 
@@ -141,10 +141,13 @@ mod tests {
             (label.x, label.width, label.height),
             (12.0, 236.0, LABEL_HEIGHT)
         );
-        assert!(near(column.thumb(1).unwrap().y, 12.0 + h + 32.0));
+        assert!(near(
+            column.thumb(1).unwrap().y,
+            12.0 + h + LABEL_HEIGHT + COLUMN_GAP
+        ));
         assert!(near(
             column.content_height(),
-            3.0 * (h + 32.0) - 12.0 + 24.0
+            3.0 * (h + LABEL_HEIGHT + COLUMN_GAP) - 12.0 + 24.0
         ));
         assert!(column.thumb(3).is_none());
     }
