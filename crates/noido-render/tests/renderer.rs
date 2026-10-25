@@ -3,6 +3,7 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use engine_hayro::HayroEngine;
+use noido_core::Keep;
 use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 use noido_render::{RenderRequest, RenderedPage, Renderer};
 
@@ -198,6 +199,20 @@ fn skips_pages_outside_keep_range() {
     std::thread::sleep(Duration::from_millis(100));
     assert!(renderer.try_recv().is_none());
     assert_eq!(*engine.rendered.lock().unwrap(), vec![(0, 1.0)]);
+}
+
+#[test]
+fn renders_extra_kept_page_outside_window() {
+    let (renderer, _) = Renderer::start(Arc::new(HayroEngine), fixture(), no_waker()).unwrap();
+    renderer.set_keep(Keep {
+        window: 0..0,
+        extra: vec![1],
+    });
+    renderer.request(RenderRequest {
+        page: 1,
+        scale: 0.1,
+    });
+    assert_eq!(recv(&renderer).page, 1);
 }
 
 #[test]

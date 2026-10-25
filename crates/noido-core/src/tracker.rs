@@ -74,10 +74,11 @@ impl RenderTracker {
 
     /// Forgets every page outside `keep` and returns those that had an image,
     /// so the caller can drop it.
-    pub fn forget_outside(&mut self, keep: Range<usize>) -> Vec<usize> {
+    pub fn forget_outside(&mut self, keep: impl Into<Keep>) -> Vec<usize> {
+        let keep = keep.into();
         let mut dropped = Vec::new();
         for (page, state) in self.pages.iter_mut().enumerate() {
-            if !keep.contains(&page) {
+            if !keep.contains(page) {
                 if state.ready.is_some() {
                     dropped.push(page);
                 }
@@ -85,6 +86,30 @@ impl RenderTracker {
             }
         }
         dropped
+    }
+}
+
+/// The pages whose renders are kept: a window of pages around the reader,
+/// and a few more beyond it, such as the pages of the next and previous
+/// search hits.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Keep {
+    pub window: Range<usize>,
+    pub extra: Vec<usize>,
+}
+
+impl Keep {
+    pub fn contains(&self, page: usize) -> bool {
+        self.window.contains(&page) || self.extra.contains(&page)
+    }
+}
+
+impl From<Range<usize>> for Keep {
+    fn from(window: Range<usize>) -> Keep {
+        Keep {
+            window,
+            extra: Vec::new(),
+        }
     }
 }
 
@@ -124,6 +149,32 @@ mod tests {
         tracker.mark_ready(0, 1.0);
         tracker.wanted(0..1, |_| 1.5);
         assert!(tracker.forget_outside(0..1).is_empty());
+    }
+
+    #[test]
+    fn keep_holds_window_and_extra_pages() {
+        let keep = Keep {
+            window: 2..4,
+            extra: vec![9],
+        };
+        let kept: Vec<usize> = (0..12).filter(|&p| keep.contains(p)).collect();
+        assert_eq!(kept, [2, 3, 9]);
+        assert!(Keep::from(1..2).contains(1));
+        assert!(!Keep::from(1..2).contains(2));
+    }
+
+    #[test]
+    fn forget_outside_keeps_extra_pages() {
+        let mut tracker = RenderTracker::new(4);
+        tracker.wanted(0..4, |_| 1.0);
+        for page in 0..4 {
+            tracker.mark_ready(page, 1.0);
+        }
+        let keep = Keep {
+            window: 0..1,
+            extra: vec![3],
+        };
+        assert_eq!(tracker.forget_outside(keep), vec![1, 2]);
     }
 
     #[test]

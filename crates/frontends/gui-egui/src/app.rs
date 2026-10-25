@@ -4,7 +4,7 @@ use std::time::Duration;
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Vec2, vec2};
 use noido_core::{
-    Action, Direction, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, SidebarState,
+    Action, Direction, Keep, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, SidebarState,
     THUMBNAIL_BUDGET, View, ViewState, render_scale, window_keep, window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
@@ -309,11 +309,18 @@ impl NoidoApp {
         }
     }
 
-    /// Goes to the next hit (`forward`) or the previous one: from the
-    /// current hit if the view is still where it put it, else from the view.
+    /// Goes to the next hit (`forward`) or the previous one.
     fn step_hit(&mut self, forward: bool) {
+        if let Some(index) = self.hit_target(forward) {
+            self.go_to_hit(index);
+        }
+    }
+
+    /// The hit next (`forward`) or previous would go to: from the current
+    /// hit if the view is still where it put it, else from the view.
+    fn hit_target(&self, forward: bool) -> Option<usize> {
         let hits = &self.search_state.hits;
-        let target = if self.search_state.at_hit && hits.current().is_some() {
+        if self.search_state.at_hit && hits.current().is_some() {
             if forward {
                 hits.next()
             } else {
@@ -342,12 +349,8 @@ impl NoidoApp {
             } else {
                 hits.last_where(|hit| top_of(hit) < y + height)
             }
-        };
-        if let Some(index) = target {
-            self.go_to_hit(index);
         }
     }
-
     /// Makes hit `index` current and brings it into view.
     fn go_to_hit(&mut self, index: usize) {
         self.search_state.hits.set_current(Some(index));
@@ -705,6 +708,13 @@ impl NoidoApp {
     }
 
     fn pages(&mut self, ui: &mut egui::Ui, viewport: Rect) {
+        // The pages next and previous would go to, rendered ahead so a far
+        // hit is sharp at once, and so is the one left behind.
+        let hit_pages: Vec<usize> = [true, false]
+            .into_iter()
+            .filter_map(|forward| self.hit_target(forward))
+            .filter_map(|index| self.search_state.hits.get(index).map(|hit| hit.page))
+            .collect();
         let layout = self.view.layout();
         let (content, _) = ui.allocate_exact_size(
             vec2(layout.content_width(), layout.content_height()),
@@ -733,10 +743,29 @@ impl NoidoApp {
             )
         };
 
-        // Visible pages first, then the window around the current spread,
-        // nearest first and mostly ahead.
         let focus = layout.spread_of(self.focus.unwrap_or(visible.start));
+        let window = window_keep(spread_count, focus, KEEP);
+        let window = if window.is_empty() {
+            visible.clone()
+        } else {
+            let window = spread_pages(window.start, window.end - 1);
+            window.start.min(visible.start)..window.end.max(visible.end)
+        };
+        // The neighbouring hits' spreads, where outside the window.
+        let mut extra: Vec<usize> = Vec::new();
+        for page in hit_pages {
+            for page in layout.spread_pages(layout.spread_of(page)) {
+                if !window.contains(&page) && !extra.contains(&page) {
+                    extra.push(page);
+                }
+            }
+        }
+
+        // Visible pages first, then the neighbouring hits' (stepping to one
+        // is likely while searching), then the window around the current
+        // spread, nearest first and mostly ahead.
         let mut order: Vec<usize> = visible.clone().collect();
+        order.extend(&extra);
         for spread in window_order(spread_count, focus, self.direction, PREFETCH_BUDGET) {
             order.extend(
                 layout
@@ -744,16 +773,10 @@ impl NoidoApp {
                     .filter(|page| !visible.contains(page)),
             );
         }
-        let window = window_keep(spread_count, focus, KEEP);
-        let keep = if window.is_empty() {
-            visible.clone()
-        } else {
-            let window = spread_pages(window.start, window.end - 1);
-            window.start.min(visible.start)..window.end.max(visible.end)
-        };
+        let keep = Keep { window, extra };
 
         // Set before requesting: the render thread skips pages outside this
-        // range, and the tracker forgets them below, so none stays pending.
+        // set, and the tracker forgets them below, so none stays pending.
         self.renderer.set_keep(keep.clone());
         // Pages requested earlier, while scrolling past, wait behind these.
         self.renderer.set_priority(order.clone());
@@ -772,7 +795,7 @@ impl NoidoApp {
         }
         self.tracker.forget_outside(keep.clone());
         // Also images kept from an earlier version, which the tracker never knew.
-        self.textures.retain(|page, _| keep.contains(page));
+        self.textures.retain(|&page, _| keep.contains(page));
 
         let painter = ui.painter();
         let hits = &self.search_state.hits;
@@ -2901,6 +2924,8 @@ mod tests {
         pages: Arc<Vec<Vec<String>>>,
         calls: Arc<std::sync::atomic::AtomicUsize>,
         gate: Option<Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>>,
+        /// The pages rendered, in order.
+        rendered: Arc<std::sync::Mutex<Vec<usize>>>,
     }
 
     impl TextEngine {
@@ -2914,6 +2939,7 @@ mod tests {
                 ),
                 calls: Arc::default(),
                 gate: None,
+                rendered: Arc::default(),
             }
         }
 
@@ -2961,6 +2987,7 @@ mod tests {
             scale: f32,
             tile: PixelRect,
         ) -> Result<Rgba8Image, EngineError> {
+            self.rendered.lock().unwrap().push(page);
             BlankDocument.render_tile(page, scale, tile)
         }
         fn text(&self, page: usize) -> Result<Vec<noido_engine::Glyph>, EngineError> {
@@ -3455,5 +3482,52 @@ mod tests {
         assert_eq!(current(&h), Some(0));
         let rows = h.app.sidebar_view.result_rows();
         assert!(rows.iter().any(|&(i, _)| i == 0), "{rows:?}");
+    }
+
+    /// 200 pages, "cat" on pages 0 and 150.
+    fn far_cats() -> TextEngine {
+        let mut pages: Vec<&[&str]> = vec![&["a dog"]; 200];
+        pages[0] = &["cat"];
+        pages[150] = &["cat"];
+        TextEngine::new(&pages)
+    }
+
+    #[test]
+    fn next_hit_page_rendered_ahead() {
+        let engine = far_cats();
+        let mut h = searching(&engine);
+        search_for(&mut h, "cat");
+        assert_eq!(h.app.view.centre_page(), Some(0));
+        h.until(|_| engine.rendered.lock().unwrap().contains(&150));
+        assert!(engine.rendered.lock().unwrap().contains(&150));
+        h.until(|h| h.app.textures.contains_key(&150));
+        assert!(h.app.textures.contains_key(&150));
+    }
+
+    #[test]
+    fn stepping_there_and_back_stays_sharp() {
+        let engine = far_cats();
+        let mut h = searching(&engine);
+        search_for(&mut h, "cat");
+        h.until(|h| h.app.textures.contains_key(&150));
+        h.press(egui::Key::G, Modifiers::COMMAND);
+        assert_eq!(h.app.view.centre_page(), Some(150));
+        h.frames(10, vec![]);
+        assert!(h.app.textures.contains_key(&0), "page 0 dropped");
+        h.press(egui::Key::G, Modifiers::COMMAND);
+        assert_eq!(h.app.view.centre_page(), Some(0));
+        assert!(h.app.textures.contains_key(&150), "page 150 dropped");
+    }
+
+    #[test]
+    fn without_search_only_window_is_rendered() {
+        let engine = far_cats();
+        let mut h = searching(&engine);
+        h.frames(30, vec![]);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        h.frames(5, vec![]);
+        let rendered = engine.rendered.lock().unwrap().clone();
+        assert!(!rendered.is_empty());
+        assert!(rendered.iter().all(|&p| p < 30), "{rendered:?}");
     }
 }

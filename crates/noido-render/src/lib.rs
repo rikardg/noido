@@ -8,11 +8,11 @@ mod thumbnails;
 pub use text::{MAX_HITS, SearchUpdate, TextSearcher};
 pub use thumbnails::{Thumbnail, Thumbnailer};
 
-use std::ops::Range;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use noido_core::Keep;
 use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,7 +36,7 @@ pub struct DocumentInfo {
 pub struct Renderer {
     jobs: Sender<RenderRequest>,
     results: Receiver<RenderedPage>,
-    keep: Arc<Mutex<Range<usize>>>,
+    keep: Arc<Mutex<Keep>>,
     priority: Arc<Mutex<Vec<usize>>>,
 }
 
@@ -74,7 +74,7 @@ impl Renderer {
                 Renderer {
                     jobs,
                     results,
-                    keep: Arc::new(Mutex::new(0..usize::MAX)),
+                    keep: Arc::new(Mutex::new(Keep::from(0..usize::MAX))),
                     priority: Arc::new(Mutex::new(Vec::new())),
                 }
             }
@@ -90,7 +90,7 @@ impl Renderer {
     ) -> std::io::Result<Renderer> {
         let (jobs, job_rx) = mpsc::channel();
         let (result_tx, results) = mpsc::channel();
-        let keep = Arc::new(Mutex::new(0..usize::MAX));
+        let keep = Arc::new(Mutex::new(Keep::from(0..usize::MAX)));
         let thread_keep = keep.clone();
         let priority = Arc::new(Mutex::new(Vec::new()));
         let thread_priority = priority.clone();
@@ -137,8 +137,8 @@ impl Renderer {
     /// Pages outside `keep` are dropped from the queue without rendering and
     /// without a result. Set it before requesting pages for the same range,
     /// and forget pending requests outside it.
-    pub fn set_keep(&self, keep: Range<usize>) {
-        *self.keep.lock().unwrap() = keep;
+    pub fn set_keep(&self, keep: impl Into<Keep>) {
+        *self.keep.lock().unwrap() = keep.into();
     }
 
     /// The pages the reader needs most, most urgent first. Queued requests
@@ -168,7 +168,7 @@ fn run(
     document: &dyn Document,
     jobs: &Receiver<RenderRequest>,
     results: &Sender<RenderedPage>,
-    keep: &Mutex<Range<usize>>,
+    keep: &Mutex<Keep>,
     priority: &Mutex<Vec<usize>>,
     waker: &dyn Fn(),
 ) {
@@ -197,7 +197,7 @@ fn run(
                 .expect("queue is not empty")
         };
         let RenderRequest { page, scale } = queue.remove(next);
-        if !keep.lock().unwrap().contains(&page) {
+        if !keep.lock().unwrap().contains(page) {
             continue;
         }
         let result = document
