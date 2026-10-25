@@ -375,6 +375,45 @@ impl View {
         }
     }
 
+    /// Brings `rects`, in PDF points on `page`, into view without changing
+    /// zoom: in paged mode the page's spread is shown first. Already fully
+    /// visible, nothing moves; otherwise their union is centred along each
+    /// axis it doesn't fit in already.
+    pub fn reveal(&mut self, page: usize, rects: &[noido_text::Rect]) {
+        if page >= self.layout.page_count() || rects.is_empty() {
+            return;
+        }
+        if self.layout.page_rect(page).is_none() {
+            self.show_spread(self.layout.spread_of(page), true);
+        }
+        let Some(on_page) = self.layout.page_rect(page) else {
+            return;
+        };
+        let scale = self.layout.scale();
+        let left = rects.iter().map(|r| r.x).fold(f32::INFINITY, f32::min);
+        let top = rects.iter().map(|r| r.y).fold(f32::INFINITY, f32::min);
+        let right = rects
+            .iter()
+            .map(|r| r.x + r.width)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let bottom = rects
+            .iter()
+            .map(|r| r.y + r.height)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let span = |from: f32, to: f32, origin: f32| (origin + from * scale, origin + to * scale);
+        let (left, right) = span(left, right, on_page.x);
+        let (top, bottom) = span(top, bottom, on_page.y);
+        let (mut x, mut y) = self.offset;
+        let (width, height) = self.viewport;
+        if left < x || right > x + width {
+            x = (left + right - width) / 2.0;
+        }
+        if top < y || bottom > y + height {
+            y = (top + bottom - height) / 2.0;
+        }
+        self.scrolled_to(x, y);
+    }
+
     fn zoom_to(&mut self, scale: f32, anchor: (f32, f32)) {
         self.mode = ZoomMode::Custom;
         self.rescale(scale.clamp(MIN_ZOOM, MAX_ZOOM), anchor, anchor);
@@ -751,6 +790,136 @@ mod tests {
         let before = view.offset();
         view.wheel_flip(true);
         assert_eq!(view.offset(), before);
+    }
+
+    fn rect(x: f32, y: f32, width: f32, height: f32) -> noido_text::Rect {
+        noido_text::Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// The centre of `r` on `page`, in viewport points.
+    fn centre_on_screen(view: &View, page: usize, r: noido_text::Rect) -> (f32, f32) {
+        on_screen(
+            view,
+            DocPoint {
+                page,
+                x: r.x + r.width / 2.0,
+                y: r.y + r.height / 2.0,
+            },
+        )
+    }
+
+    #[test]
+    fn reveal_visible_hit_does_not_move() {
+        let mut view = letter_view();
+        view.reveal(0, &[rect(72.0, 100.0, 50.0, 12.0)]);
+        assert_eq!(view.offset(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn reveal_centres_hit_vertically() {
+        let mut view = letter_view();
+        let hit = rect(72.0, 300.0, 50.0, 12.0);
+        view.reveal(5, &[hit]);
+        let (_, y) = centre_on_screen(&view, 5, hit);
+        assert!((y - 400.0).abs() < 1.0, "{y}");
+    }
+
+    #[test]
+    fn reveal_keeps_zoom() {
+        let mut view = letter_view();
+        view.apply(Action::ZoomIn);
+        let scale = view.scale();
+        view.reveal(5, &[rect(72.0, 300.0, 50.0, 12.0)]);
+        assert_eq!(view.scale(), scale);
+        assert_eq!(view.mode(), ZoomMode::Custom);
+    }
+
+    #[test]
+    fn reveal_centres_horizontally_when_zoomed() {
+        let mut view = letter_view();
+        while view.scale() < 2.0 {
+            view.apply(Action::ZoomIn);
+        }
+        view.scrolled_to(0.0, 0.0);
+        // Off screen to the right, but far enough from the edge to centre.
+        let hit = rect(380.0, 300.0, 40.0, 12.0);
+        view.reveal(2, &[hit]);
+        let (x, y) = centre_on_screen(&view, 2, hit);
+        assert!((x - 318.0).abs() < 1.0, "{x}");
+        assert!((y - 400.0).abs() < 1.0, "{y}");
+    }
+
+    #[test]
+    fn reveal_two_rects_uses_their_union() {
+        let mut view = letter_view();
+        let (a, b) = (
+            rect(500.0, 300.0, 40.0, 12.0),
+            rect(72.0, 320.0, 30.0, 12.0),
+        );
+        view.reveal(6, &[a, b]);
+        let (_, top) = on_screen(
+            &view,
+            DocPoint {
+                page: 6,
+                x: 0.0,
+                y: 300.0,
+            },
+        );
+        let (_, bottom) = on_screen(
+            &view,
+            DocPoint {
+                page: 6,
+                x: 0.0,
+                y: 332.0,
+            },
+        );
+        assert!(((top + bottom) / 2.0 - 400.0).abs() < 1.0, "{top} {bottom}");
+    }
+
+    #[test]
+    fn reveal_in_paged_mode_shows_spread() {
+        let mut view = letter_view();
+        view.apply(Action::ToggleContinuous);
+        view.reveal(7, &[rect(72.0, 300.0, 50.0, 12.0)]);
+        assert_eq!(view.current_spread(), Some(7));
+        assert!(!view.continuous());
+    }
+
+    #[test]
+    fn reveal_in_paged_zoomed_scrolls_within_page() {
+        let mut view = letter_view();
+        view.apply(Action::ToggleContinuous);
+        for _ in 0..4 {
+            view.apply(Action::ZoomIn);
+        }
+        // Below the view, but far enough from the bottom to centre.
+        let hit = rect(72.0, 400.0, 50.0, 12.0);
+        view.reveal(3, &[hit]);
+        assert_eq!(view.current_spread(), Some(3));
+        let (_, y) = centre_on_screen(&view, 3, hit);
+        assert!((y - 400.0).abs() < 1.0, "{y}");
+    }
+
+    #[test]
+    fn reveal_hit_larger_than_view_centres() {
+        let mut view = letter_view();
+        let hit = rect(10.0, 0.0, 590.0, 790.0);
+        view.reveal(4, &[hit]);
+        let (_, y) = centre_on_screen(&view, 4, hit);
+        assert!((y - 400.0).abs() < 1.0, "{y}");
+    }
+
+    #[test]
+    fn reveal_bad_page_is_ignored() {
+        let mut view = letter_view();
+        view.reveal(99, &[rect(72.0, 300.0, 50.0, 12.0)]);
+        view.reveal(3, &[]);
+        assert_eq!(view.offset(), (0.0, 0.0));
     }
 
     #[test]
