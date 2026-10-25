@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use noido_core::{Direction, THUMBNAIL_BUDGET, thumbnail_keep, thumbnail_order, thumbnail_scale};
+use noido_core::{Direction, THUMBNAIL_BUDGET, thumbnail_scale, window_keep, window_order};
 use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image};
 
 pub struct Thumbnail {
@@ -71,7 +71,7 @@ fn run(
         forget_outside(&mut delivered, page);
 
         let mut newer = None;
-        for page in thumbnail_order(count, page, direction, THUMBNAIL_BUDGET) {
+        for page in window_order(count, page, direction, THUMBNAIL_BUDGET) {
             // The frontend drops thumbnails for every focus it sends, so each
             // one, not just the newest, must make the thread forget them too.
             for focus in focus_rx.try_iter() {
@@ -119,7 +119,7 @@ fn run(
 /// Marks pages outside the thumbnail window around `focus` as not delivered,
 /// matching the frontend dropping their thumbnails.
 fn forget_outside(delivered: &mut [bool], focus: usize) {
-    let keep = thumbnail_keep(delivered.len(), focus, THUMBNAIL_BUDGET);
+    let keep = window_keep(delivered.len(), focus, THUMBNAIL_BUDGET);
     for (page, done) in delivered.iter_mut().enumerate() {
         if !keep.contains(&page) {
             *done = false;

@@ -8,7 +8,7 @@ use eframe::egui::{
 };
 use noido_core::{
     Direction, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, THUMBNAIL_BUDGET, View,
-    ViewState, render_scale, thumbnail_keep,
+    ViewState, render_scale, window_keep,
 };
 use noido_engine::{Rgba8Image, Size};
 use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
@@ -150,10 +150,10 @@ impl NoidoApp {
             }
             thumbnails.focus = Some(page);
             thumbnails.thumbnailer.set_focus(page, thumbnails.direction);
-            let keep = thumbnail_keep(page_count, page, THUMBNAIL_BUDGET);
+            let keep = window_keep(page_count, page, THUMBNAIL_BUDGET);
             thumbnails.textures.retain(|page, _| keep.contains(page));
         }
-        let keep = thumbnail_keep(page_count, thumbnails.focus.unwrap_or(0), THUMBNAIL_BUDGET);
+        let keep = window_keep(page_count, thumbnails.focus.unwrap_or(0), THUMBNAIL_BUDGET);
         while let Some(thumbnail) = thumbnails.thumbnailer.try_recv() {
             // A failed thumbnail leaves the page white; its full render reports errors.
             if let Ok(image) = thumbnail.result

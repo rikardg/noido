@@ -5,9 +5,11 @@ mod layout;
 mod thumbnails;
 mod tracker;
 mod view;
+mod window;
 
 pub use keymap::*;
 pub use layout::*;
 pub use thumbnails::*;
 pub use tracker::*;
 pub use view::*;
+pub use window::*;
