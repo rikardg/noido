@@ -249,3 +249,24 @@ when it is fixed.
   where extracted text reads poorly: formulas, figures, OCR'd scans. Would need
   a low-priority render queue for the regions and a cache, so a long result
   list doesn't hold up the page view or the thumbnails.
+
+## Text layer (review minors, 2026-10-25)
+
+- **The UI can't tell the text thread died.** If opening fails or hayro
+  panics on a page, no `Done` arrives, so a "Searching…" line would wait
+  forever. Send a failure update, or `Done` on open failure; part 2 should
+  not wait on `Done` alone. (`crates/noido-render/src/text.rs`)
+- **Exactly 5 000 hits reads as cut short** ("5000+") when the cap is reached
+  at a page end and no later page has hits. The remaining pages are
+  unsearched, so this is defensible; worth a comment.
+- **Context lines show raw text:** "spe- cifically" across a line-end
+  hyphen, double spaces from OCR layers. Collapse whitespace and join
+  hyphenated breaks in `context()`, keeping the bold range right.
+- **An unjoined mark lands after an inserted space** ("a ¨b" rather than
+  "a¨ b"). Cosmetic. (`crates/noido-text/src/page.rs`)
+- **Memory per text character is about 70 bytes** (Dennett peaks at 83 MB
+  RSS including the 30 MB file), above the spec's 10–20 MB estimate for
+  600 pages. `u32` indices in `CharInfo` and the folded forms' maps would
+  halve it.
+- **No test assembles a rotated page's real glyphs into `PageText`.** The
+  engine test checks glyph origins only; add one in `noido-render/tests`.

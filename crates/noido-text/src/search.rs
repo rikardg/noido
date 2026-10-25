@@ -95,18 +95,18 @@ fn fold(chars: &[char], dehyphenate: bool) -> Folds {
         let c = chars[i];
         if dehyphenate {
             match line_end_hyphen(chars, i) {
-                Some(Hyphen::Breaks) => {
+                Some((Hyphen::Breaks, next)) => {
                     // The hyphen and the line break go.
-                    i += 2;
+                    i = next;
                     continue;
                 }
-                Some(Hyphen::Belongs) => {
+                Some((Hyphen::Belongs, next)) => {
                     // The hyphen stays; the line break goes.
                     out.accented.push(c);
                     out.accented_source.push(i);
                     out.plain.push(c);
                     out.plain_source.push(i);
-                    i += 2;
+                    i = next;
                     continue;
                 }
                 None => {}
@@ -123,14 +123,13 @@ fn fold(chars: &[char], dehyphenate: bool) -> Folds {
             continue;
         }
         for n in std::iter::once(c).nfkc() {
-            for lower in n.to_lowercase() {
-                out.accented.push(lower);
+            // Decomposed, so a mark drawn or typed apart still matches.
+            for d in n.to_lowercase().nfd() {
+                out.accented.push(d);
                 out.accented_source.push(i);
-                for d in std::iter::once(lower).nfd() {
-                    if !is_combining_mark(d) {
-                        out.plain.push(d);
-                        out.plain_source.push(i);
-                    }
+                if !is_combining_mark(d) {
+                    out.plain.push(d);
+                    out.plain_source.push(i);
                 }
             }
         }
@@ -147,27 +146,39 @@ enum Hyphen {
 }
 
 /// Whether `chars[i]` is a hyphen at a line end, after a letter and before
-/// a letter on the next line, and what kind. Before a lowercase letter it
-/// breaks the word; before another letter it is the word's own, except
-/// OCR's `¬`, which always marks a break.
-fn line_end_hyphen(chars: &[char], i: usize) -> Option<Hyphen> {
+/// a letter on the next line, what kind, and where the next line starts.
+/// Spaces may come between the hyphen and the line break, as in OCR layers.
+/// Before a lowercase letter it breaks the word; before another letter it is
+/// the word's own, except OCR's `¬` and the soft hyphen, which always mark a
+/// break.
+fn line_end_hyphen(chars: &[char], i: usize) -> Option<(Hyphen, usize)> {
     let hyphen = chars[i];
-    if !matches!(hyphen, '-' | '¬')
+    if !matches!(hyphen, '-' | '\u{2010}' | '¬' | '\u{ad}')
         || i == 0
         || !chars[i - 1].is_alphabetic()
-        || chars.get(i + 1) != Some(&'\n')
     {
         return None;
     }
-    let next = *chars.get(i + 2)?;
+    let mut j = i + 1;
+    while chars
+        .get(j)
+        .is_some_and(|&c| c != '\n' && c.is_whitespace())
+    {
+        j += 1;
+    }
+    if chars.get(j) != Some(&'\n') {
+        return None;
+    }
+    let next = *chars.get(j + 1)?;
     if !next.is_alphabetic() {
         return None;
     }
-    Some(if next.is_lowercase() || hyphen == '¬' {
+    let kind = if next.is_lowercase() || matches!(hyphen, '¬' | '\u{ad}') {
         Hyphen::Breaks
     } else {
         Hyphen::Belongs
-    })
+    };
+    Some((kind, j + 1))
 }
 
 impl Forms {
@@ -198,13 +209,17 @@ impl PageText {
             &forms.plain
         };
         let needle = &query.folded;
-        let mut hits = Vec::new();
+        let mut hits: Vec<TextHit> = Vec::new();
         let mut start = 0;
         while start + needle.len() <= folded.chars.len() {
             if folded.chars[start..start + needle.len()] == needle[..] {
                 let first = folded.source[start];
                 let last = folded.source[start + needle.len() - 1];
-                hits.push(self.hit(&forms.chars, first..last + 1));
+                // Two matches inside one character ("f" twice in "ﬀ") are
+                // one hit.
+                if hits.last().is_none_or(|hit| first >= hit.range.end) {
+                    hits.push(self.hit(&forms.chars, first..last + 1));
+                }
                 start += needle.len();
             } else {
                 start += 1;
@@ -378,6 +393,35 @@ mod tests {
     #[test]
     fn hits_do_not_overlap() {
         assert_eq!(found(&["aaaa"], "aa").len(), 2);
+    }
+
+    #[test]
+    fn hyphen_before_trailing_space_joins_word() {
+        // OCR layers end lines with a space.
+        assert_eq!(found(&["imple- ", "ment"], "implement").len(), 1);
+        assert_eq!(found(&["Anglo- ", "Saxon"], "anglo-saxon").len(), 1);
+    }
+
+    #[test]
+    fn unicode_hyphens_at_line_end_join_word() {
+        assert_eq!(found(&["imple\u{2010}", "ment"], "implement").len(), 1);
+        assert_eq!(found(&["imple\u{ad}", "ment"], "implement").len(), 1);
+    }
+
+    #[test]
+    fn decomposed_accents_match_composed() {
+        assert_eq!(found(&["Gödel"], "Go\u{308}del"), ["Gödel"]);
+        assert_eq!(found(&["élan"], "E\u{301}LAN"), ["élan"]);
+        // A mark left unjoined on the page.
+        assert_eq!(found(&["cafe\u{301}"], "café").len(), 1);
+    }
+
+    #[test]
+    fn one_ligature_char_is_one_hit() {
+        let mut glyphs = vec![glyph("ﬀ", 72.0, 100.0, 10.0)];
+        glyphs.extend(line("ect", 77.0, 100.0, 10.0));
+        let page = PageText::new(glyphs);
+        assert_eq!(page.find(&Query::new("f").unwrap()).len(), 1);
     }
 
     #[test]
