@@ -1065,13 +1065,13 @@ mod tests {
 
     #[test]
     fn page_uv_covers_only_the_page() {
-        // Letter at thumbnail scale is 155.3 px tall, rendered into 156 rows;
-        // the last 0.7 row is padding and must not be stretched onto the page.
+        // Letter 120 px wide is 155.3 px tall, rendered into 156 rows; the
+        // last 0.7 row is padding and must not be stretched onto the page.
         let letter = Size {
             width: 612.0,
             height: 792.0,
         };
-        let scale = noido_core::thumbnail_scale(letter);
+        let scale = 120.0 / 612.0;
         let image = Rgba8Image::from_premultiplied(120, 156, vec![255; 120 * 156 * 4]).unwrap();
         let uv = page_uv(letter, scale, &image);
         assert_eq!(uv.min, pos2(0.0, 0.0));
