@@ -2,6 +2,7 @@
 
 mod app;
 mod frame;
+mod image;
 mod instance;
 mod interrupt;
 mod load;
