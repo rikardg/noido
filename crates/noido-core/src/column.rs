@@ -10,9 +10,9 @@ use crate::PageRect;
 /// Space around the thumbnails and above the first, in UI points.
 pub const COLUMN_MARGIN: f32 = 12.0;
 /// Height of the page number row under each thumbnail, in UI points.
-pub const LABEL_HEIGHT: f32 = 26.0;
+pub const LABEL_HEIGHT: f32 = 30.0;
 /// Space between a page number and the next thumbnail, in UI points.
-pub const COLUMN_GAP: f32 = 12.0;
+pub const COLUMN_GAP: f32 = 16.0;
 
 /// Thumbnails laid out top to bottom for a sidebar of a given inner width.
 pub struct Column {
@@ -147,7 +147,7 @@ mod tests {
         ));
         assert!(near(
             column.content_height(),
-            3.0 * (h + LABEL_HEIGHT + COLUMN_GAP) - 12.0 + 24.0
+            3.0 * (h + LABEL_HEIGHT + COLUMN_GAP) - COLUMN_GAP + 2.0 * COLUMN_MARGIN
         ));
         assert!(column.thumb(3).is_none());
     }

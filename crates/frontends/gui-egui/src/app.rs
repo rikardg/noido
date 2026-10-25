@@ -2712,6 +2712,14 @@ mod tests {
             "{pill:?}"
         );
         assert!((pill.center().x - thumb.center().x).abs() < 0.5);
+        // Apart from the frame, and with room below before the next one.
+        assert!(pill.min.y - frame.max.y >= 4.0, "{pill:?} under {frame:?}");
+        let (_, next) = h.app.sidebar_view.drawn()[2];
+        let next_frame = next.expand(sidebar::HIGHLIGHT);
+        assert!(
+            next_frame.min.y - pill.max.y >= 10.0,
+            "{pill:?} over {next_frame:?}"
+        );
         // Only the current page has them.
         assert_eq!(rects.len(), 2, "{rects:?}");
     }

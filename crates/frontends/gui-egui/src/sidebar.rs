@@ -20,6 +20,8 @@ use crate::image::PageImage;
 pub const HIGHLIGHT: f32 = 6.0;
 /// Space between a highlighted page number and the edge of its pill.
 const PILL_PADDING: egui::Vec2 = egui::vec2(8.0, 2.0);
+/// Space between the current page's highlight and its number's pill.
+const PILL_GAP: f32 = 4.0;
 
 /// What the sidebar needs from the app each frame.
 pub struct Input<'a> {
@@ -256,11 +258,11 @@ impl SidebarView {
                 Stroke::new(1.0, outline),
                 egui::StrokeKind::Outside,
             );
-            // Centred below the highlight's reach into the number's row.
+            // Centred in the number's row below the highlight, clear of it.
             let centre = content.min
                 + vec2(
                     label.x + label.width / 2.0,
-                    label.y + HIGHLIGHT + (label.height - HIGHLIGHT) / 2.0,
+                    label.y + (label.height + HIGHLIGHT + PILL_GAP) / 2.0,
                 );
             let colour = if current {
                 selection.stroke.color
