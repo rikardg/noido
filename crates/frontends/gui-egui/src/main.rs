@@ -11,7 +11,7 @@ use std::sync::Arc;
 use clap::Parser;
 use eframe::egui;
 use engine_hayro::HayroEngine;
-use noido_render::Renderer;
+use noido_render::{Renderer, Thumbnailer};
 use noido_state::{DocKey, Store};
 
 use crate::app::NoidoApp;
@@ -59,9 +59,13 @@ fn run(path: &Path) -> Result<(), String> {
         o.input_options.scroll_zoom_speed /= factor;
     });
     interrupt::close_on_interrupt(ctx.clone());
-    let waker_ctx = ctx.clone();
-    let waker = Box::new(move || waker_ctx.request_repaint());
-    let (renderer, info) = Renderer::start(Arc::new(HayroEngine), bytes, waker)
+    let waker = |ctx: &egui::Context| {
+        let ctx = ctx.clone();
+        Box::new(move || ctx.request_repaint())
+    };
+    // Shares the document bytes with the renderer; opens it in the background.
+    let thumbnailer = Thumbnailer::start(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
+    let (renderer, info) = Renderer::start(Arc::new(HayroEngine), bytes, waker(&ctx))
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
     let name = path.file_name().map_or_else(
@@ -77,7 +81,7 @@ fn run(path: &Path) -> Result<(), String> {
         persistence_path: store.as_ref().map(|store| store.window_file(&key)),
         ..Default::default()
     };
-    let app = NoidoApp::new(renderer, info);
+    let app = NoidoApp::new(renderer, info).with_thumbnails(thumbnailer);
     let app = match store {
         Some(store) => {
             store.prune(REMEMBERED_DOCUMENTS);

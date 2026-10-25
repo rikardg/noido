@@ -7,9 +7,11 @@ use eframe::egui::{
     vec2,
 };
 use noido_core::{
-    Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, View, ViewState, render_scale,
+    Direction, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, THUMBNAIL_BUDGET, View,
+    ViewState, render_scale, thumbnail_keep,
 };
-use noido_render::{DocumentInfo, RenderRequest, Renderer};
+use noido_engine::Rgba8Image;
+use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
 use noido_state::{DocKey, Store};
 
 /// Spreads (pages in single mode) beyond the visible ones that are rendered
@@ -44,6 +46,16 @@ pub struct NoidoApp {
     /// Trackpad distance scrolled towards the next flip, positive downwards.
     flip_distance: f32,
     persistence: Option<Persistence>,
+    thumbnails: Option<Thumbnails>,
+}
+
+/// Low-res images shown for pages whose full render hasn't arrived.
+struct Thumbnails {
+    thumbnailer: Thumbnailer,
+    textures: HashMap<usize, TextureHandle>,
+    /// The page the thumbnailer was last pointed at.
+    focus: Option<usize>,
+    direction: Direction,
 }
 
 /// Saves the view state of the open document.
@@ -105,7 +117,62 @@ impl NoidoApp {
             last_scroll: None,
             flip_distance: 0.0,
             persistence: None,
+            thumbnails: None,
         }
+    }
+
+    /// Shows thumbnails from `thumbnailer` until pages render.
+    pub fn with_thumbnails(mut self, thumbnailer: Thumbnailer) -> Self {
+        self.thumbnails = Some(Thumbnails {
+            thumbnailer,
+            textures: HashMap::new(),
+            focus: None,
+            direction: Direction::Forward,
+        });
+        self
+    }
+
+    /// Points the thumbnailer at the current page and takes in its thumbnails.
+    fn update_thumbnails(&mut self, ctx: &egui::Context) {
+        let Some(thumbnails) = &mut self.thumbnails else {
+            return;
+        };
+        let page_count = self.view.layout().page_count();
+        if let Some(page) = self.view.centre_page()
+            && thumbnails.focus != Some(page)
+        {
+            if let Some(old) = thumbnails.focus {
+                thumbnails.direction = if page > old {
+                    Direction::Forward
+                } else {
+                    Direction::Backward
+                };
+            }
+            thumbnails.focus = Some(page);
+            thumbnails.thumbnailer.set_focus(page, thumbnails.direction);
+            let keep = thumbnail_keep(page_count, page, THUMBNAIL_BUDGET);
+            thumbnails.textures.retain(|page, _| keep.contains(page));
+        }
+        let keep = thumbnail_keep(page_count, thumbnails.focus.unwrap_or(0), THUMBNAIL_BUDGET);
+        while let Some(thumbnail) = thumbnails.thumbnailer.try_recv() {
+            // A failed thumbnail leaves the page white; its full render reports errors.
+            if let Ok(image) = thumbnail.result
+                && keep.contains(&thumbnail.page)
+            {
+                let name = format!("thumbnail-{}", thumbnail.page);
+                let texture = load_texture(ctx, name, &image);
+                thumbnails.textures.insert(thumbnail.page, texture);
+            }
+        }
+    }
+
+    /// The best image of `page`: its full render, else its thumbnail.
+    fn page_image(&self, page: usize) -> Option<&TextureHandle> {
+        self.textures.get(&page).or_else(|| {
+            self.thumbnails
+                .as_ref()
+                .and_then(|thumbnails| thumbnails.textures.get(&page))
+        })
     }
 
     /// Restores `restored` and saves the view state from now on.
@@ -248,10 +315,8 @@ impl NoidoApp {
         while let Some(rendered) = self.renderer.try_recv() {
             match rendered.result {
                 Ok(image) => {
-                    let size = [image.width() as usize, image.height() as usize];
-                    let color_image = ColorImage::from_rgba_premultiplied(size, image.pixels());
                     let name = format!("page-{}", rendered.page);
-                    let texture = ctx.load_texture(name, color_image, TextureOptions::LINEAR);
+                    let texture = load_texture(ctx, name, &image);
                     self.textures.insert(rendered.page, texture);
                     self.tracker.mark_ready(rendered.page, rendered.scale);
                 }
@@ -314,7 +379,7 @@ impl NoidoApp {
                 continue;
             };
             let rect = Rect::from_min_size(content.min + vec2(r.x, r.y), vec2(r.width, r.height));
-            match self.textures.get(&page) {
+            match self.page_image(page) {
                 Some(texture) => {
                     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
                     painter.image(texture.id(), rect, uv, Color32::WHITE);
@@ -353,6 +418,7 @@ impl NoidoApp {
         self.receive_renders(&ctx);
         self.sync_from_egui();
         self.handle_input(&ctx);
+        self.update_thumbnails(&ctx);
 
         let (x, y) = self.view.offset();
         let wanted = vec2(x, y);
@@ -383,6 +449,12 @@ impl NoidoApp {
         });
         self.persist(&ctx);
     }
+}
+
+fn load_texture(ctx: &egui::Context, name: String, image: &Rgba8Image) -> TextureHandle {
+    let size = [image.width() as usize, image.height() as usize];
+    let color_image = ColorImage::from_rgba_premultiplied(size, image.pixels());
+    ctx.load_texture(name, color_image, TextureOptions::LINEAR)
 }
 
 /// The parts of a mouse wheel event that decide whether it flips a page.
@@ -419,6 +491,7 @@ mod tests {
     use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 
     use noido_core::ViewState;
+    use noido_render::Thumbnailer;
     use noido_state::{DocKey, Store};
 
     use super::*;
@@ -448,6 +521,35 @@ mod tests {
         }
     }
 
+    /// Like [`BlankEngine`], but every render waits until the gate's sender
+    /// is dropped.
+    struct GatedEngine(Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>);
+    struct GatedDocument(Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>);
+
+    impl PdfEngine for GatedEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(GatedDocument(self.0.clone())))
+        }
+    }
+
+    impl Document for GatedDocument {
+        fn page_count(&self) -> usize {
+            BlankDocument.page_count()
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument.page_size(page)
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            scale: f32,
+            tile: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            let _ = self.0.lock().unwrap().recv();
+            BlankDocument.render_tile(page, scale, tile)
+        }
+    }
+
     /// Runs the app headlessly in egui, one frame per call.
     struct Harness {
         ctx: egui::Context,
@@ -463,9 +565,16 @@ mod tests {
 
         /// A harness whose app is first passed through `setup`.
         fn build(setup: impl FnOnce(NoidoApp) -> NoidoApp) -> Self {
+            Self::build_with(Arc::new(BlankEngine), setup)
+        }
+
+        /// A harness whose full renders come from `engine`.
+        fn build_with(
+            engine: Arc<dyn PdfEngine>,
+            setup: impl FnOnce(NoidoApp) -> NoidoApp,
+        ) -> Self {
             let (renderer, info) =
-                Renderer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}))
-                    .unwrap();
+                Renderer::start(engine, Arc::new(Vec::new()), Box::new(|| {})).unwrap();
             let mut harness = Self {
                 ctx: egui::Context::default(),
                 app: setup(NoidoApp::new(renderer, info)),
@@ -774,5 +883,64 @@ mod tests {
         std::fs::remove_file(&file).unwrap();
         h.frames(180, vec![]);
         assert!(!file.exists(), "unchanged state was saved again");
+    }
+
+    fn blank_texture(ctx: &egui::Context, name: &str) -> TextureHandle {
+        let image = ColorImage::from_rgba_premultiplied([1, 1], &[255; 4]);
+        ctx.load_texture(name, image, TextureOptions::LINEAR)
+    }
+
+    #[test]
+    fn page_image_prefers_full_render() {
+        let mut h = Harness::build(|app| {
+            let thumbnailer =
+                Thumbnailer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}));
+            app.with_thumbnails(thumbnailer)
+        });
+        let full = blank_texture(&h.ctx, "full");
+        let thumbnail = blank_texture(&h.ctx, "thumbnail");
+        // No frames run below, so nothing new arrives after clearing.
+        h.app.textures.clear();
+        let thumbnails = &mut h.app.thumbnails.as_mut().unwrap().textures;
+        thumbnails.clear();
+        thumbnails.insert(3, thumbnail.clone());
+        assert_eq!(h.app.page_image(3).map(|t| t.id()), Some(thumbnail.id()));
+        h.app.textures.insert(3, full.clone());
+        assert_eq!(h.app.page_image(3).map(|t| t.id()), Some(full.id()));
+        assert!(h.app.page_image(4).is_none());
+    }
+
+    #[test]
+    fn jump_shows_thumbnail_before_full_render() {
+        let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
+        let engine = Arc::new(GatedEngine(Arc::new(std::sync::Mutex::new(gate_rx))));
+        let mut h = Harness::build_with(engine, |app| {
+            let thumbnailer =
+                Thumbnailer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}));
+            app.with_thumbnails(thumbnailer)
+        });
+        for _ in 0..10 {
+            h.press(egui::Key::PageDown, Modifiers::NONE);
+        }
+        let page = h.app.view.centre_page().unwrap();
+        assert!(page > 3, "page {page}");
+        for _ in 0..200 {
+            if h.app
+                .thumbnails
+                .as_ref()
+                .unwrap()
+                .textures
+                .contains_key(&page)
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            h.frames(1, vec![]);
+        }
+        let thumbnails = &h.app.thumbnails.as_ref().unwrap().textures;
+        let thumbnail = thumbnails.get(&page).expect("thumbnail arrived").id();
+        assert!(!h.app.textures.contains_key(&page));
+        assert_eq!(h.app.page_image(page).map(|t| t.id()), Some(thumbnail));
+        drop(gate);
     }
 }
