@@ -143,6 +143,8 @@ impl eframe::App for NoidoApp {
         self.receive_renders(ui.ctx());
         let key_scroll = self.scroll_from_keys(ui.ctx());
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+            // egui fades the edges of scroll areas; on pages it reads as a shadow.
+            ui.spacing_mut().scroll.fade.strength = 0.0;
             let mut scroll_area = ScrollArea::vertical().auto_shrink(false);
             if let Some(offset) = key_scroll {
                 scroll_area = scroll_area.vertical_scroll_offset(offset);
