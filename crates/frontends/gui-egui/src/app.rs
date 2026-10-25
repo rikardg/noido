@@ -353,7 +353,10 @@ impl NoidoApp {
             thumbnails.sent = None;
             thumbnails.textures.retain(|&page, _| page < page_count);
         }
+        self.sidebar_view.replace(reload.sidebar, page_count);
         self.focus = None;
+        self.chosen = None;
+        self.browse = None;
         if let Some(persistence) = &mut self.persistence {
             persistence.store.rekey(&mut persistence.slot, reload.key);
         }
@@ -1004,14 +1007,38 @@ mod tests {
             let bytes = Arc::new(Vec::new());
             let (renderer, info) =
                 Renderer::start(engine.clone(), bytes.clone(), Box::new(|| {})).unwrap();
-            let thumbnailer = Thumbnailer::start(engine, bytes, Box::new(|| {}));
+            let thumbnailer = Thumbnailer::start(engine.clone(), bytes.clone(), Box::new(|| {}));
+            let sidebar = Renderer::start_background(engine, bytes, Box::new(|| {}));
             let reload = crate::watch::Reload {
                 renderer,
                 thumbnailer,
+                sidebar,
                 info,
                 key,
             };
             self.reloads.put(reload);
+            self.frames(1, vec![]);
+        }
+
+        /// Like [`Harness::reload`], with the sidebar's renders from `sidebar`.
+        fn reload_with_sidebar(
+            &mut self,
+            engine: Arc<dyn PdfEngine>,
+            sidebar: RecordingEngine,
+            key: DocKey,
+        ) {
+            let bytes = Arc::new(Vec::new());
+            let (renderer, info) =
+                Renderer::start(engine.clone(), bytes.clone(), Box::new(|| {})).unwrap();
+            let thumbnailer = Thumbnailer::start(engine, bytes.clone(), Box::new(|| {}));
+            let sidebar = Renderer::start_background(Arc::new(sidebar), bytes, Box::new(|| {}));
+            self.reloads.put(crate::watch::Reload {
+                renderer,
+                thumbnailer,
+                sidebar,
+                info,
+                key,
+            });
             self.frames(1, vec![]);
         }
 
@@ -2547,5 +2574,28 @@ mod tests {
         h.frames(1, vec![step]);
         h.frames(5, vec![]);
         assert_eq!(h.app.view.current_spread(), spread);
+    }
+
+    #[test]
+    fn reload_swaps_sidebar_renderer() {
+        let mut h = with_sidebar(RecordingEngine::default());
+        h.until(|h| !h.app.sidebar_view.sharp_pages().is_empty());
+        click_thumbnail(&mut h, 1);
+        let engine = RecordingEngine::default();
+        h.reload_with_sidebar(
+            Arc::new(SizedEngine::letter(5)),
+            engine.clone(),
+            recompiled_key(),
+        );
+        h.until(|_| !engine.recorded().is_empty());
+        assert!(!engine.recorded().is_empty(), "new sidebar renderer unused");
+        assert!(
+            h.app
+                .sidebar_view
+                .sharp_pages()
+                .iter()
+                .all(|&page| page < 5)
+        );
+        assert_eq!(h.app.chosen, None);
     }
 }

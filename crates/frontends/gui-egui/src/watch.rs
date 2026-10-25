@@ -29,6 +29,8 @@ pub type Waker = Arc<dyn Fn() + Send + Sync>;
 pub struct Reload {
     pub renderer: Renderer,
     pub thumbnailer: Thumbnailer,
+    /// Renders the sidebar's thumbnails.
+    pub sidebar: Renderer,
     pub info: DocumentInfo,
     pub key: DocKey,
 }
@@ -104,10 +106,12 @@ fn open_new(
     if info.page_sizes.is_empty() {
         return None;
     }
-    let thumbnailer = Thumbnailer::start(engine.clone(), bytes, boxed(waker));
+    let thumbnailer = Thumbnailer::start(engine.clone(), bytes.clone(), boxed(waker));
+    let sidebar = Renderer::start_background(engine.clone(), bytes, boxed(waker));
     Some(Reload {
         renderer,
         thumbnailer,
+        sidebar,
         info,
         key,
     })

@@ -110,6 +110,15 @@ impl SidebarView {
         }
     }
 
+    /// Renders with `renderer` from now on, for a new version of the
+    /// document with `page_count` pages. Sharp images stay until new ones
+    /// replace them, except past the new page count.
+    pub fn replace(&mut self, renderer: Renderer, page_count: usize) {
+        self.renderer = Some(renderer);
+        self.tracker = RenderTracker::new(page_count);
+        self.sharp.retain(|&page, _| page < page_count);
+    }
+
     /// Forgets the sharp renders while the sidebar is closed.
     pub fn closed(&mut self) {
         if !self.shown {
