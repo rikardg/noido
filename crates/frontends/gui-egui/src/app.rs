@@ -15,6 +15,7 @@ use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
 use noido_state::{DocKey, DocState, Store};
 
 use crate::sidebar;
+use crate::titlebar::{self, TITLE_BAR_HEIGHT};
 
 /// Spreads (pages in single mode) rendered at full resolution around the
 /// current one, after the visible ones: the current spread, then six ahead
@@ -28,9 +29,6 @@ const KEEP: usize = 8;
 const TRACKPAD_FLIP_DISTANCE: f32 = 125.0;
 /// Offset difference, in UI points, below which egui's scroll position is left alone.
 const OFFSET_EPSILON: f32 = 0.5;
-
-/// Height of the title bar, in UI points.
-const TITLE_BAR_HEIGHT: f32 = 40.0;
 
 /// Seconds the view must stay unchanged before its state is saved.
 const SAVE_DELAY: f64 = 2.0;
@@ -59,8 +57,16 @@ pub struct NoidoApp {
     /// The direction the focus last moved in.
     direction: Direction,
     sidebar: SidebarState,
+    /// The document's file name, shown in the title bar.
+    name: String,
+    /// The search field's text.
+    search: String,
     /// Mod+F was pressed: the search field takes focus next frame.
     search_focus_requested: bool,
+    /// Enter in the search field opened the sidebar, so Esc closes it again.
+    sidebar_opened_by_search: bool,
+    /// Where the title bar's parts were drawn last frame.
+    bar: titlebar::Rects,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -135,7 +141,17 @@ impl NoidoApp {
             direction: Direction::Forward,
             sidebar: SidebarState::default(),
             search_focus_requested: false,
+            name: String::new(),
+            search: String::new(),
+            sidebar_opened_by_search: false,
+            bar: titlebar::Rects::default(),
         }
+    }
+
+    /// Shows `name` in the title bar.
+    pub fn with_name(mut self, name: String) -> Self {
+        self.name = name;
+        self
     }
 
     /// Shows thumbnails from `thumbnailer` until pages render.
@@ -311,6 +327,42 @@ impl NoidoApp {
                     .map(|p| (p.x - last.inner.min.x, p.y - last.inner.min.y))
             });
             self.view.zoom_by(zoom, anchor);
+        }
+    }
+
+    /// Draws the title bar and acts on what the reader did in it.
+    fn title_bar(&mut self, ui: &mut egui::Ui) {
+        let status = match self.view.centre_page() {
+            Some(page) => {
+                let count = self.view.layout().page_count();
+                titlebar::status_text(page, count, self.view.scale())
+            }
+            None => String::new(),
+        };
+        let bar = titlebar::Bar {
+            name: &self.name,
+            status,
+            sidebar: self.sidebar,
+            continuous: self.view.continuous(),
+            dual: self.view.dual(),
+            keymap: &self.keymap,
+        };
+        let focus = std::mem::take(&mut self.search_focus_requested);
+        let output = egui::Panel::top("titlebar")
+            .exact_size(TITLE_BAR_HEIGHT)
+            .show(ui, |ui| titlebar::show(ui, &bar, &mut self.search, focus))
+            .inner;
+        self.bar = output.rects;
+        if output.submitted && !self.sidebar.open {
+            self.sidebar.open = true;
+            self.sidebar_opened_by_search = true;
+        }
+        if output.cancelled && std::mem::take(&mut self.sidebar_opened_by_search) {
+            self.sidebar.open = false;
+        }
+        let ctx = ui.ctx().clone();
+        for action in output.actions {
+            self.apply(&ctx, action);
         }
     }
 
@@ -496,10 +548,7 @@ impl NoidoApp {
             .last_scroll
             .is_some_and(|last| (last.offset - wanted).abs().max_elem() > OFFSET_EPSILON);
 
-        // Filled with the bar's controls in the next step.
-        egui::Panel::top("titlebar")
-            .exact_size(TITLE_BAR_HEIGHT)
-            .show(ui, |_ui| {});
+        self.title_bar(ui);
         if self.sidebar.open {
             sidebar::show(ui, &mut self.sidebar);
         }
@@ -768,6 +817,11 @@ mod tests {
                 modifiers,
             };
             self.frames(1, vec![event]);
+        }
+
+        /// Types `text` into the focused text field.
+        fn typed(&mut self, text: &str) {
+            self.frames(1, vec![Event::Text(text.into())]);
         }
 
         /// The document point at the viewport centre.
@@ -1117,6 +1171,109 @@ mod tests {
         let mut h = Harness::new();
         h.press(egui::Key::Q, Modifiers::COMMAND);
         assert!(h.commands.contains(&egui::ViewportCommand::Close));
+    }
+
+    /// Puts the cursor in the search field.
+    fn focus_search(h: &mut Harness) {
+        h.press(egui::Key::F, Modifiers::COMMAND);
+        h.frames(2, vec![]);
+        assert!(h.ctx.text_edit_focused(), "search field not focused");
+    }
+
+    #[test]
+    fn typing_w_in_search_keeps_zoom() {
+        let mut h = Harness::new();
+        let mode = h.app.view.mode();
+        focus_search(&mut h);
+        h.frames(
+            1,
+            vec![
+                Event::Key {
+                    key: egui::Key::W,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                },
+                Event::Text("w".into()),
+            ],
+        );
+        assert_eq!(h.app.view.mode(), mode);
+        assert_eq!(h.app.search, "w");
+
+        let scale = h.app.view.scale();
+        h.press(egui::Key::Equals, Modifiers::COMMAND);
+        h.frames(2, vec![]);
+        assert!(h.app.view.scale() > scale);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        assert!(h.app.sidebar.open);
+    }
+
+    #[test]
+    fn enter_opens_sidebar_and_esc_closes_it() {
+        let mut h = Harness::new();
+        focus_search(&mut h);
+        h.typed("pond");
+        h.press(egui::Key::Enter, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.sidebar.open);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(!h.app.sidebar.open);
+        assert!(!h.ctx.text_edit_focused());
+    }
+
+    #[test]
+    fn esc_keeps_sidebar_opened_by_toggle() {
+        let mut h = Harness::new();
+        h.press(egui::Key::F9, Modifiers::NONE);
+        focus_search(&mut h);
+        h.press(egui::Key::Enter, Modifiers::NONE);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.sidebar.open);
+    }
+
+    #[test]
+    fn search_field_keeps_min_width() {
+        let mut h = Harness::new();
+        h.size = vec2(480.0, 600.0);
+        h.frames(3, vec![]);
+        assert!(h.app.bar.search.width() >= 160.0, "{:?}", h.app.bar.search);
+        h.app.sidebar = SidebarState {
+            open: true,
+            width: 160.0,
+        };
+        h.frames(3, vec![]);
+        assert!(h.app.bar.search.width() >= 160.0, "{:?}", h.app.bar.search);
+    }
+
+    #[test]
+    fn long_name_keeps_menu_on_screen() {
+        let name = "a very long file name ".repeat(10);
+        let mut h = Harness::build(|app| app.with_name(name));
+        h.size = vec2(480.0, 600.0);
+        h.frames(3, vec![]);
+        let menu = h.app.bar.menu;
+        assert!(menu.min.x >= 0.0 && menu.max.x <= 480.0, "{menu:?}");
+    }
+
+    #[test]
+    fn menu_dual_matches_key() {
+        let mut h = Harness::new();
+        let entry = noido_core::menu()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.label == "Dual page")
+            .unwrap();
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, entry.action);
+        assert!(h.app.view.dual());
+    }
+
+    #[test]
+    fn status_text_counts_from_one() {
+        assert_eq!(crate::titlebar::status_text(2, 10, 1.06), "3 / 10 · 106 %");
     }
 
     fn blank_texture(ctx: &egui::Context, name: &str) -> PageImage {

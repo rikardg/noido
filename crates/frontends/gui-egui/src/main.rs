@@ -4,6 +4,7 @@ mod app;
 mod interrupt;
 mod load;
 mod sidebar;
+mod titlebar;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -84,7 +85,9 @@ fn run(path: &Path) -> Result<(), String> {
         persistence_path: store.as_ref().map(|store| store.window_file(&key)),
         ..Default::default()
     };
-    let app = NoidoApp::new(renderer, info).with_thumbnails(thumbnailer);
+    let app = NoidoApp::new(renderer, info)
+        .with_name(name.clone())
+        .with_thumbnails(thumbnailer);
     let app = match store {
         Some(store) => {
             store.prune(REMEMBERED_DOCUMENTS);
