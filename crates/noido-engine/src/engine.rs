@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+/// The bytes of a PDF file, shared without copying between loader, render
+/// thread and engine.
+pub type PdfBytes = Arc<Vec<u8>>;
+
 use crate::{PixelRect, Rgba8Image, Size};
 
 #[derive(Debug, thiserror::Error)]
@@ -17,7 +21,7 @@ pub enum EngineError {
 /// A PDF backend. Opening is cheap to call from any thread; the returned
 /// document stays on the thread that opened it.
 pub trait PdfEngine: Send + Sync {
-    fn open(&self, bytes: Arc<[u8]>) -> Result<Box<dyn Document>, EngineError>;
+    fn open(&self, bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError>;
 }
 
 /// An open document. Not `Send`: it lives on the render thread.

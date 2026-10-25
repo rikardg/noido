@@ -1,7 +1,5 @@
 //! noido PDF engine backed by hayro, a pure-Rust PDF rasterizer.
 
-use std::sync::Arc;
-
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_interpret::util::TransformExt;
 use hayro::hayro_syntax::Pdf;
@@ -10,14 +8,14 @@ use hayro::kurbo::Affine;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit};
 use hayro::{RenderCache, RenderSettings};
-use noido_engine::{Document, EngineError, PdfEngine, PixelRect, Rgba8Image, Size};
+use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HayroEngine;
 
 impl PdfEngine for HayroEngine {
-    fn open(&self, bytes: Arc<[u8]>) -> Result<Box<dyn Document>, EngineError> {
-        let pdf = Pdf::new(bytes.to_vec()).map_err(|e| EngineError::Open(format!("{e:?}")))?;
+    fn open(&self, bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+        let pdf = Pdf::new(bytes).map_err(|e| EngineError::Open(format!("{e:?}")))?;
         Ok(Box::new(HayroDocument { pdf }))
     }
 }

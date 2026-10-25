@@ -5,12 +5,6 @@ when it is fixed.
 
 ## Known issues
 
-- **PDF held in memory twice.** `engine-hayro` copies the shared bytes with
-  `bytes.to_vec()` before handing them to `hayro::Pdf::new`, so peak memory is
-  about twice the file size. Matters for large scanned PDFs. Fix by giving hayro
-  the data without copying (it accepts `PdfData`, which wraps an `Arc`) or by
-  reading the file straight into the form hayro wants.
-  (`crates/engine-hayro/src/lib.rs`, `HayroEngine::open`)
 - **Render-thread panic leaves the window blank.** If the engine panics on a
   page, the render thread dies silently and every page stays a white
   placeholder. Wrap `render_tile` in `catch_unwind` and report it as

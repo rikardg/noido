@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use noido_engine::{Document, EngineError, PdfEngine, PixelRect, Rgba8Image, Size};
+use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderRequest {
@@ -37,7 +37,7 @@ impl Renderer {
     /// document is open; `waker` is called after each finished render.
     pub fn start(
         engine: Arc<dyn PdfEngine>,
-        bytes: Arc<[u8]>,
+        bytes: PdfBytes,
         waker: Box<dyn Fn() + Send>,
     ) -> Result<(Renderer, DocumentInfo), EngineError> {
         let (jobs, job_rx) = mpsc::channel();
@@ -101,7 +101,7 @@ impl Renderer {
 
 fn open(
     engine: &dyn PdfEngine,
-    bytes: Arc<[u8]>,
+    bytes: PdfBytes,
 ) -> Result<(Box<dyn Document>, DocumentInfo), EngineError> {
     let document = engine.open(bytes)?;
     let page_sizes = (0..document.page_count())

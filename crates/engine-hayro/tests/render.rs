@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use engine_hayro::HayroEngine;
-use noido_engine::{Document, EngineError, PdfEngine, PixelRect, Size};
+use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Size};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/two-pages.pdf");
 
 fn open_fixture() -> Box<dyn Document> {
-    let bytes: Arc<[u8]> = std::fs::read(FIXTURE).unwrap().into();
+    let bytes: PdfBytes = Arc::new(std::fs::read(FIXTURE).unwrap());
     HayroEngine.open(bytes).unwrap()
 }
 
@@ -116,11 +116,21 @@ fn rejects_too_large() {
 #[test]
 fn garbage_and_empty_fail_to_open() {
     assert!(matches!(
-        HayroEngine.open(b"hello"[..].into()),
+        HayroEngine.open(Arc::new(b"hello".to_vec())),
         Err(EngineError::Open(_))
     ));
     assert!(matches!(
-        HayroEngine.open([][..].into()),
+        HayroEngine.open(Arc::new(Vec::new())),
         Err(EngineError::Open(_))
     ));
+}
+
+#[test]
+fn open_shares_bytes_without_copying() {
+    let bytes: PdfBytes = Arc::new(std::fs::read(FIXTURE).unwrap());
+    let doc = HayroEngine.open(bytes.clone()).unwrap();
+    // The document holds references to the caller's buffer instead of a copy.
+    assert!(Arc::strong_count(&bytes) > 1);
+    drop(doc);
+    assert_eq!(Arc::strong_count(&bytes), 1);
 }

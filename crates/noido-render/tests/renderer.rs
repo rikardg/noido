@@ -3,13 +3,13 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use engine_hayro::HayroEngine;
-use noido_engine::{Document, EngineError, PdfEngine, PixelRect, Rgba8Image, Size};
+use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 use noido_render::{RenderRequest, RenderedPage, Renderer};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/two-pages.pdf");
 
-fn fixture() -> Arc<[u8]> {
-    std::fs::read(FIXTURE).unwrap().into()
+fn fixture() -> PdfBytes {
+    Arc::new(std::fs::read(FIXTURE).unwrap())
 }
 
 fn no_waker() -> Box<dyn Fn() + Send> {
@@ -47,7 +47,11 @@ fn start_reports_page_sizes() {
 
 #[test]
 fn start_fails_on_garbage() {
-    let result = Renderer::start(Arc::new(HayroEngine), b"nope"[..].into(), no_waker());
+    let result = Renderer::start(
+        Arc::new(HayroEngine),
+        Arc::new(b"nope".to_vec()),
+        no_waker(),
+    );
     assert!(matches!(result, Err(EngineError::Open(_))));
 }
 
@@ -97,7 +101,7 @@ struct GateEngine {
 struct GateDocument(GateEngine);
 
 impl PdfEngine for GateEngine {
-    fn open(&self, _bytes: Arc<[u8]>) -> Result<Box<dyn Document>, EngineError> {
+    fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
         Ok(Box::new(GateDocument(self.clone())))
     }
 }

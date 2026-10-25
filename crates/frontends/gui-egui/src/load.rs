@@ -2,8 +2,10 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::Arc;
 
+use noido_engine::PdfBytes;
+
 /// Reads the file at `path`, with a user-facing message on failure.
-pub fn load_document(path: &Path) -> Result<Arc<[u8]>, String> {
+pub fn load_document(path: &Path) -> Result<PdfBytes, String> {
     let shown = path.display();
     if path.is_dir() {
         return Err(format!("{shown}: is a directory"));
@@ -15,7 +17,7 @@ pub fn load_document(path: &Path) -> Result<Arc<[u8]>, String> {
     if bytes.is_empty() {
         return Err(format!("{shown}: file is empty"));
     }
-    Ok(bytes.into())
+    Ok(Arc::new(bytes))
 }
 
 #[cfg(test)]
