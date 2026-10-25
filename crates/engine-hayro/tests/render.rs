@@ -134,3 +134,37 @@ fn open_shares_bytes_without_copying() {
     drop(doc);
     assert_eq!(Arc::strong_count(&bytes), 1);
 }
+
+/// Where the fixture's black square (x 100–200, 100–200 pt from the bottom)
+/// lands, in points from the top-left, from its darkness-weighted centre.
+fn square_centre(doc: &dyn Document, scale: f32) -> (f64, f64) {
+    let size = doc.page_size(0).unwrap();
+    let image = doc
+        .render_tile(0, scale, PixelRect::full_page(size, scale))
+        .unwrap();
+    let (mut x_sum, mut y_sum, mut total) = (0.0, 0.0, 0.0);
+    for y in 0..image.height() {
+        for x in 0..image.width() {
+            let dark = 1.0 - f64::from(image.pixel(x, y)[0]) / 255.0;
+            x_sum += dark * (f64::from(x) + 0.5);
+            y_sum += dark * (f64::from(y) + 0.5);
+            total += dark;
+        }
+    }
+    let scale = f64::from(scale);
+    (x_sum / total / scale, y_sum / total / scale)
+}
+
+#[test]
+fn content_lands_in_the_same_place_at_every_scale() {
+    // Thumbnails and full renders are drawn over the same page rect; any
+    // offset between scales would show as a jump when one replaces the other.
+    let doc = open_fixture();
+    for scale in [120.0 / 612.0, 0.5, 1.0, 2.37] {
+        let (x, y) = square_centre(doc.as_ref(), scale);
+        assert!(
+            (x - 150.0).abs() < 0.05 && (y - 642.0).abs() < 0.05,
+            "scale {scale}: ({x}, {y})"
+        );
+    }
+}
