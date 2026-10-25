@@ -129,6 +129,24 @@ when it is fixed.
 - **GNOME's button layout:** GNOME can put the window buttons on the left
   (`org.gnome.desktop.wm.preferences button-layout`); we always put them on
   the right.
+- **Reload notices and a status area.** Show "Reloaded" briefly after a
+  reload, and "Reload failed — showing the previous version" in a warning
+  colour when the new file doesn't open. noido has no status bar yet;
+  decide where status like this lives.
+- **Proper window activation on Wayland.** winit's focus call does
+  nothing on Wayland, and it can't activate an existing window with a
+  token from another process. A second launch should pass its
+  `XDG_ACTIVATION_TOKEN` to the running noido, which activates with
+  `xdg_activation_v1` itself (bound on winit's connection via the raw
+  window handles). Only helps when the launcher supplies a token (file
+  managers and the desktop do; terminals and editors often don't).
+  Today the running window only asks for attention.
+- **macOS open-file events.** On macOS files reach a running app as
+  "open document" events, not new launches; handle them, and dropping a
+  file on the app icon.
+- **Bringing the window forward on Windows, checked on Windows:** the
+  foreground rules may need `AllowSetForegroundWindow` from the second
+  launch.
 - **Notes in a right sidebar.** The left sidebar holds search results,
   thumbnails and the outline; the right one holds the reader's notes:
   bookmarks, freeform notes, lasso captures (a region of the page) and text
