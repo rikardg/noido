@@ -477,11 +477,11 @@ impl NoidoApp {
                 drag: DragScroll::Always,
                 ..Default::default()
             };
+            // No overscroll at the ends; it makes zoomed-in pages harder to
+            // position. (It also keeps offsets noido sets from springing back.)
+            ui.spacing_mut().scroll.kinetic.rubber_band = false;
             let mut scroll_area = ScrollArea::both().auto_shrink(false).scroll_source(source);
             if move_scroll {
-                // egui checks a new offset against last frame's content size;
-                // past it, rubber-banding would spring the view away from the anchor.
-                ui.spacing_mut().scroll.kinetic.rubber_band = false;
                 scroll_area = scroll_area.scroll_offset(wanted);
             }
             let output = scroll_area.show_viewport(ui, |ui, viewport| self.pages(ui, viewport));
@@ -662,6 +662,8 @@ mod tests {
         app: NoidoApp,
         size: Vec2,
         time: f64,
+        /// What the last frame painted.
+        shapes: Vec<egui::epaint::ClippedShape>,
     }
 
     impl Harness {
@@ -686,6 +688,7 @@ mod tests {
                 app: setup(NoidoApp::new(renderer, info)),
                 size: vec2(900.0, 1000.0),
                 time: 0.0,
+                shapes: vec![],
             };
             harness.frames(3, vec![]);
             harness
@@ -702,9 +705,9 @@ mod tests {
                 };
                 self.time += 1.0 / 60.0;
                 let app = &mut self.app;
-                self.ctx
-                    .run_ui(input, |ui| app.show(ui))
-                    .drop_without_applying_deltas();
+                let output = self.ctx.run_ui(input, |ui| app.show(ui));
+                self.shapes = output.shapes.clone();
+                output.drop_without_applying_deltas();
             }
         }
 
@@ -1110,6 +1113,44 @@ mod tests {
         assert!(
             !pages.contains(&(12 + 7)),
             "rendered beyond the window: {pages:?}"
+        );
+    }
+
+    #[test]
+    fn pulling_past_the_top_does_not_overscroll() {
+        let mut h = Harness::new();
+        h.frames(5, vec![]);
+        // The top of the first page as painted: the highest page-wide shape.
+        let page_width = h.app.view.layout().page_rect(0).unwrap().width;
+        let first_page_top = |h: &Harness| {
+            h.shapes
+                .iter()
+                .map(|clipped| clipped.shape.visual_bounding_rect())
+                .filter(|rect| (rect.width() - page_width).abs() < 1.0)
+                .map(|rect| rect.min.y)
+                .fold(f32::INFINITY, f32::min)
+        };
+        let resting = first_page_top(&h);
+        assert!(resting.is_finite());
+
+        let at = |y: f32| Event::PointerMoved(pos2(450.0, y));
+        let button = |y: f32, pressed: bool| Event::PointerButton {
+            pos: pos2(450.0, y),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frames(1, vec![at(300.0)]);
+        h.frames(1, vec![button(300.0, true)]);
+        for step in 1..=10 {
+            h.frames(1, vec![at(300.0 + 20.0 * step as f32)]);
+        }
+        // Still holding the button: rubber-banding would show here.
+        let pulled = first_page_top(&h);
+        h.frames(1, vec![button(500.0, false)]);
+        assert!(
+            (pulled - resting).abs() < 0.5,
+            "page top {resting} -> {pulled}"
         );
     }
 }
