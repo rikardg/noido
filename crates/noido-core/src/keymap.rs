@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 /// Keys, independent of any UI toolkit. Frontends translate their own key events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
@@ -12,6 +10,8 @@ pub enum Key {
     F,
     C,
     D,
+    Q,
+    F9,
 }
 
 /// A key with the state of the platform's primary modifier (`command`: Ctrl,
@@ -33,11 +33,15 @@ pub enum Action {
     FitPage,
     ToggleContinuous,
     ToggleDual,
+    ToggleSidebar,
+    FocusSearch,
+    Quit,
 }
 
 /// Maps key presses to actions.
 pub struct Keymap {
-    bindings: HashMap<KeyPress, Action>,
+    /// In declaration order: the first binding of an action is the one menus show.
+    bindings: Vec<(KeyPress, Action)>,
 }
 
 impl Keymap {
@@ -48,22 +52,74 @@ impl Keymap {
             command: false,
         };
         let command = |key| KeyPress { key, command: true };
-        let bindings = HashMap::from([
+        let bindings = vec![
             (plain(Key::PageUp), Action::ScrollScreenUp),
             (plain(Key::PageDown), Action::ScrollScreenDown),
-            (command(Key::Plus), Action::ZoomIn),
             (command(Key::Equals), Action::ZoomIn),
+            (command(Key::Plus), Action::ZoomIn),
             (command(Key::Minus), Action::ZoomOut),
             (plain(Key::W), Action::FitWidth),
             (plain(Key::F), Action::FitPage),
             (plain(Key::C), Action::ToggleContinuous),
             (plain(Key::D), Action::ToggleDual),
-        ]);
+            (plain(Key::F9), Action::ToggleSidebar),
+            (command(Key::F), Action::FocusSearch),
+            (command(Key::Q), Action::Quit),
+        ];
         Self { bindings }
     }
 
-    pub fn action(&self, press: KeyPress) -> Option<Action> {
-        self.bindings.get(&press).copied()
+    /// The action bound to `press`. While `editing` text, only presses that
+    /// can't be typed act: with Mod, function keys and Page Up/Down.
+    pub fn action(&self, press: KeyPress, editing: bool) -> Option<Action> {
+        if editing && !acts_while_editing(press) {
+            return None;
+        }
+        self.bindings
+            .iter()
+            .find(|(bound, _)| *bound == press)
+            .map(|(_, action)| *action)
+    }
+
+    /// The key shown for `action`: its first binding.
+    pub fn key_for(&self, action: Action) -> Option<KeyPress> {
+        self.bindings
+            .iter()
+            .find(|(_, bound)| *bound == action)
+            .map(|(press, _)| *press)
+    }
+}
+
+fn acts_while_editing(press: KeyPress) -> bool {
+    press.command || matches!(press.key, Key::F9 | Key::PageUp | Key::PageDown)
+}
+
+/// How shortcuts are written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Platform {
+    Mac,
+    Other,
+}
+
+/// `press` as menus show it: "Ctrl+=" or "⌘=".
+pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
+    let key = match press.key {
+        Key::PageUp => "Page Up",
+        Key::PageDown => "Page Down",
+        Key::Plus => "+",
+        Key::Equals => "=",
+        Key::Minus => "-",
+        Key::W => "W",
+        Key::F => "F",
+        Key::C => "C",
+        Key::D => "D",
+        Key::Q => "Q",
+        Key::F9 => "F9",
+    };
+    match (press.command, platform) {
+        (false, _) => key.to_owned(),
+        (true, Platform::Mac) => format!("⌘{key}"),
+        (true, Platform::Other) => format!("Ctrl+{key}"),
     }
 }
 
@@ -98,11 +154,11 @@ mod tests {
     fn native_maps_page_keys() {
         let keymap = Keymap::native();
         assert_eq!(
-            keymap.action(press(Key::PageDown, false)),
+            keymap.action(press(Key::PageDown, false), false),
             Some(Action::ScrollScreenDown)
         );
         assert_eq!(
-            keymap.action(press(Key::PageUp, false)),
+            keymap.action(press(Key::PageUp, false), false),
             Some(Action::ScrollScreenUp)
         );
     }
@@ -110,9 +166,12 @@ mod tests {
     #[test]
     fn mod_plus_and_equals_zoom_in() {
         let keymap = Keymap::native();
-        assert_eq!(keymap.action(press(Key::Plus, true)), Some(Action::ZoomIn));
         assert_eq!(
-            keymap.action(press(Key::Equals, true)),
+            keymap.action(press(Key::Plus, true), false),
+            Some(Action::ZoomIn)
+        );
+        assert_eq!(
+            keymap.action(press(Key::Equals, true), false),
             Some(Action::ZoomIn)
         );
     }
@@ -120,7 +179,7 @@ mod tests {
     #[test]
     fn mod_minus_zooms_out() {
         assert_eq!(
-            Keymap::native().action(press(Key::Minus, true)),
+            Keymap::native().action(press(Key::Minus, true), false),
             Some(Action::ZoomOut)
         );
     }
@@ -128,36 +187,127 @@ mod tests {
     #[test]
     fn plain_w_and_f_fit() {
         let keymap = Keymap::native();
-        assert_eq!(keymap.action(press(Key::W, false)), Some(Action::FitWidth));
-        assert_eq!(keymap.action(press(Key::F, false)), Some(Action::FitPage));
+        assert_eq!(
+            keymap.action(press(Key::W, false), false),
+            Some(Action::FitWidth)
+        );
+        assert_eq!(
+            keymap.action(press(Key::F, false), false),
+            Some(Action::FitPage)
+        );
     }
 
     #[test]
     fn plain_c_and_d_toggle_modes() {
         let keymap = Keymap::native();
         assert_eq!(
-            keymap.action(press(Key::C, false)),
+            keymap.action(press(Key::C, false), false),
             Some(Action::ToggleContinuous)
         );
         assert_eq!(
-            keymap.action(press(Key::D, false)),
+            keymap.action(press(Key::D, false), false),
             Some(Action::ToggleDual)
         );
     }
 
     #[test]
     fn c_with_mod_does_nothing() {
-        assert_eq!(Keymap::native().action(press(Key::C, true)), None);
+        assert_eq!(Keymap::native().action(press(Key::C, true), false), None);
     }
 
     #[test]
     fn plus_without_mod_does_nothing() {
-        assert_eq!(Keymap::native().action(press(Key::Plus, false)), None);
+        assert_eq!(
+            Keymap::native().action(press(Key::Plus, false), false),
+            None
+        );
     }
 
     #[test]
     fn w_with_mod_does_nothing() {
-        assert_eq!(Keymap::native().action(press(Key::W, true)), None);
+        assert_eq!(Keymap::native().action(press(Key::W, true), false), None);
+    }
+
+    #[test]
+    fn f9_toggles_sidebar() {
+        assert_eq!(
+            Keymap::native().action(press(Key::F9, false), false),
+            Some(Action::ToggleSidebar)
+        );
+    }
+
+    #[test]
+    fn mod_f_focuses_search() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::F, true), false),
+            Some(Action::FocusSearch)
+        );
+        assert_eq!(
+            keymap.action(press(Key::F, false), false),
+            Some(Action::FitPage)
+        );
+    }
+
+    #[test]
+    fn mod_q_quits() {
+        assert_eq!(
+            Keymap::native().action(press(Key::Q, true), false),
+            Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn editing_blocks_plain_keys() {
+        let keymap = Keymap::native();
+        for key in [Key::W, Key::F, Key::C, Key::D] {
+            assert_eq!(keymap.action(press(key, false), true), None, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn editing_keeps_mod_function_and_page_keys() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::Equals, true), true),
+            Some(Action::ZoomIn)
+        );
+        assert_eq!(
+            keymap.action(press(Key::F9, false), true),
+            Some(Action::ToggleSidebar)
+        );
+        assert_eq!(
+            keymap.action(press(Key::PageDown, false), true),
+            Some(Action::ScrollScreenDown)
+        );
+    }
+
+    #[test]
+    fn key_for_zoom_in_is_mod_equals() {
+        assert_eq!(
+            Keymap::native().key_for(Action::ZoomIn),
+            Some(press(Key::Equals, true))
+        );
+    }
+
+    #[test]
+    fn labels_per_platform() {
+        let mod_equals = press(Key::Equals, true);
+        assert_eq!(shortcut_label(mod_equals, Platform::Other), "Ctrl+=");
+        assert_eq!(shortcut_label(mod_equals, Platform::Mac), "⌘=");
+        for platform in [Platform::Other, Platform::Mac] {
+            assert_eq!(shortcut_label(press(Key::F9, false), platform), "F9");
+            assert_eq!(shortcut_label(press(Key::W, false), platform), "W");
+        }
+        assert_eq!(
+            shortcut_label(press(Key::Q, true), Platform::Other),
+            "Ctrl+Q"
+        );
+        assert_eq!(shortcut_label(press(Key::Q, true), Platform::Mac), "⌘Q");
+        assert_eq!(
+            shortcut_label(press(Key::PageDown, false), Platform::Other),
+            "Page Down"
+        );
     }
 
     #[test]

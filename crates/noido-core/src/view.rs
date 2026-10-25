@@ -239,6 +239,8 @@ impl View {
                 );
                 self.scrolled_to(self.offset.0, y);
             }
+            // Not about the page view; frontends handle these.
+            Action::ToggleSidebar | Action::FocusSearch | Action::Quit => {}
         }
     }
 

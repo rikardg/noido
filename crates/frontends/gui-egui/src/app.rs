@@ -280,7 +280,7 @@ impl NoidoApp {
         });
 
         for press in presses {
-            if let Some(action) = self.keymap.action(press) {
+            if let Some(action) = self.keymap.action(press, false) {
                 self.view.apply(action);
             }
         }
@@ -558,6 +558,8 @@ fn core_key(key: egui::Key) -> Option<Key> {
         egui::Key::F => Some(Key::F),
         egui::Key::C => Some(Key::C),
         egui::Key::D => Some(Key::D),
+        egui::Key::Q => Some(Key::Q),
+        egui::Key::F9 => Some(Key::F9),
         _ => None,
     }
 }
