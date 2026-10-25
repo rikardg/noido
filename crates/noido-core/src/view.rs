@@ -7,6 +7,9 @@ pub const MIN_ZOOM: f32 = 0.1;
 pub const MAX_ZOOM: f32 = 4.0;
 /// Factor per keyboard zoom step.
 pub const ZOOM_STEP: f32 = 1.25;
+/// How far the arrow keys scroll, in points: egui's scroll per mouse wheel
+/// line on native.
+pub const SCROLL_STEP: f32 = 40.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZoomMode {
@@ -239,6 +242,16 @@ impl View {
                 );
                 self.scrolled_to(self.offset.0, y);
             }
+            // Like the wheel: flips where it flips, else a small step.
+            // Sideways only when there's no room to scroll sideways either.
+            Action::ScrollUp if self.wheel_flips() => self.wheel_flip(false),
+            Action::ScrollDown if self.wheel_flips() => self.wheel_flip(true),
+            Action::ScrollLeft if self.wheel_flips() && self.fits_width() => self.wheel_flip(false),
+            Action::ScrollRight if self.wheel_flips() && self.fits_width() => self.wheel_flip(true),
+            Action::ScrollUp => self.scrolled_to(self.offset.0, self.offset.1 - SCROLL_STEP),
+            Action::ScrollDown => self.scrolled_to(self.offset.0, self.offset.1 + SCROLL_STEP),
+            Action::ScrollLeft => self.scrolled_to(self.offset.0 - SCROLL_STEP, self.offset.1),
+            Action::ScrollRight => self.scrolled_to(self.offset.0 + SCROLL_STEP, self.offset.1),
             // Not about the page view; frontends handle these.
             Action::ToggleSidebar
             | Action::FocusSearch
@@ -325,6 +338,11 @@ impl View {
     /// scrolling: paged mode with the spread fitting the viewport vertically.
     pub fn wheel_flips(&self) -> bool {
         !self.continuous() && self.max_offset().1 <= EDGE_EPSILON
+    }
+
+    /// Whether the content fits the viewport sideways.
+    fn fits_width(&self) -> bool {
+        self.max_offset().0 <= EDGE_EPSILON
     }
 
     /// Shows the spread after (`down`) or before `spread`, from the side facing
@@ -789,6 +807,79 @@ mod tests {
         view.apply(Action::FitPage);
         let before = view.offset();
         view.wheel_flip(true);
+        assert_eq!(view.offset(), before);
+    }
+
+    #[test]
+    fn arrows_scroll_a_step_in_continuous_mode() {
+        let mut view = letter_view();
+        view.apply(Action::ScrollDown);
+        assert_eq!(view.offset().1, SCROLL_STEP);
+        view.apply(Action::ScrollUp);
+        view.apply(Action::ScrollUp);
+        assert_eq!(view.offset().1, 0.0);
+    }
+
+    #[test]
+    fn arrows_flip_when_page_fits() {
+        let mut view = paged_view();
+        view.apply(Action::FitPage);
+        view.apply(Action::ScrollDown);
+        assert_eq!(view.current_spread(), Some(1));
+        view.apply(Action::ScrollRight);
+        assert_eq!(view.current_spread(), Some(2));
+        view.apply(Action::ScrollLeft);
+        assert_eq!(view.current_spread(), Some(1));
+        view.apply(Action::ScrollUp);
+        assert_eq!(view.current_spread(), Some(0));
+        view.apply(Action::ScrollLeft);
+        assert_eq!(view.current_spread(), Some(0));
+    }
+
+    #[test]
+    fn arrows_scroll_tall_page_in_paged_mode() {
+        // Fit width leaves the Letter page 16 points taller than the window.
+        let mut view = paged_view();
+        view.apply(Action::ScrollDown);
+        assert_eq!(view.current_spread(), Some(0));
+        assert!(view.offset().1 > 0.0);
+    }
+
+    #[test]
+    fn arrows_scroll_sideways_when_zoomed_in() {
+        let mut view = letter_view();
+        for _ in 0..3 {
+            view.apply(Action::ZoomIn);
+        }
+        let (x, y) = view.offset();
+        view.apply(Action::ScrollRight);
+        assert_eq!(view.offset(), (x + SCROLL_STEP, y));
+        view.apply(Action::ScrollLeft);
+        assert_eq!(view.offset(), (x, y));
+    }
+
+    #[test]
+    fn left_right_scroll_wide_page_that_fits_vertically() {
+        // Landscape pages: zoomed in, wider than the window but not taller.
+        let mut view = View::new(vec![size(792.0, 612.0); 10]);
+        view.set_viewport_size(636.0, 800.0);
+        view.apply(Action::ToggleContinuous);
+        view.apply(Action::FitPage);
+        view.apply(Action::ZoomIn);
+        assert!(view.wheel_flips());
+        let (x, y) = view.offset();
+        view.apply(Action::ScrollRight);
+        assert_eq!(view.current_spread(), Some(0));
+        assert_eq!(view.offset(), (x + SCROLL_STEP, y));
+    }
+
+    #[test]
+    fn left_right_do_nothing_when_page_fits_width() {
+        let mut view = letter_view();
+        view.scrolled_to(0.0, 1000.0);
+        let before = view.offset();
+        view.apply(Action::ScrollRight);
+        view.apply(Action::ScrollLeft);
         assert_eq!(view.offset(), before);
     }
 

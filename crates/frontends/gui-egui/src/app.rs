@@ -984,6 +984,10 @@ fn core_key(key: egui::Key) -> Option<Key> {
         egui::Key::G => Some(Key::G),
         egui::Key::F3 => Some(Key::F3),
         egui::Key::F9 => Some(Key::F9),
+        egui::Key::ArrowUp => Some(Key::ArrowUp),
+        egui::Key::ArrowDown => Some(Key::ArrowDown),
+        egui::Key::ArrowLeft => Some(Key::ArrowLeft),
+        egui::Key::ArrowRight => Some(Key::ArrowRight),
         _ => None,
     }
 }
@@ -1337,6 +1341,25 @@ mod tests {
             h.frames(2, vec![]);
         }
         assert_eq!(h.app.view.current_spread(), Some(1));
+    }
+
+    #[test]
+    fn arrow_down_scrolls_a_step() {
+        let mut h = Harness::new();
+        h.frames(2, vec![]);
+        h.press(egui::Key::ArrowDown, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.view.offset().1, noido_core::SCROLL_STEP);
+    }
+
+    #[test]
+    fn arrows_move_the_cursor_while_searching() {
+        let mut h = Harness::new();
+        focus_search(&mut h);
+        h.press(egui::Key::ArrowDown, Modifiers::NONE);
+        h.press(egui::Key::ArrowRight, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.view.offset(), (0.0, 0.0));
     }
 
     #[test]

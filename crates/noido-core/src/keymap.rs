@@ -14,6 +14,10 @@ pub enum Key {
     G,
     F3,
     F9,
+    ArrowUp,
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight,
 }
 
 /// A key with the state of the platform's primary modifier (`command`: Ctrl,
@@ -30,6 +34,11 @@ pub struct KeyPress {
 pub enum Action {
     ScrollScreenUp,
     ScrollScreenDown,
+    /// A small step, or a flip where the wheel flips.
+    ScrollUp,
+    ScrollDown,
+    ScrollLeft,
+    ScrollRight,
     ZoomIn,
     ZoomOut,
     FitWidth,
@@ -68,6 +77,10 @@ impl Keymap {
         let bindings = vec![
             (plain(Key::PageUp), Action::ScrollScreenUp),
             (plain(Key::PageDown), Action::ScrollScreenDown),
+            (plain(Key::ArrowUp), Action::ScrollUp),
+            (plain(Key::ArrowDown), Action::ScrollDown),
+            (plain(Key::ArrowLeft), Action::ScrollLeft),
+            (plain(Key::ArrowRight), Action::ScrollRight),
             (command(Key::Equals), Action::ZoomIn),
             (command(Key::Plus), Action::ZoomIn),
             (command(Key::Minus), Action::ZoomOut),
@@ -134,6 +147,10 @@ pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
         Key::G => "G",
         Key::F3 => "F3",
         Key::F9 => "F9",
+        Key::ArrowUp => "↑",
+        Key::ArrowDown => "↓",
+        Key::ArrowLeft => "←",
+        Key::ArrowRight => "→",
     };
     let (shift, command) = match platform {
         Platform::Mac => ("⇧", "⌘"),
@@ -180,6 +197,25 @@ mod tests {
             shift: true,
             ..press(key, command)
         }
+    }
+
+    #[test]
+    fn arrows_scroll_but_not_while_editing() {
+        let keymap = Keymap::native();
+        for (key, action) in [
+            (Key::ArrowUp, Action::ScrollUp),
+            (Key::ArrowDown, Action::ScrollDown),
+            (Key::ArrowLeft, Action::ScrollLeft),
+            (Key::ArrowRight, Action::ScrollRight),
+        ] {
+            assert_eq!(keymap.action(press(key, false), false), Some(action));
+            assert_eq!(keymap.action(press(key, false), true), None);
+            assert_eq!(keymap.action(shifted(key, false), false), None);
+        }
+        assert_eq!(
+            shortcut_label(press(Key::ArrowDown, false), Platform::Other),
+            "↓"
+        );
     }
 
     #[test]
