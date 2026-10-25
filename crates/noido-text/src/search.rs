@@ -10,8 +10,8 @@ use unicode_normalization::char::is_combining_mark;
 use crate::{PageText, Rect};
 
 /// Characters of context before and after a hit, about.
-const CONTEXT_BEFORE: usize = 40;
-const CONTEXT_AFTER: usize = 80;
+const CONTEXT_BEFORE: usize = 150;
+const CONTEXT_AFTER: usize = 150;
 
 /// What to search for, folded the way page text is.
 #[derive(Clone, Debug)]
@@ -477,7 +477,7 @@ mod tests {
         let context = &hits[0].context;
         assert_eq!(bold(&hits[0]), "needle");
         let count = context.text.chars().count();
-        assert!((100..=130).contains(&count), "{count}: {:?}", context.text);
+        assert!((280..=306).contains(&count), "{count}: {:?}", context.text);
         // Cut at word boundaries.
         assert!(!context.text.starts_with(' ') && !context.text.ends_with(' '));
         for word in context.text.split(' ') {
