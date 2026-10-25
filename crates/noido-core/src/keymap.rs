@@ -10,6 +10,8 @@ pub enum Key {
     Minus,
     W,
     F,
+    C,
+    D,
 }
 
 /// A key with the state of the platform's primary modifier (`command`: Ctrl,
@@ -29,6 +31,8 @@ pub enum Action {
     ZoomOut,
     FitWidth,
     FitPage,
+    ToggleContinuous,
+    ToggleDual,
 }
 
 /// Maps key presses to actions.
@@ -52,6 +56,8 @@ impl Keymap {
             (command(Key::Minus), Action::ZoomOut),
             (plain(Key::W), Action::FitWidth),
             (plain(Key::F), Action::FitPage),
+            (plain(Key::C), Action::ToggleContinuous),
+            (plain(Key::D), Action::ToggleDual),
         ]);
         Self { bindings }
     }
@@ -124,6 +130,24 @@ mod tests {
         let keymap = Keymap::native();
         assert_eq!(keymap.action(press(Key::W, false)), Some(Action::FitWidth));
         assert_eq!(keymap.action(press(Key::F, false)), Some(Action::FitPage));
+    }
+
+    #[test]
+    fn plain_c_and_d_toggle_modes() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::C, false)),
+            Some(Action::ToggleContinuous)
+        );
+        assert_eq!(
+            keymap.action(press(Key::D, false)),
+            Some(Action::ToggleDual)
+        );
+    }
+
+    #[test]
+    fn c_with_mod_does_nothing() {
+        assert_eq!(Keymap::native().action(press(Key::C, true)), None);
     }
 
     #[test]

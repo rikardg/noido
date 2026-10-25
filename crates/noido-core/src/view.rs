@@ -1,6 +1,6 @@
 use noido_engine::Size;
 
-use crate::{Action, Layout, MARGIN, scroll_target};
+use crate::{Action, Layout, LayoutMode, MARGIN, scroll_target};
 
 /// Smallest and largest zoom, in UI points per PDF point.
 pub const MIN_ZOOM: f32 = 0.1;
@@ -18,8 +18,12 @@ pub enum ZoomMode {
     Custom,
 }
 
-/// What the reader sees: zoom, viewport size and scroll position. Scale
-/// changes keep an anchor point of the document still on screen.
+/// Offset distance, in UI points, within which the view counts as being at
+/// the top or bottom edge.
+const EDGE_EPSILON: f32 = 0.5;
+
+/// What the reader sees: page arrangement, zoom, viewport size and scroll
+/// position. Scale changes keep an anchor point of the document still on screen.
 pub struct View {
     layout: Layout,
     mode: ZoomMode,
@@ -46,6 +50,21 @@ impl View {
 
     pub fn mode(&self) -> ZoomMode {
         self.mode
+    }
+
+    /// All pages in one scrolling strip, as opposed to one spread at a time.
+    pub fn continuous(&self) -> bool {
+        self.layout.mode().paged.is_none()
+    }
+
+    /// Two-page spreads.
+    pub fn dual(&self) -> bool {
+        self.layout.mode().dual
+    }
+
+    /// The spread shown in paged mode.
+    pub fn current_spread(&self) -> Option<usize> {
+        self.layout.mode().paged
     }
 
     pub fn scale(&self) -> f32 {
@@ -100,6 +119,11 @@ impl View {
                 let scale = self.fit_scale(self.mode);
                 self.rescale(scale, centre, centre);
             }
+            Action::ToggleContinuous => self.switch_mode(self.dual(), !self.continuous()),
+            Action::ToggleDual => self.switch_mode(!self.dual(), self.continuous()),
+            Action::ScrollScreenUp | Action::ScrollScreenDown if !self.continuous() => {
+                self.page_in_paged_mode(action);
+            }
             Action::ScrollScreenUp | Action::ScrollScreenDown => {
                 let y = scroll_target(
                     action,
@@ -119,6 +143,77 @@ impl View {
             let anchor = anchor.unwrap_or_else(|| self.centre());
             self.zoom_to(self.scale() * factor, anchor);
         }
+    }
+
+    /// Changes the arrangement, keeping the page at the centre: in paged mode
+    /// its spread is shown from the top; in continuous mode the centre point
+    /// stays in place.
+    fn switch_mode(&mut self, dual: bool, continuous: bool) {
+        let (cx, cy) = self.centre();
+        let anchor = self
+            .layout
+            .doc_point(self.offset.0 + cx, self.offset.1 + cy);
+        let page = anchor.map_or(0, |p| p.page);
+
+        self.layout.set_mode(LayoutMode { dual, paged: None });
+        let paged = (!continuous).then(|| self.layout.spread_of(page));
+        self.layout.set_mode(LayoutMode { dual, paged });
+        let spread = paged.unwrap_or_else(|| self.layout.spread_of(page));
+        let scale = self.fit_scale_for(self.mode, spread);
+        self.layout.arrange(scale, self.viewport.0);
+
+        if continuous {
+            if let Some((x, y)) = anchor.and_then(|p| self.layout.content_point(p)) {
+                self.offset = (x - cx, y - cy);
+            }
+        } else {
+            self.offset.1 = 0.0;
+        }
+        self.clamp_offset();
+    }
+
+    /// PageUp/PageDown in paged mode: a screenful within the spread, or at the
+    /// edge a flip to the adjacent spread, shown from the side facing this one.
+    fn page_in_paged_mode(&mut self, action: Action) {
+        let Some(spread) = self.current_spread() else {
+            return;
+        };
+        let max_y = self.max_offset().1;
+        let down = action == Action::ScrollScreenDown;
+        let at_edge = if down {
+            self.offset.1 >= max_y - EDGE_EPSILON
+        } else {
+            self.offset.1 <= EDGE_EPSILON
+        };
+        if !at_edge {
+            let y = scroll_target(
+                action,
+                self.offset.1,
+                self.viewport.1,
+                self.layout.content_height(),
+            );
+            self.scrolled_to(self.offset.0, y);
+            return;
+        }
+        let next = if down {
+            spread + 1
+        } else {
+            match spread.checked_sub(1) {
+                Some(previous) => previous,
+                None => return,
+            }
+        };
+        if next >= self.layout.spread_count() {
+            return;
+        }
+        self.layout.set_mode(LayoutMode {
+            paged: Some(next),
+            ..self.layout.mode()
+        });
+        let scale = self.fit_scale_for(self.mode, next);
+        self.layout.arrange(scale, self.viewport.0);
+        self.offset.1 = if down { 0.0 } else { f32::MAX };
+        self.clamp_offset();
     }
 
     fn zoom_to(&mut self, scale: f32, anchor: (f32, f32)) {
@@ -142,40 +237,47 @@ impl View {
         self.clamp_offset();
     }
 
+    fn max_offset(&self) -> (f32, f32) {
+        (
+            (self.layout.content_width() - self.viewport.0).max(0.0),
+            (self.layout.content_height() - self.viewport.1).max(0.0),
+        )
+    }
+
     fn clamp_offset(&mut self) {
-        let max_x = (self.layout.content_width() - self.viewport.0).max(0.0);
-        let max_y = (self.layout.content_height() - self.viewport.1).max(0.0);
+        let (max_x, max_y) = self.max_offset();
         self.offset = (
             self.offset.0.clamp(0.0, max_x),
             self.offset.1.clamp(0.0, max_y),
         );
     }
 
+    /// The fitted scale for `mode`, using the current spread in paged mode or
+    /// the spread at the centre in continuous mode.
     fn fit_scale(&self, mode: ZoomMode) -> f32 {
-        let (width, height) = (
-            self.viewport.0 - 2.0 * MARGIN,
-            self.viewport.1 - 2.0 * MARGIN,
-        );
+        let spread = self.current_spread().unwrap_or_else(|| {
+            let (cx, cy) = self.centre();
+            self.layout
+                .doc_point(self.offset.0 + cx, self.offset.1 + cy)
+                .map_or(0, |p| self.layout.spread_of(p.page))
+        });
+        self.fit_scale_for(mode, spread)
+    }
+
+    fn fit_scale_for(&self, mode: ZoomMode, spread: usize) -> f32 {
+        let gap = self.layout.spread_gap(spread);
+        let width = self.viewport.0 - 2.0 * MARGIN - gap;
+        let height = self.viewport.1 - 2.0 * MARGIN;
         let ratio = |available: f32, length: f32| (length > 0.0).then(|| available / length);
         let scale = match mode {
             ZoomMode::Custom => Some(self.scale()),
-            ZoomMode::FitWidth => ratio(
-                width - self.layout.spread_gap(0),
-                self.layout.widest_spread(),
-            ),
-            ZoomMode::FitPage => {
-                let (cx, cy) = self.centre();
-                let page = self
-                    .layout
-                    .doc_point(self.offset.0 + cx, self.offset.1 + cy)
-                    .map_or(0, |p| p.page);
-                self.layout.page_size(page).and_then(|size| {
-                    match (ratio(width, size.width), ratio(height, size.height)) {
-                        (Some(a), Some(b)) => Some(a.min(b)),
-                        (a, b) => a.or(b),
-                    }
-                })
-            }
+            ZoomMode::FitWidth => ratio(width, self.layout.widest_spread()),
+            ZoomMode::FitPage => self.layout.spread_size(spread).and_then(|size| {
+                match (ratio(width, size.width), ratio(height, size.height)) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                }
+            }),
         };
         scale.unwrap_or(1.0).clamp(MIN_ZOOM, MAX_ZOOM)
     }
@@ -350,6 +452,113 @@ mod tests {
         assert_eq!(view.offset(), (0.0, 0.0));
     }
 
+    /// `letter_view` switched to paged mode at the top of page 0.
+    fn paged_view() -> View {
+        let mut view = letter_view();
+        view.apply(Action::ToggleContinuous);
+        view
+    }
+
+    #[test]
+    fn toggle_continuous_shows_centre_page_from_top() {
+        let mut view = letter_view();
+        view.scrolled_to(0.0, 3000.0);
+        let page = doc_at(&view, (318.0, 400.0)).page;
+        view.apply(Action::ToggleContinuous);
+        assert!(!view.continuous());
+        assert_eq!(view.current_spread(), Some(page));
+        assert_eq!(view.offset().1, 0.0);
+    }
+
+    #[test]
+    fn toggle_back_keeps_centre_page_visible() {
+        let mut view = letter_view();
+        view.scrolled_to(0.0, 3000.0);
+        let page = doc_at(&view, (318.0, 400.0)).page;
+        view.apply(Action::ToggleContinuous);
+        view.apply(Action::ToggleContinuous);
+        assert!(view.continuous());
+        let rect = view.layout().page_rect(page).unwrap();
+        let top = view.offset().1;
+        assert!(rect.y < top + 800.0 && rect.y + rect.height > top);
+    }
+
+    #[test]
+    fn paged_page_down_scrolls_then_flips() {
+        let mut view = paged_view();
+        assert_eq!(view.current_spread(), Some(0));
+        view.apply(Action::ScrollScreenDown);
+        assert_eq!((view.current_spread(), view.offset().1), (Some(0), 16.0));
+        view.apply(Action::ScrollScreenDown);
+        assert_eq!((view.current_spread(), view.offset().1), (Some(1), 0.0));
+    }
+
+    #[test]
+    fn paged_page_up_flips_to_bottom() {
+        let mut view = paged_view();
+        view.apply(Action::ScrollScreenDown);
+        view.apply(Action::ScrollScreenDown);
+        view.apply(Action::ScrollScreenUp);
+        assert_eq!((view.current_spread(), view.offset().1), (Some(0), 16.0));
+    }
+
+    #[test]
+    fn paged_flip_stops_at_ends() {
+        let mut view = paged_view();
+        view.apply(Action::ScrollScreenUp);
+        assert_eq!((view.current_spread(), view.offset().1), (Some(0), 0.0));
+
+        let mut view = letter_view();
+        view.scrolled_to(0.0, 1e6);
+        view.apply(Action::ToggleContinuous);
+        assert_eq!(view.current_spread(), Some(9));
+        view.apply(Action::ScrollScreenDown);
+        view.apply(Action::ScrollScreenDown);
+        assert_eq!((view.current_spread(), view.offset().1), (Some(9), 16.0));
+    }
+
+    #[test]
+    fn paged_zoomed_scrolls_screenfuls() {
+        let mut view = paged_view();
+        for _ in 0..3 {
+            view.apply(Action::ZoomIn);
+        }
+        view.scrolled_to(0.0, 0.0);
+        let max_y = view.layout().content_height() - 800.0;
+        view.apply(Action::ScrollScreenDown);
+        assert_eq!((view.current_spread(), view.offset().1), (Some(0), 720.0));
+        view.apply(Action::ScrollScreenDown);
+        assert_eq!((view.current_spread(), view.offset().1), (Some(0), max_y));
+        view.apply(Action::ScrollScreenDown);
+        assert_eq!((view.current_spread(), view.offset().1), (Some(1), 0.0));
+    }
+
+    #[test]
+    fn paged_scroll_clamped_to_page() {
+        let mut view = paged_view();
+        view.scrolled_to(0.0, 99_999.0);
+        assert_eq!(view.offset().1, 16.0);
+    }
+
+    #[test]
+    fn toggle_dual_refits_fit_width() {
+        let mut view = letter_view();
+        view.apply(Action::ToggleDual);
+        assert!(view.dual());
+        assert_eq!(view.scale(), (636.0 - 24.0 - 12.0) / 1224.0);
+    }
+
+    #[test]
+    fn fit_page_in_paged_dual_fits_spread() {
+        let mut view = View::new(vec![size(612.0, 792.0); 10]);
+        view.set_viewport_size(1260.0, 600.0);
+        view.apply(Action::ToggleDual);
+        view.apply(Action::ToggleContinuous);
+        view.apply(Action::FitPage);
+        let expected = ((1260.0 - 24.0 - 12.0) / 1224.0_f32).min((600.0 - 24.0) / 792.0);
+        assert_eq!(view.scale(), expected);
+    }
+
     #[test]
     fn zero_pages_is_safe() {
         let mut view = View::new(vec![]);
@@ -361,6 +570,12 @@ mod tests {
             Action::FitPage,
             Action::ScrollScreenDown,
             Action::ScrollScreenUp,
+            Action::ToggleContinuous,
+            Action::ScrollScreenDown,
+            Action::ScrollScreenUp,
+            Action::ToggleDual,
+            Action::FitPage,
+            Action::ToggleContinuous,
         ] {
             view.apply(action);
         }
