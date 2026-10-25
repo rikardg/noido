@@ -1,6 +1,7 @@
 //! `noido <file.pdf>`: open a PDF in the egui frontend.
 
 mod app;
+mod frame;
 mod interrupt;
 mod load;
 mod sidebar;
@@ -21,6 +22,9 @@ use crate::load::load_document;
 
 /// Documents whose state is kept; older ones are forgotten.
 const REMEMBERED_DOCUMENTS: usize = 1000;
+
+/// The smallest window in which the title bar's controls all fit.
+const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 300.0];
 
 /// UI points scrolled per mouse wheel step (egui's default is 40).
 const WHEEL_SCROLL_SPEED: f32 = 125.0;
@@ -77,10 +81,13 @@ fn run(path: &Path) -> Result<(), String> {
         |n| n.to_string_lossy().into_owned(),
     );
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(format!("{name} — noido"))
-            // Used when no window was saved yet.
-            .with_inner_size([900.0, 1100.0]),
+        viewport: own_title_bar(
+            egui::ViewportBuilder::default()
+                .with_title(format!("{name} — noido"))
+                // Used when no window was saved yet.
+                .with_inner_size([900.0, 1100.0])
+                .with_min_inner_size(MIN_WINDOW_SIZE),
+        ),
         persist_window: true,
         persistence_path: store.as_ref().map(|store| store.window_file(&key)),
         ..Default::default()
@@ -103,4 +110,18 @@ fn run(path: &Path) -> Result<(), String> {
         Box::new(|_cc| Ok(Box::new(app))),
     )
     .map_err(|e| format!("cannot open window: {e}"))
+}
+
+/// noido draws its own title bar: on macOS under the system's transparent
+/// one, which keeps its window buttons; elsewhere without the system frame.
+fn own_title_bar(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    if cfg!(target_os = "macos") {
+        builder
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false)
+            .with_titlebar_buttons_shown(true)
+    } else {
+        builder.with_decorations(false)
+    }
 }

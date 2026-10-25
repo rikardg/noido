@@ -14,8 +14,8 @@ use noido_engine::{Rgba8Image, Size};
 use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
 use noido_state::{DocKey, DocState, Store};
 
-use crate::sidebar;
 use crate::titlebar::{self, TITLE_BAR_HEIGHT};
+use crate::{frame, sidebar};
 
 /// Spreads (pages in single mode) rendered at full resolution around the
 /// current one, after the visible ones: the current spread, then six ahead
@@ -548,6 +548,11 @@ impl NoidoApp {
             .last_scroll
             .is_some_and(|last| (last.offset - wanted).abs().max_elem() > OFFSET_EPSILON);
 
+        if !cfg!(target_os = "macos") {
+            // Before the page view, so a press on an edge resizes rather than
+            // starting a drag of the page.
+            frame::resize_edges(&ctx);
+        }
         self.title_bar(ui);
         if self.sidebar.open {
             sidebar::show(ui, &mut self.sidebar);
@@ -574,6 +579,9 @@ impl NoidoApp {
                 offset: output.state.clamped_offset(),
             });
         });
+        if !cfg!(target_os = "macos") {
+            frame::border(&ctx);
+        }
         self.persist(&ctx);
     }
 }
@@ -750,8 +758,10 @@ mod tests {
         time: f64,
         /// What the last frame painted.
         shapes: Vec<egui::epaint::ClippedShape>,
-        /// What the last frame asked of the window.
+        /// Everything the app asked of the window so far.
         commands: Vec<egui::ViewportCommand>,
+        /// Whether the window is reported as maximised.
+        maximized: bool,
     }
 
     impl Harness {
@@ -781,6 +791,7 @@ mod tests {
                 time: 0.0,
                 shapes: vec![],
                 commands: vec![],
+                maximized: false,
             };
             harness.frames(3, vec![]);
             harness
@@ -788,7 +799,16 @@ mod tests {
 
         fn frames(&mut self, count: usize, mut events: Vec<Event>) {
             for _ in 0..count {
+                let mut viewports = egui::ViewportIdMap::default();
+                viewports.insert(
+                    egui::ViewportId::ROOT,
+                    egui::ViewportInfo {
+                        maximized: Some(self.maximized),
+                        ..Default::default()
+                    },
+                );
                 let input = RawInput {
+                    viewports,
                     screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), self.size)),
                     time: Some(self.time),
                     predicted_dt: 1.0 / 60.0,
@@ -799,11 +819,9 @@ mod tests {
                 let app = &mut self.app;
                 let output = self.ctx.run_ui(input, |ui| app.show(ui));
                 self.shapes = output.shapes.clone();
-                self.commands = output
-                    .viewport_output
-                    .get(&egui::ViewportId::ROOT)
-                    .map(|viewport| viewport.commands.clone())
-                    .unwrap_or_default();
+                if let Some(viewport) = output.viewport_output.get(&egui::ViewportId::ROOT) {
+                    self.commands.extend(viewport.commands.iter().cloned());
+                }
                 output.drop_without_applying_deltas();
             }
         }
@@ -817,6 +835,31 @@ mod tests {
                 modifiers,
             };
             self.frames(1, vec![event]);
+        }
+
+        /// Presses the primary button at `at`, moves it by `by`, releases.
+        fn drag(&mut self, at: egui::Pos2, by: Vec2) {
+            let button = |pos, pressed| Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            };
+            self.frames(1, vec![Event::PointerMoved(at)]);
+            self.frames(1, vec![button(at, true)]);
+            for step in 1..=4 {
+                let pos = at + by * (step as f32 / 4.0);
+                self.frames(1, vec![Event::PointerMoved(pos)]);
+            }
+            self.frames(1, vec![button(at + by, false)]);
+        }
+
+        fn click(&mut self, at: egui::Pos2) {
+            self.drag(at, Vec2::ZERO);
+        }
+
+        fn started_move(&self) -> bool {
+            self.commands.contains(&egui::ViewportCommand::StartDrag)
         }
 
         /// Types `text` into the focused text field.
@@ -1274,6 +1317,74 @@ mod tests {
     #[test]
     fn status_text_counts_from_one() {
         assert_eq!(crate::titlebar::status_text(2, 10, 1.06), "3 / 10 · 106 %");
+    }
+
+    /// A point on the title bar with no control under it.
+    fn empty_bar_point(h: &Harness) -> egui::Pos2 {
+        pos2(h.app.bar.search.right() + 20.0, h.app.bar.search.center().y)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn close_button_closes() {
+        let mut h = Harness::new();
+        h.click(h.app.bar.close.center());
+        assert!(h.commands.contains(&egui::ViewportCommand::Close));
+    }
+
+    #[test]
+    fn double_click_empty_bar_maximises() {
+        let mut h = Harness::new();
+        let at = empty_bar_point(&h);
+        h.click(at);
+        h.click(at);
+        assert!(
+            h.commands.contains(&egui::ViewportCommand::Maximized(true)),
+            "{:?}",
+            h.commands
+        );
+    }
+
+    #[test]
+    fn drag_on_empty_bar_starts_move() {
+        let mut h = Harness::new();
+        h.drag(empty_bar_point(&h), vec2(30.0, 10.0));
+        assert!(h.started_move());
+    }
+
+    #[test]
+    fn drag_on_search_field_does_not_move_window() {
+        let mut h = Harness::new();
+        h.drag(h.app.bar.search.center(), vec2(30.0, 10.0));
+        assert!(!h.started_move());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn edge_press_begins_resize() {
+        let mut h = Harness::new();
+        h.click(pos2(1.0, 500.0));
+        assert!(
+            h.commands.contains(&egui::ViewportCommand::BeginResize(
+                egui::ResizeDirection::West
+            )),
+            "{:?}",
+            h.commands
+        );
+    }
+
+    #[test]
+    fn no_resize_band_when_maximised() {
+        let mut h = Harness::new();
+        h.maximized = true;
+        h.click(pos2(1.0, 500.0));
+        assert!(
+            !h.commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::BeginResize(_))),
+            "{:?}",
+            h.commands
+        );
     }
 
     fn blank_texture(ctx: &egui::Context, name: &str) -> PageImage {

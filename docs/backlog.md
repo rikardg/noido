@@ -104,6 +104,16 @@ when it is fixed.
 - Several full-render threads, each with its own `Document`, sharing the
   priority queue, so one slow page (150–900 ms for art-heavy books) doesn't
   hold up the next. Only if renders still feel slow after the priority fix.
+- **Title bar on macOS, checked on a Mac:** the traffic-light inset (76
+  points), centring the traffic lights in our taller bar (an empty
+  `NSToolbar`, via `objc2`), translucency (`window-vibrancy`), and reading
+  the system's double-click preference (zoom or minimise). The code builds
+  for macOS but nobody has seen it run.
+- **Our window frame on Windows, checked on Windows:** snapping, resize
+  edges, the window buttons, Alt+F4.
+- **GNOME's button layout:** GNOME can put the window buttons on the left
+  (`org.gnome.desktop.wm.preferences button-layout`); we always put them on
+  the right.
 - **Notes in a right sidebar.** The left sidebar holds search results,
   thumbnails and the outline; the right one holds the reader's notes:
   bookmarks, freeform notes, lasso captures (a region of the page) and text

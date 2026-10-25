@@ -3,7 +3,7 @@
 
 use eframe::egui::{
     self, Align, Color32, Layout, Painter, Rect, Response, RichText, Sense, Stroke, TextStyle,
-    TextWrapMode, WidgetText, pos2, vec2,
+    TextWrapMode, ViewportCommand, WidgetText, pos2, vec2,
 };
 use noido_core::{Action, Check, Keymap, Platform, SidebarState, menu, shortcut_label};
 
@@ -17,6 +17,10 @@ const SEARCH_HIDDEN_WIDTH: f32 = 200.0;
 const ICON_BUTTON: f32 = 28.0;
 /// Space between the name and the page and zoom text.
 const STATUS_GAP: f32 = 8.0;
+/// Room left for macOS's window buttons at the bar's left.
+const TRAFFIC_LIGHTS_INSET: f32 = 76.0;
+/// The close button's colour on hover.
+const CLOSE_HOVER: Color32 = Color32::from_rgb(0xc0, 0x1c, 0x28);
 
 /// What the bar shows.
 pub struct Bar<'a> {
@@ -34,6 +38,8 @@ pub struct Bar<'a> {
 pub struct Rects {
     pub search: Rect,
     pub menu: Rect,
+    /// The close button; nothing on macOS, which has its own.
+    pub close: Rect,
 }
 
 impl Default for Rects {
@@ -41,6 +47,7 @@ impl Default for Rects {
         Self {
             search: Rect::NOTHING,
             menu: Rect::NOTHING,
+            close: Rect::NOTHING,
         }
     }
 }
@@ -71,7 +78,31 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         rects: Rects::default(),
     };
     let full = ui.max_rect();
+    let (maximized, fullscreen) = ui.input(|i| {
+        let viewport = i.viewport();
+        (
+            viewport.maximized.unwrap_or(false),
+            viewport.fullscreen.unwrap_or(false),
+        )
+    });
+    // Added before the controls, so they take presses first: what reaches
+    // this is the empty part of the bar.
+    let background = ui.interact(
+        full,
+        ui.scope_id().with("background"),
+        Sense::click_and_drag(),
+    );
+    if background.drag_started() {
+        ui.send_viewport_cmd(ViewportCommand::StartDrag);
+    }
+    if background.double_clicked() {
+        ui.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+    }
+
     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+        if cfg!(target_os = "macos") && !fullscreen {
+            ui.add_space(TRAFFIC_LIGHTS_INSET);
+        }
         let toggle =
             icon_button(ui, bar.sidebar.open, paint_sidebar_icon).on_hover_text("Sidebar (F9)");
         if toggle.clicked() {
@@ -108,6 +139,10 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         output.rects.search = field.rect;
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if !cfg!(target_os = "macos") {
+                output.rects.close = window_buttons(ui, maximized);
+                ui.add_space(ui.spacing().item_spacing.x * 2.0);
+            }
             let menu_button = icon_button(ui, false, paint_menu_icon).on_hover_text("Menu");
             output.rects.menu = menu_button.rect;
             egui::Popup::menu(&menu_button).show(|ui| {
@@ -185,6 +220,39 @@ fn paint_title(ui: &egui::Ui, rect: Rect, centre: f32, bar: &Bar) {
     painter.galley(pos2(status_left, top(status.size().y)), status, colour);
 }
 
+/// Minimise, maximise or restore, and close, right to left from the bar's
+/// right end; returns the close button's rect.
+fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Rect {
+    let close = icon_button(ui, false, paint_close_icon).on_hover_text("Close");
+    if close.hovered() {
+        // Redrawn in red over the plain hover.
+        ui.painter().rect_filled(
+            close.rect,
+            ui.visuals().widgets.hovered.corner_radius,
+            CLOSE_HOVER,
+        );
+        paint_close_icon(ui.painter(), close.rect.shrink(8.0), Color32::WHITE);
+    }
+    if close.clicked() {
+        ui.send_viewport_cmd(ViewportCommand::Close);
+    }
+    let (paint, hint): (fn(&Painter, Rect, Color32), _) = if maximized {
+        (paint_restore_icon, "Restore")
+    } else {
+        (paint_maximise_icon, "Maximise")
+    };
+    if icon_button(ui, false, paint).on_hover_text(hint).clicked() {
+        ui.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+    }
+    if icon_button(ui, false, paint_minimise_icon)
+        .on_hover_text("Minimise")
+        .clicked()
+    {
+        ui.send_viewport_cmd(ViewportCommand::Minimized(true));
+    }
+    close.rect
+}
+
 /// A square button with a painted icon, highlighted while `selected`.
 pub fn icon_button(
     ui: &mut egui::Ui,
@@ -215,4 +283,33 @@ fn paint_menu_icon(painter: &Painter, rect: Rect, colour: Color32) {
     for y in [rect.top() + 2.0, rect.center().y, rect.bottom() - 2.0] {
         painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], stroke);
     }
+}
+
+fn paint_close_icon(painter: &Painter, rect: Rect, colour: Color32) {
+    let stroke = Stroke::new(1.5, colour);
+    let rect = rect.shrink(1.0);
+    painter.line_segment([rect.left_top(), rect.right_bottom()], stroke);
+    painter.line_segment([rect.right_top(), rect.left_bottom()], stroke);
+}
+
+fn paint_maximise_icon(painter: &Painter, rect: Rect, colour: Color32) {
+    let stroke = Stroke::new(1.5, colour);
+    painter.rect_stroke(rect.shrink(1.0), 1.0, stroke, egui::StrokeKind::Inside);
+}
+
+/// Two overlapping squares.
+fn paint_restore_icon(painter: &Painter, rect: Rect, colour: Color32) {
+    let stroke = Stroke::new(1.5, colour);
+    let side = rect.width() * 0.75;
+    let front = Rect::from_min_size(pos2(rect.left(), rect.bottom() - side), vec2(side, side));
+    let back = front.translate(vec2(rect.width() - side, side - rect.height()));
+    painter.line_segment([back.left_top(), back.right_top()], stroke);
+    painter.line_segment([back.right_top(), back.right_bottom()], stroke);
+    painter.rect_stroke(front, 1.0, stroke, egui::StrokeKind::Inside);
+}
+
+fn paint_minimise_icon(painter: &Painter, rect: Rect, colour: Color32) {
+    let stroke = Stroke::new(1.5, colour);
+    let y = rect.bottom() - 2.0;
+    painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], stroke);
 }
