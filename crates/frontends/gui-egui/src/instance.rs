@@ -8,6 +8,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -98,18 +99,29 @@ fn claim_at(address: &Address, timeout: Duration) -> Claim {
     }
 }
 
-/// Asks the noido at the other end of `stream` to come forward.
+/// Asks the noido at the other end of `stream` to come forward; false if it
+/// doesn't answer within `timeout`. The exchange runs on a thread of its
+/// own, since named pipes on Windows have no read timeout.
 fn hand_over(stream: Stream, timeout: Duration) -> bool {
-    let answered = || -> std::io::Result<bool> {
-        stream.set_recv_timeout(Some(timeout))?;
-        stream.set_send_timeout(Some(timeout))?;
+    let (answered_tx, answered) = mpsc::channel();
+    let exchange = move || {
         let mut reader = BufReader::new(stream);
-        writeln!(reader.get_mut(), "{ACTIVATE}")?;
         let mut line = String::new();
-        reader.read_line(&mut line)?;
-        Ok(line.trim_end() == OK)
+        let ok = writeln!(reader.get_mut(), "{ACTIVATE}").is_ok()
+            && reader.read_line(&mut line).is_ok()
+            && line.trim_end() == OK;
+        let _ = answered_tx.send(ok);
     };
-    answered().unwrap_or(false)
+    // A noido that never answers leaves the thread waiting until this
+    // launch exits, moments later.
+    if thread::Builder::new()
+        .name("noido-hand-over".into())
+        .spawn(exchange)
+        .is_err()
+    {
+        return false;
+    }
+    answered.recv_timeout(timeout).unwrap_or(false)
 }
 
 impl Listener {
@@ -123,10 +135,18 @@ impl Listener {
             .name("noido-instance".into())
             .spawn(move || {
                 for stream in self.0.incoming().filter_map(Result::ok) {
-                    answer(stream, || {
-                        requested.request();
-                        waker();
-                    });
+                    let requested = requested.clone();
+                    let waker = waker.clone();
+                    // One thread per launch, so one that never asks holds
+                    // up nobody else.
+                    let _ = thread::Builder::new()
+                        .name("noido-answer".into())
+                        .spawn(move || {
+                            answer(stream, || {
+                                requested.request();
+                                waker();
+                            });
+                        });
                 }
             });
         activation
@@ -136,9 +156,9 @@ impl Listener {
 /// Reads one request from `stream`; on "activate" calls `activate`, then
 /// answers.
 fn answer(stream: Stream, activate: impl FnOnce()) {
-    if stream.set_recv_timeout(Some(TIMEOUT)).is_err() {
-        return;
-    }
+    // Unsupported on Windows; there a silent launch keeps only its own
+    // thread waiting.
+    let _ = stream.set_recv_timeout(Some(TIMEOUT));
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     if reader.read_line(&mut line).is_ok() && line.trim_end() == ACTIVATE {
@@ -200,7 +220,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use interprocess::local_socket::{GenericFilePath, ListenerOptions};
+    use interprocess::local_socket::{GenericFilePath, ListenerOptions, Stream};
 
     use super::*;
 
@@ -248,15 +268,33 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let address = dir.path().join("a.sock");
         let name = address.as_path().to_fs_name::<GenericFilePath>().unwrap();
-        let silent = ListenerOptions::new().name(name).create_sync().unwrap();
-        // Accepts and never answers.
-        std::thread::spawn(move || {
-            let _held: Vec<_> = silent.incoming().collect();
-        });
+        // Never accepts, so a connection waits unanswered in its backlog.
+        let _silent = ListenerOptions::new().name(name).create_sync().unwrap();
         let start = Instant::now();
         let claim = claim_at(&address, Duration::from_millis(200));
         assert!(matches!(claim, Claim::Unavailable));
-        assert!(start.elapsed() < Duration::from_secs(1));
+        let waited = start.elapsed();
+        assert!(
+            waited >= Duration::from_millis(200) && waited < Duration::from_secs(1),
+            "waited {waited:?}"
+        );
+    }
+
+    /// A launch that connects and never asks mustn't hold up the next one.
+    #[test]
+    fn silent_client_does_not_block_others() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let address = dir.path().join("a.sock");
+        let Claim::First(listener) = claim_at(&address, TIMEOUT) else {
+            panic!("first claim");
+        };
+        let _activation = listener.serve(no_waker());
+        let name = address.as_path().to_fs_name::<GenericFilePath>().unwrap();
+        let _silent = Stream::connect(name).unwrap();
+        assert!(matches!(
+            claim_at(&address, Duration::from_millis(300)),
+            Claim::Running
+        ));
     }
 
     #[test]
