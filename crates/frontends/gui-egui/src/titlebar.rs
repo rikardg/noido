@@ -62,6 +62,8 @@ pub struct Output {
     pub cancelled: bool,
     /// The search field lost focus some other way, e.g. a click elsewhere.
     pub left: bool,
+    /// The search field has focus.
+    pub focused: bool,
     pub rects: Rects,
 }
 
@@ -78,6 +80,7 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         submitted: false,
         cancelled: false,
         left: false,
+        focused: false,
         rects: Rects::default(),
     };
     let full = ui.max_rect();
@@ -137,6 +140,7 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         }
         output.cancelled = field.lost_focus() && escape;
         output.left = field.lost_focus() && !enter && !escape;
+        output.focused = field.has_focus();
         if focus {
             field.request_focus();
         }

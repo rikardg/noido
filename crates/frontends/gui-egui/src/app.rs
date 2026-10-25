@@ -7,12 +7,13 @@ use noido_core::{
     Action, Direction, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, SidebarState,
     THUMBNAIL_BUDGET, View, ViewState, render_scale, window_keep, window_order,
 };
-use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
+use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
 use noido_state::{DocState, Slot, Store};
 
 use crate::frame;
 use crate::image::PageImage;
 use crate::instance::Activation;
+use crate::search::Search;
 use crate::sidebar::{self, SidebarView};
 use crate::titlebar::{self, TITLE_BAR_HEIGHT};
 use crate::watch::{Reload, Watcher};
@@ -78,6 +79,8 @@ pub struct NoidoApp {
     search_focus_requested: bool,
     /// Enter in the search field opened the sidebar, so Esc closes it again.
     sidebar_opened_by_search: bool,
+    /// The text thread, and the current query's hits.
+    search_state: Search,
     /// Where the title bar's parts were drawn last frame.
     bar: titlebar::Rects,
     /// Brings new versions of the document when its file changes.
@@ -169,6 +172,7 @@ impl NoidoApp {
             name: String::new(),
             search: String::new(),
             sidebar_opened_by_search: false,
+            search_state: Search::new(),
             bar: titlebar::Rects::default(),
             watcher: None,
             activation: None,
@@ -185,6 +189,12 @@ impl NoidoApp {
     /// Renders the sidebar's visible thumbnails sharp with `renderer`.
     pub fn with_sidebar_renderer(mut self, renderer: Renderer) -> Self {
         self.sidebar_view = self.sidebar_view.with_renderer(renderer);
+        self
+    }
+
+    /// Searches the document's text with `searcher`.
+    pub fn with_searcher(mut self, searcher: TextSearcher) -> Self {
+        self.search_state.set_searcher(searcher);
         self
     }
 
@@ -354,6 +364,7 @@ impl NoidoApp {
             thumbnails.textures.retain(|&page, _| page < page_count);
         }
         self.sidebar_view.replace(reload.sidebar, page_count);
+        self.search_state.set_searcher(reload.searcher);
         self.focus = None;
         self.chosen = None;
         self.browse = None;
@@ -523,6 +534,9 @@ impl NoidoApp {
         }
         if output.cancelled && std::mem::take(&mut self.sidebar_opened_by_search) {
             self.sidebar.open = false;
+        }
+        if output.focused {
+            self.search_state.extract();
         }
         if output.left {
             // The reader moved on; the sidebar is theirs now.
@@ -840,7 +854,7 @@ mod tests {
     use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 
     use noido_core::{SidebarState, ViewState};
-    use noido_render::Thumbnailer;
+    use noido_render::{TextSearcher, Thumbnailer};
     use noido_state::{DocKey, DocState, Store};
 
     use super::*;
@@ -1013,11 +1027,14 @@ mod tests {
             let (renderer, info) =
                 Renderer::start(engine.clone(), bytes.clone(), Box::new(|| {})).unwrap();
             let thumbnailer = Thumbnailer::start(engine.clone(), bytes.clone(), Box::new(|| {}));
-            let sidebar = Renderer::start_background(engine, bytes, Box::new(|| {}));
+            let sidebar =
+                Renderer::start_background(engine.clone(), bytes.clone(), Box::new(|| {}));
+            let searcher = TextSearcher::start(engine, bytes, Box::new(|| {}));
             let reload = crate::watch::Reload {
                 renderer,
                 thumbnailer,
                 sidebar,
+                searcher,
                 info,
                 key,
             };
@@ -1035,12 +1052,15 @@ mod tests {
             let bytes = Arc::new(Vec::new());
             let (renderer, info) =
                 Renderer::start(engine.clone(), bytes.clone(), Box::new(|| {})).unwrap();
-            let thumbnailer = Thumbnailer::start(engine, bytes.clone(), Box::new(|| {}));
-            let sidebar = Renderer::start_background(Arc::new(sidebar), bytes, Box::new(|| {}));
+            let thumbnailer = Thumbnailer::start(engine.clone(), bytes.clone(), Box::new(|| {}));
+            let sidebar =
+                Renderer::start_background(Arc::new(sidebar), bytes.clone(), Box::new(|| {}));
+            let searcher = TextSearcher::start(engine, bytes, Box::new(|| {}));
             self.reloads.put(crate::watch::Reload {
                 renderer,
                 thumbnailer,
                 sidebar,
+                searcher,
                 info,
                 key,
             });
@@ -2742,5 +2762,154 @@ mod tests {
             "{before:?} {after:?}"
         );
         assert_eq!(h.app.chosen, None, "the drag counted as a click");
+    }
+
+    // ---- Search ----
+
+    /// Letter pages with text: each page's lines, 12 pt glyphs 6 pt wide,
+    /// lines 20 pt apart from y = 100, starting at x = 72. Counts `text`
+    /// calls; with a gate, each `text` call waits until the gate opens.
+    #[derive(Clone)]
+    struct TextEngine {
+        pages: Arc<Vec<Vec<String>>>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        gate: Option<Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>>,
+    }
+
+    impl TextEngine {
+        fn new(pages: &[&[&str]]) -> TextEngine {
+            TextEngine {
+                pages: Arc::new(
+                    pages
+                        .iter()
+                        .map(|lines| lines.iter().map(|&l| l.to_owned()).collect())
+                        .collect(),
+                ),
+                calls: Arc::default(),
+                gate: None,
+            }
+        }
+
+        /// Ten pages, "cat" on pages 2 and 7.
+        fn cats() -> TextEngine {
+            let mut pages: Vec<&[&str]> = vec![&["a dog"]; 10];
+            pages[2] = &["a dog", "the cat sat"];
+            pages[7] = &["one cat"];
+            TextEngine::new(&pages)
+        }
+
+        fn gated(mut self) -> TextEngine {
+            self.gate = Some(Arc::default());
+            self
+        }
+
+        fn open_gate(&self) {
+            if let Some(gate) = &self.gate {
+                *gate.0.lock().unwrap() = true;
+                gate.1.notify_all();
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl PdfEngine for TextEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(self.clone()))
+        }
+    }
+
+    impl Document for TextEngine {
+        fn page_count(&self) -> usize {
+            self.pages.len()
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument.page_size(page)
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            scale: f32,
+            tile: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            BlankDocument.render_tile(page, scale, tile)
+        }
+        fn text(&self, page: usize) -> Result<Vec<noido_engine::Glyph>, EngineError> {
+            use noido_engine::{Glyph, Point, Quad};
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(gate) = &self.gate {
+                let mut open = gate.0.lock().unwrap();
+                while !*open {
+                    open = gate.1.wait(open).unwrap();
+                }
+            }
+            let mut glyphs = Vec::new();
+            for (line, text) in self.pages[page].iter().enumerate() {
+                let y = 100.0 + line as f32 * 20.0;
+                for (i, c) in text.chars().enumerate() {
+                    let x = 72.0 + i as f32 * 6.0;
+                    let p = |x, y| Point { x, y };
+                    glyphs.push(Glyph {
+                        text: c.to_string(),
+                        origin: p(x, y),
+                        size: 12.0,
+                        quad: Quad {
+                            corners: [
+                                p(x, y + 2.4),
+                                p(x + 6.0, y + 2.4),
+                                p(x + 6.0, y - 9.6),
+                                p(x, y - 9.6),
+                            ],
+                        },
+                        invisible: false,
+                    });
+                }
+            }
+            Ok(glyphs)
+        }
+    }
+
+    /// A harness whose document and searcher are `engine`.
+    fn searching(engine: &TextEngine) -> Harness {
+        let searcher = engine.clone();
+        Harness::build_with(Arc::new(engine.clone()), move |app| {
+            app.with_searcher(TextSearcher::start(
+                Arc::new(searcher),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+        })
+    }
+
+    #[test]
+    fn opening_does_not_extract() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        h.frames(20, vec![]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(engine.calls(), 0);
+    }
+
+    #[test]
+    fn first_focus_extracts() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        focus_search(&mut h);
+        h.until(|_| engine.calls() == 10);
+        assert_eq!(engine.calls(), 10);
+    }
+
+    #[test]
+    fn reload_brings_new_searcher() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        let new = TextEngine::cats();
+        h.reload(Arc::new(new.clone()), recompiled_key());
+        focus_search(&mut h);
+        h.until(|_| new.calls() == 10);
+        assert_eq!(new.calls(), 10);
+        assert_eq!(engine.calls(), 0);
     }
 }

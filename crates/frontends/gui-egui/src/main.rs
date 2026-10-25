@@ -6,6 +6,7 @@ mod image;
 mod instance;
 mod interrupt;
 mod load;
+mod search;
 mod sidebar;
 mod titlebar;
 mod watch;
@@ -17,7 +18,7 @@ use std::sync::Arc;
 use clap::Parser;
 use eframe::egui;
 use engine_hayro::HayroEngine;
-use noido_render::{Renderer, Thumbnailer};
+use noido_render::{Renderer, TextSearcher, Thumbnailer};
 use noido_state::{DocKey, Store};
 
 use crate::app::NoidoApp;
@@ -94,6 +95,7 @@ fn run(path: &Path) -> Result<(), String> {
     let thumbnailer = Thumbnailer::start(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
     let sidebar_renderer =
         Renderer::start_background(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
+    let searcher = TextSearcher::start(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
     let (renderer, info) = Renderer::start(Arc::new(HayroEngine), bytes, waker(&ctx))
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
@@ -127,7 +129,8 @@ fn run(path: &Path) -> Result<(), String> {
     let app = NoidoApp::new(renderer, info)
         .with_name(name.clone())
         .with_thumbnails(thumbnailer)
-        .with_sidebar_renderer(sidebar_renderer);
+        .with_sidebar_renderer(sidebar_renderer)
+        .with_searcher(searcher);
     let app = match activation {
         Some(activation) => app.with_activation(activation),
         None => app,

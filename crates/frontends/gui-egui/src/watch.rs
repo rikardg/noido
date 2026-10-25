@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use noido_engine::PdfEngine;
-use noido_render::{DocumentInfo, Renderer, Thumbnailer};
+use noido_render::{DocumentInfo, Renderer, TextSearcher, Thumbnailer};
 use noido_state::DocKey;
 use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode};
@@ -31,6 +31,7 @@ pub struct Reload {
     pub thumbnailer: Thumbnailer,
     /// Renders the sidebar's thumbnails.
     pub sidebar: Renderer,
+    pub searcher: TextSearcher,
     pub info: DocumentInfo,
     pub key: DocKey,
 }
@@ -107,11 +108,13 @@ fn open_new(
         return None;
     }
     let thumbnailer = Thumbnailer::start(engine.clone(), bytes.clone(), boxed(waker));
-    let sidebar = Renderer::start_background(engine.clone(), bytes, boxed(waker));
+    let sidebar = Renderer::start_background(engine.clone(), bytes.clone(), boxed(waker));
+    let searcher = TextSearcher::start(engine.clone(), bytes, boxed(waker));
     Some(Reload {
         renderer,
         thumbnailer,
         sidebar,
+        searcher,
         info,
         key,
     })
