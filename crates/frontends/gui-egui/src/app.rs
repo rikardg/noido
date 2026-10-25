@@ -12,7 +12,7 @@ use noido_core::{
 };
 use noido_engine::{Rgba8Image, Size};
 use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
-use noido_state::{DocKey, DocState, Store};
+use noido_state::{DocState, Slot, Store};
 
 use crate::titlebar::{self, TITLE_BAR_HEIGHT};
 use crate::{frame, sidebar};
@@ -80,7 +80,7 @@ struct Thumbnails {
 /// Saves the state of the open document.
 struct Persistence {
     store: Store,
-    key: DocKey,
+    slot: Slot,
     saved: Option<DocState>,
     /// A state not saved yet, and the time it was first seen.
     changed: Option<(DocState, f64)>,
@@ -112,7 +112,7 @@ impl Persistence {
     }
 
     fn save(&mut self, state: DocState) {
-        if let Err(e) = self.store.save(&self.key, &state)
+        if let Err(e) = self.store.save(&self.slot, &state)
             && !self.warned
         {
             eprintln!("noido: cannot save view state: {e}");
@@ -222,7 +222,7 @@ impl NoidoApp {
     pub fn with_persistence(
         mut self,
         store: Store,
-        key: DocKey,
+        slot: Slot,
         restored: Option<DocState>,
     ) -> Self {
         if let Some(state) = &restored {
@@ -231,7 +231,7 @@ impl NoidoApp {
         }
         self.persistence = Some(Persistence {
             store,
-            key,
+            slot,
             saved: restored,
             changed: None,
             warned: false,
@@ -1112,6 +1112,11 @@ mod tests {
         DocKey::new(b"test document", std::path::Path::new("/test.pdf"))
     }
 
+    /// The test document's slot in a store at `dir`.
+    fn test_slot(dir: &std::path::Path) -> noido_state::Slot {
+        Store::at(dir).load(test_key()).0
+    }
+
     #[test]
     fn restored_state_shows_saved_page() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1131,7 +1136,7 @@ mod tests {
             sidebar: SidebarState::default(),
         };
         let h = Harness::build(|app| {
-            app.with_persistence(Store::at(dir.path()), test_key(), Some(restored))
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
         });
         assert_eq!(h.centre().page, 6);
     }
@@ -1141,14 +1146,14 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let store = Store::at(dir.path());
         let mut h =
-            Harness::build(|app| app.with_persistence(Store::at(dir.path()), test_key(), None));
+            Harness::build(|app| app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), None));
         h.press(egui::Key::PageDown, Modifiers::NONE);
         h.frames(60, vec![]);
-        assert_eq!(store.load(&test_key()), None, "saved before the delay");
+        assert_eq!(store.load(test_key()).1, None, "saved before the delay");
 
         h.frames(90, vec![]);
         assert_eq!(
-            store.load(&test_key()).map(|state| state.view),
+            store.load(test_key()).1.map(|state| state.view),
             h.app.view.state()
         );
 
@@ -1166,11 +1171,11 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let store = Store::at(dir.path());
         let mut h =
-            Harness::build(|app| app.with_persistence(Store::at(dir.path()), test_key(), None));
+            Harness::build(|app| app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), None));
         h.frames(150, vec![]);
         h.app.sidebar.open = true;
         h.frames(150, vec![]);
-        assert!(store.load(&test_key()).unwrap().sidebar.open);
+        assert!(store.load(test_key()).1.unwrap().sidebar.open);
     }
 
     #[test]
@@ -1267,7 +1272,7 @@ mod tests {
             },
         };
         let mut h = Harness::build(|app| {
-            app.with_persistence(Store::at(dir.path()), test_key(), Some(state))
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(state))
         });
         h.frames(3, vec![]);
         assert!(h.app.sidebar.width <= 450.0, "{}", h.app.sidebar.width);

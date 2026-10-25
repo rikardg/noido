@@ -57,9 +57,6 @@ when it is fixed.
   `docs/` that prune never removes; no fsync before the rename.
 - Window files without a state file (noido killed within 2 s of opening a new
   document) are never pruned.
-- `main` asks for the window file before `load`, relying on the re-filing
-  rename overwriting the copied window file; untested in that order. Calling
-  `load` first would be clearer.
 - Windows puts state in `%LOCALAPPDATA%\noido\data`, not
   `%LOCALAPPDATA%\noido` as the spec says; macOS folder is `noido`, not a
   bundle id.

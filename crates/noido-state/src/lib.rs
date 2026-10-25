@@ -1,6 +1,9 @@
 //! Per-document view state, kept in the platform's directory for application
 //! state. Each document has up to two files in `docs/`: `<hash>.toml` with its
-//! [`DocState`] and `<hash>.window.ron`, eframe's saved window geometry.
+//! [`DocState`], and eframe's saved window geometry in `<name>.window.ron`.
+//! The entry names its window file: eframe keeps writing to the file it was
+//! given at launch, so the window file stays put when the document's hash
+//! changes (a file edited in place, or reloaded while open).
 
 use std::fs;
 use std::io;
@@ -37,6 +40,20 @@ impl DocKey {
     }
 }
 
+/// Where a document's state lives: its key, and the window file its entry
+/// names (the hash the document had when the window file was made).
+#[derive(Clone, Debug)]
+pub struct Slot {
+    key: DocKey,
+    window: String,
+}
+
+impl Slot {
+    pub fn key(&self) -> &DocKey {
+        &self.key
+    }
+}
+
 /// What is remembered about a document.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DocState {
@@ -64,31 +81,37 @@ impl Store {
         Some(Self::at(dir))
     }
 
-    /// The document's saved state: by hash, else by path (a file edited in
-    /// place), in which case its files are re-filed under the new hash.
-    /// Missing, unreadable or unknown entries give `None`.
-    pub fn load(&self, key: &DocKey) -> Option<DocState> {
-        if let Some(entry) = read_entry(&self.state_file(key)) {
-            return Some(entry.state());
+    /// The document's slot and saved state: by hash, else by path (a file
+    /// edited in place), in which case its state file is re-filed under the
+    /// new hash. Missing, unreadable or unknown entries give no state.
+    pub fn load(&self, key: DocKey) -> (Slot, Option<DocState>) {
+        let found = match read_entry(&self.state_file(&key)) {
+            Some(entry) => Some((key.hex(), entry)),
+            None => self.find_by_path(&key.path).inspect(|(old_hex, _)| {
+                // Best effort: the state is returned even if re-filing fails.
+                let _ = fs::rename(
+                    self.docs.join(format!("{old_hex}{STATE_SUFFIX}")),
+                    self.state_file(&key),
+                );
+            }),
+        };
+        match found {
+            Some((hex, entry)) => {
+                let window = entry.window.clone().unwrap_or(hex);
+                (Slot { key, window }, Some(entry.state()))
+            }
+            None => {
+                let window = key.hex();
+                (Slot { key, window }, None)
+            }
         }
-        let (old_hex, entry) = self.find_by_path(&key.path)?;
-        let new_hex = key.hex();
-        // Best effort: the state is returned even if re-filing fails.
-        let _ = fs::rename(
-            self.docs.join(format!("{old_hex}{STATE_SUFFIX}")),
-            self.docs.join(format!("{new_hex}{STATE_SUFFIX}")),
-        );
-        let old_window = self.docs.join(format!("{old_hex}{WINDOW_SUFFIX}"));
-        if old_window.exists() {
-            let _ = fs::rename(old_window, self.window_path(&new_hex));
-        }
-        Some(entry.state())
     }
 
     /// Writes the document's state; the file is replaced atomically.
-    pub fn save(&self, key: &DocKey, state: &DocState) -> io::Result<()> {
+    pub fn save(&self, slot: &Slot, state: &DocState) -> io::Result<()> {
         fs::create_dir_all(&self.docs)?;
-        let entry = Entry::new(&key.path, state);
+        let key = &slot.key;
+        let entry = Entry::new(&key.path, &slot.window, state);
         let text = toml::to_string(&entry).map_err(io::Error::other)?;
         let target = self.state_file(key);
         let temp = self
@@ -100,22 +123,31 @@ impl Store {
         })
     }
 
+    /// Moves the slot's state to `key`, the document's new hash; the window
+    /// file stays where it is. Best effort: a state file that can't be moved
+    /// is written anew under `key` at the next save.
+    pub fn rekey(&self, slot: &mut Slot, key: DocKey) {
+        let _ = fs::rename(self.state_file(&slot.key), self.state_file(&key));
+        slot.key = key;
+    }
+
     /// Deletes all but the `keep` most recently written documents' files.
     pub fn prune(&self, keep: usize) {
         let mut entries = self.files_with(STATE_SUFFIX);
         entries.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
         for (hex, _) in entries.into_iter().skip(keep) {
-            let _ = fs::remove_file(self.docs.join(format!("{hex}{STATE_SUFFIX}")));
-            let _ = fs::remove_file(self.window_path(&hex));
+            let state = self.docs.join(format!("{hex}{STATE_SUFFIX}"));
+            let window = read_entry(&state).and_then(|entry| entry.window);
+            let _ = fs::remove_file(&state);
+            let _ = fs::remove_file(self.window_path(window.as_deref().unwrap_or(&hex)));
         }
     }
 
-    /// The document's window file for eframe. A document without one starts
-    /// from a copy of the most recently written one, so a new document opens
-    /// where noido was last.
-    pub fn window_file(&self, key: &DocKey) -> PathBuf {
-        let hex = key.hex();
-        let path = self.window_path(&hex);
+    /// The window file for eframe that the slot names. A document without
+    /// one starts from a copy of the most recently written one, so a new
+    /// document opens where noido was last.
+    pub fn window_file(&self, slot: &Slot) -> PathBuf {
+        let path = self.window_path(&slot.window);
         if !path.exists() {
             let _ = fs::create_dir_all(&self.docs);
             let newest = self
@@ -194,6 +226,10 @@ struct Entry {
     sidebar_open: bool,
     #[serde(default = "default_sidebar_width")]
     sidebar_width: f32,
+    /// The name of the document's window file; absent from files written
+    /// before entries named it, which use their own hash.
+    #[serde(default)]
+    window: Option<String>,
 }
 
 fn default_sidebar_width() -> f32 {
@@ -209,7 +245,7 @@ enum Zoom {
 }
 
 impl Entry {
-    fn new(path: &Path, doc: &DocState) -> Self {
+    fn new(path: &Path, window: &str, doc: &DocState) -> Self {
         let state = &doc.view;
         Self {
             version: VERSION,
@@ -230,6 +266,7 @@ impl Entry {
             y: state.centre.y,
             sidebar_open: doc.sidebar.open,
             sidebar_width: doc.sidebar.width,
+            window: Some(window.to_owned()),
         }
     }
 

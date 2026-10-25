@@ -50,7 +50,12 @@ fn main() -> ExitCode {
 fn run(path: &Path) -> Result<(), String> {
     let bytes = load_document(path)?;
     let key = DocKey::new(&bytes, path);
-    let store = Store::open_default();
+    // Read before the window file is asked for: the entry names it.
+    let session = Store::open_default().map(|store| {
+        store.prune(REMEMBERED_DOCUMENTS);
+        let (slot, restored) = store.load(key);
+        (store, slot, restored)
+    });
 
     // Created up front so the render thread can wake the UI when a page is ready.
     let ctx = egui::Context::default();
@@ -89,18 +94,16 @@ fn run(path: &Path) -> Result<(), String> {
                 .with_min_inner_size(MIN_WINDOW_SIZE),
         ),
         persist_window: true,
-        persistence_path: store.as_ref().map(|store| store.window_file(&key)),
+        persistence_path: session
+            .as_ref()
+            .map(|(store, slot, _)| store.window_file(slot)),
         ..Default::default()
     };
     let app = NoidoApp::new(renderer, info)
         .with_name(name.clone())
         .with_thumbnails(thumbnailer);
-    let app = match store {
-        Some(store) => {
-            store.prune(REMEMBERED_DOCUMENTS);
-            let restored = store.load(&key);
-            app.with_persistence(store, key, restored)
-        }
+    let app = match session {
+        Some((store, slot, restored)) => app.with_persistence(store, slot, restored),
         None => app,
     };
     eframe::run_native_ext(
