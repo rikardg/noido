@@ -139,7 +139,8 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
             field.request_focus();
         }
         output.cancelled = field.lost_focus() && escape;
-        output.left = field.lost_focus() && !enter && !escape;
+        // Not when focus is being given back, as after Esc clears the field.
+        output.left = field.lost_focus() && !enter && !escape && !focus;
         output.focused = field.has_focus();
         if focus {
             field.request_focus();

@@ -2,7 +2,10 @@
 //! to search and where to jump.
 
 use noido_core::Hits;
-use noido_render::TextSearcher;
+use noido_render::{SearchUpdate, TextSearcher};
+
+/// Seconds after the last change to the field before it is searched.
+pub const DELAY: f64 = 0.2;
 
 /// What to do with the first hit of a query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,11 +18,34 @@ pub enum First {
     Done,
 }
 
+/// What the app should do with a hit that arrived.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arrived {
+    /// It is current now: go there.
+    Jump,
+    /// It is current now; the view stays.
+    Selected,
+}
+
 pub struct Search {
     searcher: Option<TextSearcher>,
     /// Whether extraction was asked for, so a reload asks the new thread too.
     extracting: bool,
     pub hits: Hits,
+    /// The field's text as last seen, and when it last changed.
+    text: String,
+    changed_at: Option<f64>,
+    /// The query being searched; `None` with no search.
+    searched: Option<String>,
+    generation: u64,
+    /// Pages searched so far for this query.
+    pages_searched: usize,
+    /// Set when the search finished: whether it was cut short.
+    done: Option<bool>,
+    first: First,
+    /// The view is where the current hit put it: next and previous go from
+    /// that hit rather than from the view.
+    pub at_hit: bool,
 }
 
 impl Search {
@@ -28,6 +54,14 @@ impl Search {
             searcher: None,
             extracting: false,
             hits: Hits::new(),
+            text: String::new(),
+            changed_at: None,
+            searched: None,
+            generation: 0,
+            pages_searched: 0,
+            done: None,
+            first: First::Done,
+            at_hit: false,
         }
     }
 
@@ -48,5 +82,128 @@ impl Search {
         if let Some(searcher) = &self.searcher {
             searcher.extract();
         }
+    }
+
+    /// Notes the field's `text` at time `now`. Returns the seconds until it
+    /// should be searched, if a search is due: 0 or less means now.
+    pub fn edited(&mut self, text: &str, now: f64) -> Option<f64> {
+        if text != self.text {
+            text.clone_into(&mut self.text);
+            self.changed_at = Some(now);
+        }
+        if self.searched.as_deref() == Some(text) || (text.is_empty() && self.searched.is_none()) {
+            self.changed_at = None;
+            return None;
+        }
+        // An emptied field clears at once.
+        if text.is_empty() {
+            return Some(0.0);
+        }
+        self.changed_at.map(|at| at + DELAY - now)
+    }
+
+    /// Searches the field's text from `from_page`, or clears the search if
+    /// it is empty; `first` says what to do with the first hit.
+    pub fn start(&mut self, from_page: usize, first: First) {
+        self.changed_at = None;
+        self.hits.clear();
+        self.pages_searched = 0;
+        self.done = None;
+        self.at_hit = false;
+        if self.text.is_empty() {
+            self.searched = None;
+            self.first = First::Done;
+            if let Some(searcher) = &mut self.searcher {
+                self.generation = searcher.search("", 0);
+            }
+            return;
+        }
+        self.searched = Some(self.text.clone());
+        self.first = first;
+        if let Some(searcher) = &mut self.searcher {
+            self.generation = searcher.search(&self.text, from_page);
+        }
+    }
+
+    /// Clears the search and forgets the text, as Esc does.
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.start(0, First::Done);
+    }
+
+    /// Re-runs the search, if any, with the text thread of a new version.
+    pub fn rerun(&mut self, from_page: usize) {
+        if self.searched.is_some() {
+            self.start(from_page, First::Select);
+        }
+    }
+
+    /// Takes in the text thread's results. Returns what to do about the
+    /// first hit, when it arrives.
+    pub fn receive(&mut self) -> Option<Arrived> {
+        let searcher = self.searcher.as_ref()?;
+        let mut arrived = None;
+        while let Some(update) = searcher.try_recv() {
+            match update {
+                SearchUpdate::Page {
+                    generation,
+                    page,
+                    hits,
+                } if generation == self.generation && self.searched.is_some() => {
+                    self.pages_searched += 1;
+                    if hits.is_empty() {
+                        continue;
+                    }
+                    self.hits.add_page(page, hits);
+                    let Some(index) = self.hits.first_on(page) else {
+                        continue;
+                    };
+                    // Made current at once: pages added later in this loop
+                    // may come before it and move its index.
+                    arrived = match std::mem::replace(&mut self.first, First::Done) {
+                        First::Jump => Some(Arrived::Jump),
+                        First::Select => Some(Arrived::Selected),
+                        First::Done => continue,
+                    };
+                    self.hits.set_current(Some(index));
+                }
+                SearchUpdate::Done {
+                    generation,
+                    cut_short,
+                } if generation == self.generation && self.searched.is_some() => {
+                    self.done = Some(cut_short);
+                }
+                _ => {}
+            }
+        }
+        arrived
+    }
+
+    /// The reader moved the page view: a jump still to come is dropped, and
+    /// next and previous go from the view.
+    pub fn reader_moved(&mut self) {
+        if self.first == First::Jump {
+            self.first = First::Done;
+        }
+        self.at_hit = false;
+    }
+
+    /// The field's text as last seen.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn searched(&self) -> Option<&str> {
+        self.searched.as_deref()
+    }
+
+    /// Whether the current query has been searched through.
+    pub fn finished(&self) -> bool {
+        self.searched.is_some() && self.done.is_some()
+    }
+
+    #[cfg(test)]
+    pub fn first(&self) -> First {
+        self.first
     }
 }

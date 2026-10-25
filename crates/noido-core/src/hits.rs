@@ -116,6 +116,15 @@ impl Hits {
         )
     }
 
+    /// The index of the first hit on `page`.
+    pub fn first_on(&self, page: usize) -> Option<usize> {
+        let index = self.hits.partition_point(|h| h.page < page);
+        self.hits
+            .get(index)
+            .filter(|h| h.page == page)
+            .map(|_| index)
+    }
+
     /// The hits on `page`.
     pub fn on_page(&self, page: usize) -> &[Hit] {
         let start = self.hits.partition_point(|h| h.page < page);
@@ -235,6 +244,15 @@ mod tests {
         assert_eq!(hits.on_page(3)[0].text.range.start, 10);
         assert!(hits.on_page(2).is_empty());
         assert!(hits.on_page(9).is_empty());
+    }
+
+    #[test]
+    fn first_on_finds_page_start() {
+        let hits = sample();
+        assert_eq!(hits.first_on(1), Some(0));
+        assert_eq!(hits.first_on(3), Some(2));
+        assert_eq!(hits.first_on(2), None);
+        assert_eq!(hits.first_on(9), None);
     }
 
     #[test]

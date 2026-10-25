@@ -13,7 +13,7 @@ use noido_state::{DocState, Slot, Store};
 use crate::frame;
 use crate::image::PageImage;
 use crate::instance::Activation;
-use crate::search::Search;
+use crate::search::{self, Search};
 use crate::sidebar::{self, SidebarView};
 use crate::titlebar::{self, TITLE_BAR_HEIGHT};
 use crate::watch::{Reload, Watcher};
@@ -282,6 +282,42 @@ impl NoidoApp {
     /// The reader moved the page view: its centre is the current page again.
     fn reader_moved(&mut self) {
         self.chosen = None;
+        self.search_state.reader_moved();
+    }
+
+    /// Searches the field's text once it has rested, and takes in hits.
+    fn update_search(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        let was_empty = self.search_state.text().is_empty();
+        if let Some(left) = self.search_state.edited(&self.search, now) {
+            if left <= 0.0 {
+                let from = self.current_page().unwrap_or(0);
+                self.search_state.start(from, search::First::Jump);
+            } else {
+                ctx.request_repaint_after(Duration::from_secs_f64(left));
+            }
+        }
+        // The first letter typed opens the sidebar; later ones leave it be.
+        if was_empty && !self.search.is_empty() && !self.sidebar.open {
+            self.sidebar.open = true;
+            self.sidebar_opened_by_search = true;
+        }
+        if self.search_state.receive() == Some(search::Arrived::Jump)
+            && let Some(current) = self.search_state.hits.current()
+        {
+            self.go_to_hit(current);
+        }
+    }
+
+    /// Makes hit `index` current and brings it into view.
+    fn go_to_hit(&mut self, index: usize) {
+        self.search_state.hits.set_current(Some(index));
+        let Some(hit) = self.search_state.hits.get(index) else {
+            return;
+        };
+        self.view.reveal(hit.page, &hit.text.rects);
+        self.chosen = None;
+        self.search_state.at_hit = true;
     }
 
     /// The best image of `page`: its full render, else its thumbnail.
@@ -365,6 +401,8 @@ impl NoidoApp {
         }
         self.sidebar_view.replace(reload.sidebar, page_count);
         self.search_state.set_searcher(reload.searcher);
+        let from = self.view.centre_page().unwrap_or(0);
+        self.search_state.rerun(from);
         self.focus = None;
         self.chosen = None;
         self.browse = None;
@@ -528,12 +566,17 @@ impl NoidoApp {
             .show(ui, |ui| titlebar::show(ui, &bar, &mut self.search, focus))
             .inner;
         self.bar = output.rects;
-        if output.submitted && !self.sidebar.open {
-            self.sidebar.open = true;
-            self.sidebar_opened_by_search = true;
-        }
-        if output.cancelled && std::mem::take(&mut self.sidebar_opened_by_search) {
-            self.sidebar.open = false;
+        if output.cancelled {
+            if self.search.is_empty() {
+                if std::mem::take(&mut self.sidebar_opened_by_search) {
+                    self.sidebar.open = false;
+                }
+            } else {
+                // The first Esc clears the search; the field keeps focus.
+                self.search.clear();
+                self.search_state.clear();
+                self.search_focus_requested = true;
+            }
         }
         if output.focused {
             self.search_state.extract();
@@ -743,6 +786,7 @@ impl NoidoApp {
             frame::resize_edges(&ctx);
         }
         self.title_bar(ui);
+        self.update_search(&ctx);
         if self.sidebar.open {
             let input = sidebar::Input {
                 layout: self.view.layout(),
@@ -754,6 +798,7 @@ impl NoidoApp {
             if let Some(page) = output.clicked {
                 self.view.go_to_page(page);
                 self.chosen = Some(page);
+                self.search_state.reader_moved();
             }
             if output.browsing.is_some() {
                 self.browse = output.browsing;
@@ -858,6 +903,7 @@ mod tests {
     use noido_state::{DocKey, DocState, Store};
 
     use super::*;
+    use crate::search;
 
     /// Ten Letter pages that render as a single white pixel.
     struct BlankEngine;
@@ -1557,22 +1603,34 @@ mod tests {
         h.press(egui::Key::Equals, Modifiers::COMMAND);
         h.frames(2, vec![]);
         assert!(h.app.view.scale() > scale);
+        // Typing opened the sidebar; F9 works while typing.
         h.press(egui::Key::F9, Modifiers::NONE);
-        assert!(h.app.sidebar.open);
+        assert!(!h.app.sidebar.open);
     }
 
     #[test]
-    fn enter_opens_sidebar_and_esc_closes_it() {
+    fn typing_opens_sidebar_and_two_escs_close_it() {
         let mut h = Harness::new();
         focus_search(&mut h);
         h.typed("pond");
-        h.press(egui::Key::Enter, Modifiers::NONE);
         h.frames(2, vec![]);
         assert!(h.app.sidebar.open);
         h.press(egui::Key::Escape, Modifiers::NONE);
         h.frames(2, vec![]);
+        assert!(h.app.sidebar.open, "the first Esc only clears");
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
         assert!(!h.app.sidebar.open);
         assert!(!h.ctx.text_edit_focused());
+    }
+
+    #[test]
+    fn enter_does_not_open_sidebar() {
+        let mut h = Harness::new();
+        focus_search(&mut h);
+        h.press(egui::Key::Enter, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(!h.app.sidebar.open);
     }
 
     #[test]
@@ -1679,9 +1737,10 @@ mod tests {
     fn esc_keeps_sidebar_reopened_by_toggle() {
         let mut h = Harness::new();
         focus_search(&mut h);
-        h.press(egui::Key::Enter, Modifiers::NONE);
+        h.typed("x");
         h.press(egui::Key::F9, Modifiers::NONE);
         h.press(egui::Key::F9, Modifiers::NONE);
+        h.press(egui::Key::Escape, Modifiers::NONE);
         h.press(egui::Key::Escape, Modifiers::NONE);
         h.frames(2, vec![]);
         assert!(h.app.sidebar.open);
@@ -1691,10 +1750,11 @@ mod tests {
     fn esc_keeps_sidebar_after_leaving_search() {
         let mut h = Harness::new();
         focus_search(&mut h);
-        h.press(egui::Key::Enter, Modifiers::NONE);
+        h.typed("x");
         h.click(pos2(600.0, 500.0));
         assert!(!h.ctx.text_edit_focused());
         focus_search(&mut h);
+        h.press(egui::Key::Escape, Modifiers::NONE);
         h.press(egui::Key::Escape, Modifiers::NONE);
         h.frames(2, vec![]);
         assert!(h.app.sidebar.open);
@@ -2911,5 +2971,128 @@ mod tests {
         h.until(|_| new.calls() == 10);
         assert_eq!(new.calls(), 10);
         assert_eq!(engine.calls(), 0);
+    }
+
+    /// Types `text` into the search field and waits for the search to finish.
+    fn search_for(h: &mut Harness, text: &str) {
+        focus_search(h);
+        h.typed(text);
+        h.until(|h| h.app.search_state.finished());
+        assert!(h.app.search_state.finished(), "search never finished");
+    }
+
+    #[test]
+    fn typing_searches_after_delay() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        focus_search(&mut h);
+        h.typed("cat");
+        h.frames(5, vec![]);
+        assert_eq!(h.app.search_state.searched(), None);
+        h.frames(15, vec![]);
+        assert_eq!(h.app.search_state.searched(), Some("cat"));
+    }
+
+    #[test]
+    fn first_hit_is_jumped_to_once() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        search_for(&mut h, "cat");
+        assert_eq!(h.app.search_state.hits.len(), 2);
+        assert_eq!(h.app.search_state.hits.current(), Some(0));
+        assert_eq!(h.app.view.centre_page(), Some(2));
+        assert_eq!(h.app.search_state.first(), search::First::Done);
+    }
+
+    #[test]
+    fn search_starts_at_current_page() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        go_to(&mut h, 5);
+        search_for(&mut h, "cat");
+        assert_eq!(h.app.search_state.hits.current(), Some(1));
+        assert_eq!(h.app.view.centre_page(), Some(7));
+    }
+
+    #[test]
+    fn reader_move_cancels_pending_jump() {
+        let engine = TextEngine::cats().gated();
+        let mut h = searching(&engine);
+        focus_search(&mut h);
+        h.typed("cat");
+        h.frames(20, vec![]);
+        assert_eq!(h.app.search_state.searched(), Some("cat"));
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        h.frames(3, vec![]);
+        let offset = h.app.view.offset();
+        engine.open_gate();
+        h.until(|h| h.app.search_state.finished());
+        h.frames(3, vec![]);
+        assert_eq!(h.app.search_state.hits.len(), 2);
+        assert_eq!(h.app.view.offset(), offset);
+        assert_eq!(h.app.search_state.hits.current(), None);
+    }
+
+    #[test]
+    fn stale_generation_is_ignored() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        search_for(&mut h, "a");
+        h.typed("t");
+        h.until(|h| h.app.search_state.searched() == Some("at") && h.app.search_state.finished());
+        // "cat", "sat" on page 2, "cat" on page 7.
+        let hits = &h.app.search_state.hits;
+        assert_eq!(hits.len(), 3);
+        for i in 0..3 {
+            assert_eq!(hits.get(i).unwrap().text.range.len(), 2);
+        }
+    }
+
+    #[test]
+    fn typing_keeps_sidebar_hidden_after_f9() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        focus_search(&mut h);
+        h.typed("c");
+        h.frames(2, vec![]);
+        assert!(h.app.sidebar.open);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        assert!(!h.app.sidebar.open);
+        h.typed("a");
+        h.frames(20, vec![]);
+        assert!(!h.app.sidebar.open);
+    }
+
+    #[test]
+    fn esc_clears_search_and_keeps_focus() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        search_for(&mut h, "cat");
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.search, "");
+        assert!(h.app.search_state.hits.is_empty());
+        assert_eq!(h.app.search_state.searched(), None);
+        assert!(h.ctx.text_edit_focused());
+        assert!(h.app.sidebar.open);
+    }
+
+    #[test]
+    fn reload_reruns_search_without_moving() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        search_for(&mut h, "cat");
+        let offset = h.app.view.offset();
+        let mut pages: Vec<&[&str]> = vec![&["a dog"]; 10];
+        pages[4] = &["cat"];
+        pages[8] = &["cat"];
+        h.reload(Arc::new(TextEngine::new(&pages)), recompiled_key());
+        h.until(|h| h.app.search_state.finished() && !h.app.search_state.hits.is_empty());
+        h.frames(2, vec![]);
+        let hits = &h.app.search_state.hits;
+        let found: Vec<usize> = (0..hits.len()).map(|i| hits.get(i).unwrap().page).collect();
+        assert_eq!(found, [4, 8]);
+        assert_eq!(hits.current(), Some(0));
+        assert_eq!(h.app.view.offset(), offset);
     }
 }
