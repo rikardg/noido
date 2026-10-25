@@ -4,8 +4,8 @@
 use eframe::egui::text::{CCursor, CCursorRange};
 use eframe::egui::text_edit::TextEditState;
 use eframe::egui::{
-    self, Align, Color32, Layout, Painter, Rect, Response, RichText, Sense, Stroke, TextStyle,
-    TextWrapMode, ViewportCommand, WidgetText, pos2, vec2,
+    self, Align, Align2, Color32, Layout, Painter, Rect, Response, RichText, Sense, Stroke,
+    TextStyle, TextWrapMode, ViewportCommand, WidgetText, pos2, vec2,
 };
 use noido_core::{Action, Check, Keymap, Platform, SidebarState, menu, shortcut_label};
 
@@ -134,7 +134,7 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
                 .hint_text("Search")
                 .desired_width(width.max(SEARCH_MIN_WIDTH))
                 .min_size(vec2(0.0, SEARCH_HEIGHT))
-                .vertical_align(Align::Center),
+                .align(Align2::LEFT_CENTER),
         );
         let (enter, escape, shift) = ui.input(|i| {
             (
