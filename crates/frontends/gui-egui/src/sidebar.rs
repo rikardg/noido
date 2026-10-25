@@ -9,8 +9,8 @@ use std::ops::Range;
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
-    Column, Layout, MAX_RENDER_SIDE, RenderTracker, SIDEBAR_MAX_FRACTION, SIDEBAR_MIN_WIDTH,
-    SidebarState, render_scale,
+    Column, Layout, MAX_RENDER_SIDE, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState, max_width,
+    render_scale,
 };
 use noido_render::{RenderRequest, Renderer};
 
@@ -145,7 +145,7 @@ impl SidebarView {
     /// which the reader may have changed by dragging its edge.
     pub fn show(&mut self, ui: &mut egui::Ui, state: &mut SidebarState, input: &Input) -> Output {
         let window = ui.max_rect().width();
-        let max = (window * SIDEBAR_MAX_FRACTION).max(SIDEBAR_MIN_WIDTH);
+        let max = max_width(window);
         let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(0.0);
         let response = egui::Panel::left("sidebar")
             .resizable(true)
