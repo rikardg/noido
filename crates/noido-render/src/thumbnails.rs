@@ -66,16 +66,16 @@ fn run(
     };
     loop {
         let (page, direction) = focus;
-        let keep = thumbnail_keep(count, page, THUMBNAIL_BUDGET);
-        for (page, done) in delivered.iter_mut().enumerate() {
-            if !keep.contains(&page) {
-                *done = false;
-            }
-        }
+        forget_outside(&mut delivered, page);
 
         let mut newer = None;
         for page in thumbnail_order(count, page, direction, THUMBNAIL_BUDGET) {
-            newer = focus_rx.try_iter().last();
+            // The frontend drops thumbnails for every focus it sends, so each
+            // one, not just the newest, must make the thread forget them too.
+            for focus in focus_rx.try_iter() {
+                forget_outside(&mut delivered, focus.0);
+                newer = Some(focus);
+            }
             if newer.is_some() {
                 break;
             }
@@ -100,5 +100,16 @@ fn run(
                 Err(_) => return,
             },
         };
+    }
+}
+
+/// Marks pages outside the thumbnail window around `focus` as not delivered,
+/// matching the frontend dropping their thumbnails.
+fn forget_outside(delivered: &mut [bool], focus: usize) {
+    let keep = thumbnail_keep(delivered.len(), focus, THUMBNAIL_BUDGET);
+    for (page, done) in delivered.iter_mut().enumerate() {
+        if !keep.contains(&page) {
+            *done = false;
+        }
     }
 }

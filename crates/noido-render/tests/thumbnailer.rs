@@ -162,3 +162,22 @@ fn open_failure_stops_quietly() {
     std::thread::sleep(Duration::from_millis(50));
     assert!(thumbnailer.try_recv().is_none());
 }
+
+#[test]
+fn every_focus_evicts_even_when_read_together() {
+    // The frontend drops textures for each focus it sends; a focus far away
+    // read in the same drain as a later one must still make the thread forget
+    // what it delivered, or those pages never get a thumbnail again.
+    let mut s = start(1000, true);
+    let gate = s.gate.take().unwrap();
+    s.thumbnailer.set_focus(500, Direction::Forward);
+    for _ in 0..49 {
+        gate.send(()).unwrap();
+    }
+    wait_for(&s.log, 50);
+    s.thumbnailer.set_focus(900, Direction::Forward);
+    s.thumbnailer.set_focus(505, Direction::Backward);
+    drop(gate);
+    let log = wait_for(&s.log, 150);
+    assert_eq!(log.iter().filter(|&&page| page == 499).count(), 2);
+}

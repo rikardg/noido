@@ -67,6 +67,17 @@ when it is fixed.
   write isn't atomic); a broken file falls back to the default window.
 - Path-fallback ties within the same second are picked arbitrarily.
 
+## Thumbnails (review minors, 2026-10-25)
+
+- `thumbnail_order` with budget 0 still returns the focus page (no caller
+  passes 0).
+- Thumbnails cost about as much CPU as full renders (hayro parses and decodes
+  images at full cost regardless of output size) and compete with them right
+  after a jump; on few-core machines "not delaying full renders" is best
+  effort. Thread priority is a non-goal for now.
+- `jump_shows_thumbnail_before_full_render` unblocks the gated render thread
+  only by dropping the gate at the end; worth a comment.
+
 ## Deferred features
 
 - **Automated interactive testing** of the egui frontend: drive key presses,
