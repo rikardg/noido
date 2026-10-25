@@ -3399,6 +3399,22 @@ mod tests {
     }
 
     #[test]
+    fn results_are_cards_of_one_height() {
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        h.frames(2, vec![]);
+        let rows = h.app.sidebar_view.result_rows();
+        assert!(rows.len() > 1, "{rows:?}");
+        let font = egui::TextStyle::Body.resolve(&h.ctx.global_style());
+        let body = h.ctx.fonts_mut(|fonts| fonts.row_height(&font));
+        for &(_, row) in rows {
+            assert_eq!(row.height(), rows[0].1.height());
+            // A header and three lines of text.
+            assert!(row.height() > 4.0 * body, "{} vs {body}", row.height());
+        }
+    }
+
+    #[test]
     fn cleared_search_shows_thumbnails_again() {
         let mut h = searching(&more_cats());
         search_for(&mut h, "cat");

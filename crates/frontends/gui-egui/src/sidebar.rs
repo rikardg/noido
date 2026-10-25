@@ -25,10 +25,16 @@ pub const HIGHLIGHT: f32 = 6.0;
 const PILL_PADDING: egui::Vec2 = egui::vec2(8.0, 2.0);
 /// Space between the current page's highlight and its number's pill.
 const PILL_GAP: f32 = 4.0;
-/// Height of a row in the list of matches.
-const RESULT_ROW_HEIGHT: f32 = 28.0;
-/// Space around the list of matches and inside the current row's fill.
+/// Space around the list of matches and inside the current card's fill.
 const RESULT_MARGIN: f32 = 8.0;
+/// Space above and below a card's text, inside its fill.
+const CARD_PADDING: f32 = 4.0;
+/// Space between a card's header and its excerpt.
+const CARD_HEADER_GAP: f32 = 2.0;
+/// Space between cards.
+const CARD_GAP: f32 = 2.0;
+/// Lines of text around a match in its card.
+const EXCERPT_ROWS: usize = 3;
 
 /// What the sidebar needs from the app each frame.
 pub struct Input<'a> {
@@ -346,6 +352,7 @@ impl SidebarView {
             ui.add_space(RESULT_MARGIN / 2.0);
         }
         let hits = results.hits;
+        let card = card_height(ui);
         let height = ui.available_height();
         let current = hits.current();
         // Scrolled to the current match when it changes, the least distance.
@@ -353,8 +360,8 @@ impl SidebarView {
             .filter(|&c| self.followed_hit != Some((results.generation, c)))
             .and_then(|c| {
                 self.followed_hit = Some((results.generation, c));
-                let top = RESULT_MARGIN + c as f32 * RESULT_ROW_HEIGHT;
-                let bottom = top + RESULT_ROW_HEIGHT;
+                let top = RESULT_MARGIN + c as f32 * card;
+                let bottom = top + card;
                 if top < self.results_offset {
                     Some(top - RESULT_MARGIN)
                 } else if bottom > self.results_offset + height {
@@ -379,26 +386,22 @@ impl SidebarView {
         let shown = area.show_viewport(ui, |ui, viewport| {
             let content = vec2(
                 ui.available_width(),
-                2.0 * RESULT_MARGIN + hits.len() as f32 * RESULT_ROW_HEIGHT,
+                2.0 * RESULT_MARGIN + hits.len() as f32 * card,
             );
             let (area, _) = ui.allocate_exact_size(content, Sense::hover());
-            let first = ((viewport.min.y - RESULT_MARGIN) / RESULT_ROW_HEIGHT)
-                .floor()
-                .max(0.0);
-            let last = ((viewport.max.y - RESULT_MARGIN) / RESULT_ROW_HEIGHT)
-                .ceil()
-                .max(0.0);
+            let first = ((viewport.min.y - RESULT_MARGIN) / card).floor().max(0.0);
+            let last = ((viewport.max.y - RESULT_MARGIN) / card).ceil().max(0.0);
             let mut clicked = None;
             for index in first as usize..(last as usize).min(hits.len()) {
                 let row = Rect::from_min_size(
-                    area.min + vec2(0.0, RESULT_MARGIN + index as f32 * RESULT_ROW_HEIGHT),
-                    vec2(area.width(), RESULT_ROW_HEIGHT),
+                    area.min + vec2(0.0, RESULT_MARGIN + index as f32 * card),
+                    vec2(area.width(), card),
                 );
                 let id = ui.scope_id().with(("match", index));
                 if ui.interact(row, id, Sense::click()).clicked() {
                     clicked = Some(index);
                 }
-                self.result_row(ui, row, hits, index, current == Some(index));
+                self.result_card(ui, row, hits, index, current == Some(index));
                 self.result_rows.push((index, row));
             }
             clicked
@@ -407,13 +410,14 @@ impl SidebarView {
         shown.inner
     }
 
-    /// One match: its page number, then its context with the match marked.
-    fn result_row(&self, ui: &egui::Ui, row: Rect, hits: &Hits, index: usize, current: bool) {
+    /// One match as a card: a header with its page and its number on the
+    /// page, then the lines of its context around it, the match marked.
+    fn result_card(&self, ui: &egui::Ui, row: Rect, hits: &Hits, index: usize, current: bool) {
         let Some(hit) = hits.get(index) else {
             return;
         };
         let visuals = ui.visuals();
-        let inner = row.shrink2(vec2(RESULT_MARGIN, 1.0));
+        let inner = row.shrink2(vec2(RESULT_MARGIN, CARD_GAP / 2.0));
         if current {
             ui.painter()
                 .rect_filled(inner, RESULT_MARGIN / 2.0, visuals.selection.bg_fill);
@@ -427,36 +431,65 @@ impl SidebarView {
         } else {
             (visuals.text_color(), visuals.weak_text_color())
         };
-        let format = |color| TextFormat::simple(font.clone(), color);
-        let mut job = LayoutJob::default();
-        job.append(&format!("p. {}  ", hit.page + 1), 0.0, format(weak));
+        let left = inner.min.x + RESULT_MARGIN / 2.0;
+        let width = inner.width() - RESULT_MARGIN;
+        // The header, small and weak: the page, and which of its matches.
+        let small = egui::TextStyle::Small.resolve(ui.style());
+        let first = hits.first_on(hit.page).unwrap_or(index);
+        let count = hits.on_page(hit.page).len();
+        let header =
+            |text: String| ui.fonts_mut(|fonts| fonts.layout_no_wrap(text, small.clone(), weak));
+        let top = inner.min.y + CARD_PADDING;
+        let page = header(format!("Page {}", hit.page + 1));
+        let number = header(hits_text(index - first + 1, count));
+        ui.painter()
+            .galley(egui::pos2(left, top), page.clone(), weak);
+        ui.painter().galley(
+            egui::pos2(left + width - number.size().x, top),
+            number,
+            weak,
+        );
+        // The excerpt: the lines around the match.
         let context: Vec<char> = hit.text.context.text.chars().collect();
         let bold = &hit.text.context.bold;
-        let part = |range: Range<usize>| context[range].iter().collect::<String>();
-        job.append(&part(0..bold.start), 0.0, format(text));
-        // egui's default fonts have no bold: the match stands out in the
-        // strong text colour on a faint highlight.
-        job.append(
-            &part(bold.clone()),
-            0.0,
-            TextFormat {
-                background: HIGHLIGHT_FILL,
-                ..format(if current {
-                    text
-                } else {
-                    visuals.strong_text_color()
-                })
-            },
-        );
-        job.append(&part(bold.end..context.len()), 0.0, format(text));
-        job.wrap.max_width = inner.width() - RESULT_MARGIN;
-        job.wrap.max_rows = 1;
-        job.wrap.break_anywhere = true;
-        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-        let at = egui::pos2(
-            inner.min.x + RESULT_MARGIN / 2.0,
-            inner.center().y - galley.size().y / 2.0,
-        );
+        let job = |range: Range<usize>, max_rows: usize| {
+            let format = |color| TextFormat::simple(font.clone(), color);
+            let part = |from: usize, to: usize| {
+                context[from.clamp(range.start, range.end)..to.clamp(range.start, range.end)]
+                    .iter()
+                    .collect::<String>()
+            };
+            let mut job = LayoutJob::default();
+            job.append(&part(0, bold.start), 0.0, format(text));
+            // egui's default fonts have no bold: the match stands out in the
+            // strong text colour on a faint highlight.
+            job.append(
+                &part(bold.start, bold.end),
+                0.0,
+                TextFormat {
+                    background: HIGHLIGHT_FILL,
+                    ..format(if current {
+                        text
+                    } else {
+                        visuals.strong_text_color()
+                    })
+                },
+            );
+            job.append(&part(bold.end, context.len()), 0.0, format(text));
+            job.wrap.max_width = width;
+            job.wrap.max_rows = max_rows;
+            job
+        };
+        let all = ui.fonts_mut(|fonts| fonts.layout_job(job(0..context.len(), usize::MAX)));
+        let rows: Vec<usize> = all
+            .rows
+            .iter()
+            .map(|row| row.char_count_including_newline().0)
+            .collect();
+        let shown = rows_around(&rows, bold.start, EXCERPT_ROWS);
+        // Laid out again from a row's start, it wraps the same way.
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job(shown, EXCERPT_ROWS)));
+        let at = egui::pos2(left, top + page.size().y + CARD_HEADER_GAP);
         ui.painter().galley(at, galley, text);
     }
 
@@ -510,5 +543,84 @@ impl SidebarView {
     #[cfg(test)]
     pub fn thumb_width(&self) -> f32 {
         self.thumb_width
+    }
+}
+
+/// The height of a match's card: its header, its excerpt and the space
+/// around them.
+fn card_height(ui: &egui::Ui) -> f32 {
+    let small = egui::TextStyle::Small.resolve(ui.style());
+    let body = egui::TextStyle::Body.resolve(ui.style());
+    ui.fonts_mut(|fonts| fonts.row_height(&small) + EXCERPT_ROWS as f32 * fonts.row_height(&body))
+        + 2.0 * CARD_PADDING
+        + CARD_HEADER_GAP
+        + CARD_GAP
+}
+
+/// How many matches the page has, and which this is: "3/10 hits", or
+/// "1 hit" when it is the only one.
+fn hits_text(number: usize, count: usize) -> String {
+    if count == 1 {
+        "1 hit".to_owned()
+    } else {
+        format!("{number}/{count} hits")
+    }
+}
+
+/// The characters of up to `wanted` rows, of the lengths `rows`, with the
+/// row holding character `at` in the middle, or as near as the first and
+/// last rows allow.
+fn rows_around(rows: &[usize], at: usize, wanted: usize) -> Range<usize> {
+    let mut start = 0;
+    let row = rows
+        .iter()
+        .position(|&len| {
+            start += len;
+            at < start
+        })
+        .unwrap_or(rows.len().saturating_sub(1));
+    let first = row
+        .saturating_sub(wanted / 2)
+        .min(rows.len().saturating_sub(wanted));
+    let last = (first + wanted).min(rows.len());
+    let offset = |row: usize| rows[..row].iter().sum::<usize>();
+    offset(first)..offset(last)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hits_text_counts_on_page() {
+        assert_eq!(hits_text(3, 10), "3/10 hits");
+        assert_eq!(hits_text(1, 2), "1/2 hits");
+        assert_eq!(hits_text(1, 1), "1 hit");
+    }
+
+    #[test]
+    fn rows_around_puts_match_row_in_middle() {
+        // Rows of 10, 12, 8, 9 and 11 characters; the match starts at 25,
+        // in the third row (22..30).
+        let rows = [10, 12, 8, 9, 11];
+        assert_eq!(rows_around(&rows, 25, 3), 10..39);
+    }
+
+    #[test]
+    fn rows_around_at_start_takes_first_rows() {
+        let rows = [10, 12, 8, 9, 11];
+        assert_eq!(rows_around(&rows, 3, 3), 0..30);
+    }
+
+    #[test]
+    fn rows_around_at_end_takes_last_rows() {
+        let rows = [10, 12, 8, 9, 11];
+        assert_eq!(rows_around(&rows, 45, 3), 22..50);
+    }
+
+    #[test]
+    fn rows_around_few_rows_takes_all() {
+        assert_eq!(rows_around(&[10, 5], 12, 3), 0..15);
+        assert_eq!(rows_around(&[], 0, 3), 0..0);
     }
 }
