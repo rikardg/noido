@@ -6,6 +6,9 @@ mod interrupt;
 mod load;
 mod sidebar;
 mod titlebar;
+// Used by the app from the next commit on.
+#[allow(dead_code)]
+mod watch;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

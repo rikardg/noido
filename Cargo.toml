@@ -31,6 +31,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 tempfile = "3"
 ctrlc = { version = "3", features = ["termination"] }
+notify = "8"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

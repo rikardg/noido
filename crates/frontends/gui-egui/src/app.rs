@@ -1145,8 +1145,9 @@ mod tests {
     fn saves_after_idle_delay() {
         let dir = tempfile::TempDir::new().unwrap();
         let store = Store::at(dir.path());
-        let mut h =
-            Harness::build(|app| app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), None));
+        let mut h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), None)
+        });
         h.press(egui::Key::PageDown, Modifiers::NONE);
         h.frames(60, vec![]);
         assert_eq!(store.load(test_key()).1, None, "saved before the delay");
@@ -1170,8 +1171,9 @@ mod tests {
     fn sidebar_change_is_saved() {
         let dir = tempfile::TempDir::new().unwrap();
         let store = Store::at(dir.path());
-        let mut h =
-            Harness::build(|app| app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), None));
+        let mut h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), None)
+        });
         h.frames(150, vec![]);
         h.app.sidebar.open = true;
         h.frames(150, vec![]);
