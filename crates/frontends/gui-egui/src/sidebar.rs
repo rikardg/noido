@@ -46,6 +46,8 @@ pub struct Input<'a> {
 /// The matches of a search, for the sidebar.
 pub struct Results<'a> {
     pub hits: &'a Hits,
+    /// Which query they belong to.
+    pub generation: u64,
     /// A line above them: progress, or "No matches".
     pub status: String,
 }
@@ -84,7 +86,7 @@ pub struct SidebarView {
     /// The list of matches: its visible rows' screen rects last frame, the
     /// current match it last scrolled to, and its scroll offset.
     result_rows: Vec<(usize, Rect)>,
-    followed_hit: Option<usize>,
+    followed_hit: Option<(u64, usize)>,
     results_offset: f32,
 }
 
@@ -348,9 +350,9 @@ impl SidebarView {
         let current = hits.current();
         // Scrolled to the current match when it changes, the least distance.
         let target = current
-            .filter(|&c| self.followed_hit != Some(c))
+            .filter(|&c| self.followed_hit != Some((results.generation, c)))
             .and_then(|c| {
-                self.followed_hit = Some(c);
+                self.followed_hit = Some((results.generation, c));
                 let top = RESULT_MARGIN + c as f32 * RESULT_ROW_HEIGHT;
                 let bottom = top + RESULT_ROW_HEIGHT;
                 if top < self.results_offset {
@@ -366,6 +368,8 @@ impl SidebarView {
             ..Default::default()
         };
         let mut area = ScrollArea::vertical()
+            // Its own scroll position, not the thumbnails'.
+            .id_salt("results")
             .auto_shrink(false)
             .scroll_source(source);
         if let Some(target) = target {

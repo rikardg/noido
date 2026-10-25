@@ -320,17 +320,27 @@ impl NoidoApp {
                 hits.previous()
             }
         } else {
-            let (x, y) = self.view.offset();
-            let (_, height) = self.view.viewport_size();
+            // Each hit's top in content points; in paged mode, pages before
+            // the shown spread lie above the view and pages after it below.
             let layout = self.view.layout();
+            let shown = self
+                .view
+                .current_spread()
+                .map(|spread| layout.spread_pages(spread));
+            let top_of = |hit: &noido_core::Hit| match layout.page_rect(hit.page) {
+                Some(page) => {
+                    let y = hit.text.rects.first().map_or(0.0, |r| r.y);
+                    page.y + y * layout.scale()
+                }
+                None if shown.as_ref().is_some_and(|s| hit.page < s.start) => f32::NEG_INFINITY,
+                None => f32::INFINITY,
+            };
+            let (_, y) = self.view.offset();
+            let (_, height) = self.view.viewport_size();
             if forward {
-                layout
-                    .doc_point(x, y)
-                    .and_then(|top| hits.first_at_or_after(top))
+                hits.first_where(|hit| top_of(hit) >= y)
             } else {
-                layout
-                    .doc_point(x, y + height)
-                    .and_then(|bottom| hits.last_before(bottom))
+                hits.last_where(|hit| top_of(hit) < y + height)
             }
         };
         if let Some(index) = target {
@@ -844,6 +854,7 @@ impl NoidoApp {
                 highlighted: self.highlighted(),
                 results: self.search_state.searched().map(|_| sidebar::Results {
                     hits: &self.search_state.hits,
+                    generation: self.search_state.generation(),
                     status: self.search_state.status(self.view.layout().page_count()),
                 }),
             };
@@ -3372,5 +3383,77 @@ mod tests {
         assert_eq!(h.app.search_state.counter(), "1 of 4");
         search_for(&mut h, "zebra");
         assert_eq!(h.app.search_state.counter(), "No matches");
+    }
+
+    #[test]
+    fn previous_in_dual_mode_finds_visible_right_page_hit() {
+        let mut pages: Vec<&[&str]> = vec![&["a dog"]; 10];
+        pages[5] = &["cat"];
+        pages[9] = &["cat"];
+        let mut h = searching(&TextEngine::new(&pages));
+        h.press(egui::Key::C, Modifiers::NONE);
+        h.press(egui::Key::D, Modifiers::NONE);
+        search_for(&mut h, "cat");
+        let spread = h.app.view.current_spread();
+        let shown = h.app.view.layout().spread_pages(spread.unwrap());
+        assert!(shown.contains(&5), "{shown:?}");
+        h.click(pos2(600.0, 500.0));
+        // A reader move that keeps the spread: next/previous go from the view.
+        h.press(egui::Key::F, Modifiers::NONE);
+        assert_eq!(h.app.view.current_spread(), spread);
+        h.press(egui::Key::F3, Modifiers::SHIFT);
+        assert_eq!(current(&h), Some(0), "the visible hit on page 5");
+        h.press(egui::Key::F, Modifiers::NONE);
+        h.press(egui::Key::F3, Modifiers::NONE);
+        assert_eq!(current(&h), Some(0), "the visible hit on page 5");
+    }
+
+    #[test]
+    fn thumbnails_keep_their_place_after_search() {
+        let mut pages: Vec<&[&str]> = vec![&["a dog"]; 30];
+        pages[25] = &["cat"];
+        let mut h = searching(&TextEngine::new(&pages));
+        h.press(egui::Key::F9, Modifiers::NONE);
+        go_to(&mut h, 25);
+        h.frames(5, vec![]);
+        assert!(drawn_pages(&h).contains(&25));
+        search_for(&mut h, "cat");
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(5, vec![]);
+        assert!(drawn_pages(&h).contains(&25), "{:?}", drawn_pages(&h));
+        assert_eq!(h.app.browse, None);
+    }
+
+    #[test]
+    fn blank_query_is_no_search() {
+        let mut h = searching(&TextEngine::cats());
+        focus_search(&mut h);
+        h.typed("  ");
+        h.frames(20, vec![]);
+        assert_eq!(h.app.search_state.searched(), None);
+        assert_eq!(h.app.search_state.counter(), "");
+        assert_eq!(h.app.search_state.status(10), "");
+    }
+
+    #[test]
+    fn results_scroll_to_new_querys_first_hit() {
+        let pages: Vec<&[&str]> = vec![&["cat"]; 60];
+        let mut h = searching(&TextEngine::new(&pages));
+        search_for(&mut h, "ca");
+        h.frames(3, vec![]);
+        wheel_sidebar(&mut h, -2000.0);
+        assert!(
+            !h.app
+                .sidebar_view
+                .result_rows()
+                .iter()
+                .any(|&(i, _)| i == 0)
+        );
+        h.typed("t");
+        h.until(|h| h.app.search_state.searched() == Some("cat") && h.app.search_state.finished());
+        h.frames(3, vec![]);
+        assert_eq!(current(&h), Some(0));
+        let rows = h.app.sidebar_view.result_rows();
+        assert!(rows.iter().any(|&(i, _)| i == 0), "{rows:?}");
     }
 }

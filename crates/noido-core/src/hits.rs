@@ -116,6 +116,21 @@ impl Hits {
         )
     }
 
+    /// The first hit, in document order, for which `wanted` holds; else
+    /// the first.
+    pub fn first_where(&self, wanted: impl Fn(&Hit) -> bool) -> Option<usize> {
+        if self.hits.is_empty() {
+            return None;
+        }
+        Some(self.hits.iter().position(wanted).unwrap_or(0))
+    }
+
+    /// The last hit for which `wanted` holds; else the last.
+    pub fn last_where(&self, wanted: impl Fn(&Hit) -> bool) -> Option<usize> {
+        let last = self.hits.len().checked_sub(1)?;
+        Some(self.hits.iter().rposition(wanted).unwrap_or(last))
+    }
+
     /// The index of the first hit on `page`.
     pub fn first_on(&self, page: usize) -> Option<usize> {
         let index = self.hits.partition_point(|h| h.page < page);
@@ -253,6 +268,16 @@ mod tests {
         assert_eq!(hits.first_on(3), Some(2));
         assert_eq!(hits.first_on(2), None);
         assert_eq!(hits.first_on(9), None);
+    }
+
+    #[test]
+    fn first_and_last_where_wrap() {
+        let hits = sample();
+        assert_eq!(hits.first_where(|h| h.page >= 3), Some(2));
+        assert_eq!(hits.first_where(|h| h.page > 9), Some(0));
+        assert_eq!(hits.last_where(|h| h.page <= 3), Some(2));
+        assert_eq!(hits.last_where(|_| false), Some(3));
+        assert_eq!(Hits::new().first_where(|_| true), None);
     }
 
     #[test]

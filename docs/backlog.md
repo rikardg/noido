@@ -268,3 +268,22 @@ when it is fixed.
   halve it.
 - **No test assembles a rotated page's real glyphs into `PageText`.** The
   engine test checks glyph origins only; add one in `noido-render/tests`.
+
+## Search UI (review minors, 2026-10-25)
+
+- **A reload during the typing delay never jumps:** the re-run uses the
+  no-jump mode even when the text differs from the last query searched.
+  Re-run with a jump then. (`crates/frontends/gui-egui/src/search.rs`)
+- **Enter, Mod+G or F3 during the typing delay step through the old query's
+  hits,** then the new query jumps. Start the pending search at once on a
+  step.
+- **The sidebar clears its thumbnail renders every frame while results
+  show** (`closed()` each frame sends `set_keep(0..0)`). Harmless, wasteful.
+- **The first letter typed shows thumbnails for 0.2 s** before the results
+  replace them. A brief flicker; show the results list as soon as there is
+  text.
+- **Hits on multi-column pages** are ordered by text but compared by their
+  top for "next from the view"; the two can disagree.
+- **`Hits::first_at_or_after` / `last_before`** are unused since next and
+  previous compare content positions (`first_where` / `last_where`); drop
+  them or use them.

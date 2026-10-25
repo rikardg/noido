@@ -114,7 +114,8 @@ impl Search {
         self.pages_searched = 0;
         self.done = None;
         self.at_hit = false;
-        if self.text.is_empty() {
+        // Blank text finds nothing; it is no search, not one that never ends.
+        if self.text.trim().is_empty() {
             self.searched = None;
             self.first = First::Done;
             if let Some(searcher) = &mut self.searcher {
@@ -210,6 +211,11 @@ impl Search {
             self.hits.len(),
             self.done,
         )
+    }
+
+    /// Tells one query's results from the next's.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The field's text as last seen.
