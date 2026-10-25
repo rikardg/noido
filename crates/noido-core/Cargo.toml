@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 noido-engine.workspace = true
+noido-text.workspace = true
 
 [lints]
 workspace = true

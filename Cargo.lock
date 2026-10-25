@@ -2360,6 +2360,7 @@ name = "noido-core"
 version = "0.1.0"
 dependencies = [
  "noido-engine",
+ "noido-text",
 ]
 
 [[package]]
