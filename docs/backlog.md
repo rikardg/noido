@@ -247,6 +247,19 @@ when it is fixed.
   where extracted text reads poorly: formulas, figures, OCR'd scans. Would need
   a low-priority render queue for the regions and a cache, so a long result
   list doesn't hold up the page view or the thumbnails.
+- **Search across punctuation between words.** "divinity original" finds
+  nothing in "Divinity: Original Sin"; the words are adjacent, so it
+  should. Proposed rule (not yet agreed): a space in the query matches any
+  gap of whitespace and Unicode punctuation (categories P*) in the text;
+  punctuation typed in the query must be there, as with accents ("gödel"
+  doesn't find "godel"). Within a word nothing changes ("dont" doesn't find
+  "don't"). Symbols (S*: `+ = → © •`) stay significant: "x y" shouldn't
+  find "x + y". The highlight covers the punctuation. Preview doesn't do
+  this either.
+- **Fuzzy search, fzf-style?** Worth investigating, but unclear whether
+  it can be made intuitive in a document viewer: scattered matches across
+  a page are hard to highlight and to rank, and a reader usually searches
+  for words they expect to be there.
 
 ## Text layer (review minors, 2026-10-25)
 
