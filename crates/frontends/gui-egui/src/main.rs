@@ -16,7 +16,7 @@ use crate::app::NoidoApp;
 use crate::load::load_document;
 
 /// UI points scrolled per mouse wheel step (egui's default is 40).
-const WHEEL_SCROLL_SPEED: f32 = 100.0;
+const WHEEL_SCROLL_SPEED: f32 = 125.0;
 
 #[derive(Parser)]
 #[command(name = "noido", version, about = "PDF reader and note taker")]
