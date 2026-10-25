@@ -78,6 +78,21 @@ when it is fixed.
 - `jump_shows_thumbnail_before_full_render` unblocks the gated render thread
   only by dropping the gate at the end; worth a comment.
 
+## Title bar and sidebar (review minors, 2026-10-25)
+
+- On the first frame with a restored sidebar wider than the window allows,
+  the search field is sized from the unclamped width (clamp at restore, or
+  draw the sidebar before the bar).
+- A NaN sidebar width in a hand-edited state file is never saved over
+  (NaN ≠ NaN, so the debounce restarts every frame) and wakes noido every
+  2 s; sanitise on load.
+- The comment on calling `frame::resize_edges` first is misleading: order
+  doesn't keep presses from widgets underneath; the page view's 8 pt margin
+  does.
+- A double-click in the top 5 points both starts resizes and maximises.
+- After a mouse click an icon button keeps focus, so Space or Enter presses
+  it again.
+
 ## Deferred features
 
 - **Automated interactive testing** of the egui frontend: drive key presses,

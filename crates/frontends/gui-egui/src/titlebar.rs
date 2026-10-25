@@ -60,6 +60,8 @@ pub struct Output {
     pub submitted: bool,
     /// Esc was pressed in the search field.
     pub cancelled: bool,
+    /// The search field lost focus some other way, e.g. a click elsewhere.
+    pub left: bool,
     pub rects: Rects,
 }
 
@@ -75,6 +77,7 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         actions: vec![],
         submitted: false,
         cancelled: false,
+        left: false,
         rects: Rects::default(),
     };
     let full = ui.max_rect();
@@ -133,6 +136,7 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
             field.request_focus();
         }
         output.cancelled = field.lost_focus() && escape;
+        output.left = field.lost_focus() && !enter && !escape;
         if focus {
             field.request_focus();
         }
@@ -259,7 +263,10 @@ pub fn icon_button(
     selected: bool,
     paint: impl FnOnce(&Painter, Rect, Color32),
 ) -> Response {
-    let (rect, response) = ui.allocate_exact_size(vec2(ICON_BUTTON, ICON_BUTTON), Sense::click());
+    // Senses drags too, so a drag that starts on the button isn't passed on
+    // to the bar underneath, which would move the window.
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(ICON_BUTTON, ICON_BUTTON), Sense::click_and_drag());
     let visuals = ui.style().interact_selectable(&response, selected);
     let painter = ui.painter();
     if selected || response.hovered() || response.has_focus() {

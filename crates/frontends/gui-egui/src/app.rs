@@ -360,6 +360,10 @@ impl NoidoApp {
         if output.cancelled && std::mem::take(&mut self.sidebar_opened_by_search) {
             self.sidebar.open = false;
         }
+        if output.left {
+            // The reader moved on; the sidebar is theirs now.
+            self.sidebar_opened_by_search = false;
+        }
         let ctx = ui.ctx().clone();
         for action in output.actions {
             self.apply(&ctx, action);
@@ -369,7 +373,10 @@ impl NoidoApp {
     /// Carries out `action`, from a key or the menu.
     fn apply(&mut self, ctx: &egui::Context, action: Action) {
         match action {
-            Action::ToggleSidebar => self.sidebar.open = !self.sidebar.open,
+            Action::ToggleSidebar => {
+                self.sidebar.open = !self.sidebar.open;
+                self.sidebar_opened_by_search = false;
+            }
             Action::FocusSearch => self.search_focus_requested = true,
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             _ => self.view.apply(action),
@@ -1350,6 +1357,45 @@ mod tests {
         let mut h = Harness::new();
         h.drag(empty_bar_point(&h), vec2(30.0, 10.0));
         assert!(h.started_move());
+    }
+
+    #[test]
+    fn drag_on_bar_buttons_does_not_move_window() {
+        let mut h = Harness::new();
+        let toggle = pos2(h.app.bar.search.left() - 20.0, h.app.bar.search.center().y);
+        let mut buttons = vec![toggle, h.app.bar.menu.center()];
+        if !cfg!(target_os = "macos") {
+            buttons.push(h.app.bar.close.center());
+        }
+        for at in buttons {
+            h.drag(at, vec2(30.0, 10.0));
+            assert!(!h.started_move(), "dragging from {at:?} moved the window");
+        }
+    }
+
+    #[test]
+    fn esc_keeps_sidebar_reopened_by_toggle() {
+        let mut h = Harness::new();
+        focus_search(&mut h);
+        h.press(egui::Key::Enter, Modifiers::NONE);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.sidebar.open);
+    }
+
+    #[test]
+    fn esc_keeps_sidebar_after_leaving_search() {
+        let mut h = Harness::new();
+        focus_search(&mut h);
+        h.press(egui::Key::Enter, Modifiers::NONE);
+        h.click(pos2(600.0, 500.0));
+        assert!(!h.ctx.text_edit_focused());
+        focus_search(&mut h);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.sidebar.open);
     }
 
     #[test]
