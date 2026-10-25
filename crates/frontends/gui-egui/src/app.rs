@@ -48,9 +48,11 @@ impl NoidoApp {
     /// and any scrolling by wheel, drag or scrollbar.
     fn sync_from_egui(&mut self) {
         if let Some(last) = self.last_scroll {
+            // egui's offset belongs to the old size: record it before resizing,
+            // so the resize can re-anchor from it.
+            self.view.scrolled_to(last.offset.x, last.offset.y);
             self.view
                 .set_viewport_size(last.inner.width(), last.inner.height());
-            self.view.scrolled_to(last.offset.x, last.offset.y);
         }
     }
 
@@ -172,6 +174,13 @@ impl NoidoApp {
 
 impl eframe::App for NoidoApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.show(ui);
+    }
+}
+
+impl NoidoApp {
+    /// One frame of the viewer.
+    fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.receive_renders(&ctx);
         self.sync_from_egui();
@@ -188,6 +197,9 @@ impl eframe::App for NoidoApp {
             ui.spacing_mut().scroll.fade.strength = 0.0;
             let mut scroll_area = ScrollArea::both().auto_shrink(false);
             if move_scroll {
+                // egui checks a new offset against last frame's content size;
+                // past it, rubber-banding would spring the view away from the anchor.
+                ui.spacing_mut().scroll.kinetic.rubber_band = false;
                 scroll_area = scroll_area.scroll_offset(wanted);
             }
             let output = scroll_area.show_viewport(ui, |ui, viewport| self.pages(ui, viewport));
@@ -209,5 +221,144 @@ fn core_key(key: egui::Key) -> Option<Key> {
         egui::Key::W => Some(Key::W),
         egui::Key::F => Some(Key::F),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use egui::{Event, Modifiers, RawInput, pos2};
+    use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
+
+    use super::*;
+
+    /// Ten Letter pages that render as a single white pixel.
+    struct BlankEngine;
+    struct BlankDocument;
+
+    impl PdfEngine for BlankEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(BlankDocument))
+        }
+    }
+
+    impl Document for BlankDocument {
+        fn page_count(&self) -> usize {
+            10
+        }
+        fn page_size(&self, _page: usize) -> Result<Size, EngineError> {
+            Ok(Size {
+                width: 612.0,
+                height: 792.0,
+            })
+        }
+        fn render_tile(&self, _: usize, _: f32, _: PixelRect) -> Result<Rgba8Image, EngineError> {
+            Ok(Rgba8Image::from_premultiplied(1, 1, vec![255; 4]).unwrap())
+        }
+    }
+
+    /// Runs the app headlessly in egui, one frame per call.
+    struct Harness {
+        ctx: egui::Context,
+        app: NoidoApp,
+        size: Vec2,
+        time: f64,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let (renderer, info) =
+                Renderer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}))
+                    .unwrap();
+            let mut harness = Self {
+                ctx: egui::Context::default(),
+                app: NoidoApp::new(renderer, info),
+                size: vec2(900.0, 1000.0),
+                time: 0.0,
+            };
+            harness.frames(3, vec![]);
+            harness
+        }
+
+        fn frames(&mut self, count: usize, mut events: Vec<Event>) {
+            for _ in 0..count {
+                let input = RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), self.size)),
+                    time: Some(self.time),
+                    predicted_dt: 1.0 / 60.0,
+                    events: std::mem::take(&mut events),
+                    ..Default::default()
+                };
+                self.time += 1.0 / 60.0;
+                let app = &mut self.app;
+                self.ctx
+                    .run_ui(input, |ui| app.show(ui))
+                    .drop_without_applying_deltas();
+            }
+        }
+
+        fn press(&mut self, key: egui::Key, modifiers: Modifiers) {
+            let event = Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            };
+            self.frames(1, vec![event]);
+        }
+
+        /// The document point at the viewport centre.
+        fn centre(&self) -> noido_core::DocPoint {
+            let view = &self.app.view;
+            let (ox, oy) = view.offset();
+            let (w, h) = view.viewport_size();
+            view.layout().doc_point(ox + w / 2.0, oy + h / 2.0).unwrap()
+        }
+
+        /// Where document point `p` appears, relative to the viewport centre.
+        fn distance_from_centre(&self, p: noido_core::DocPoint) -> f32 {
+            let view = &self.app.view;
+            let (cx, cy) = view.layout().content_point(p).unwrap();
+            let (ox, oy) = view.offset();
+            let (w, h) = view.viewport_size();
+            (cx - ox - w / 2.0).abs().max((cy - oy - h / 2.0).abs())
+        }
+    }
+
+    #[test]
+    fn zoom_in_near_bottom_keeps_centre() {
+        let mut h = Harness::new();
+        for _ in 0..30 {
+            h.press(egui::Key::PageDown, Modifiers::NONE);
+        }
+        h.press(egui::Key::PageUp, Modifiers::NONE);
+        h.frames(5, vec![]);
+        let centre = h.centre();
+        h.press(egui::Key::Plus, Modifiers::COMMAND);
+        h.frames(60, vec![]);
+        assert!(
+            h.distance_from_centre(centre) < 1.0,
+            "drifted {}",
+            h.distance_from_centre(centre)
+        );
+    }
+
+    #[test]
+    fn resize_in_fit_width_keeps_centre() {
+        let mut h = Harness::new();
+        for _ in 0..3 {
+            h.press(egui::Key::PageDown, Modifiers::NONE);
+        }
+        h.frames(5, vec![]);
+        let centre = h.centre();
+        h.size = vec2(1300.0, 1000.0);
+        h.frames(60, vec![]);
+        assert!(
+            h.distance_from_centre(centre) < 1.0,
+            "drifted {}",
+            h.distance_from_centre(centre)
+        );
     }
 }

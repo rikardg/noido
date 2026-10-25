@@ -28,6 +28,19 @@ when it is fixed.
   tiled rendering.
 
 
+- **Viewport size lags the window by one frame.** On resize the content is
+  laid out for the old width for one frame (brief horizontal scrollbar or
+  off-centre pages). Take the size from `ui.available_rect_before_wrap()`
+  before showing the scroll area. (`crates/frontends/gui-egui/src/app.rs`)
+- **Minimizing can lose the position.** Some platforms report a 0×0 viewport
+  while minimized; `View::set_viewport_size(0, 0)` refits to 0.1 and anchors
+  at (0, 0). Ignore non-positive sizes after the first real one.
+  (`crates/noido-core/src/view.rs`)
+- **Alt+W / Alt+F trigger the plain-key bindings.** `KeyPress` only carries
+  `command`; carry `alt` (and later `shift`) or skip presses with Alt.
+- **Kinetic scroll velocity survives a zoom.** A coasting touch drag keeps
+  going in the new content coordinates after a zoom. Low impact.
+
 ## Deferred features
 
 - **Automated interactive testing** of the egui frontend: drive key presses,

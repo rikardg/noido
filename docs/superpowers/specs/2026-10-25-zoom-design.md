@@ -103,12 +103,15 @@ Fit scales:
 
 Each frame:
 1. Receive finished renders (unchanged).
-2. From last frame's scroll area output: `set_viewport_size(inner size)`, then
-   `scrolled_to(state offset)`.
+2. From last frame's scroll area output: `scrolled_to(state offset)` first, then
+   `set_viewport_size(inner size)`. (egui's offset belongs to the old size; the
+   reverse order overwrites the resize's re-anchored offset. Found in review.)
 3. Unless a text field has focus: key presses → `apply`; `zoom_delta() != 1`
    → `zoom_by(delta, pointer position in the viewport)`.
 4. Show `ScrollArea::both()`; pass `view.offset()` to it only when it differs
    from the offset egui reported (so egui's own smooth scrolling isn't cut off).
+   On those frames turn off rubber-banding: egui checks the new offset against
+   last frame's content size and would otherwise spring away from the anchor.
 5. Draw pages from `view.layout()`; render scale is `view.scale() × pixels_per_point`,
    capped as before.
 
