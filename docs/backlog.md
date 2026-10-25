@@ -120,6 +120,24 @@ when it is fixed.
   centre; the activation path isn't checked while minimised on Windows or
   macOS (eframe may not run `ui()` then).
 
+## Sidebar thumbnails (review minors, 2026-10-25)
+
+- A fling of the page view keeps gliding after a thumbnail click (egui keeps
+  the scroll velocity when the offset is set), and the gliding then clears
+  the clicked page. Reset the page view's scroll velocity after
+  `go_to_page`. Keys during a fling already behave this way.
+- A vertical window resize, or a reload to fewer pages, can re-clamp the
+  sidebar's offset and count as browsing, moving the low-res window. Count
+  a height change as a resize too.
+- After a reload a kept sharp thumbnail is stretched to a page whose aspect
+  changed until its new render arrives, and for good if the new sidebar
+  renderer fails to open. Drop images whose page size changed.
+- `reload_swaps_sidebar_renderer` is weak: only pages 0–2 are visible, so
+  "sharp pages below 5" holds anyway, and it doesn't check the place is
+  kept. Scroll the sidebar to pages 6–9 first.
+- The wheel over the title bar no longer flips pages in paged mode (only
+  over the page view does); fine unless someone misses it.
+
 ## Deferred features
 
 - **Automated interactive testing** of the egui frontend: drive key presses,
