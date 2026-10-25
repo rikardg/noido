@@ -51,6 +51,22 @@ when it is fixed.
 - **Shift+C / Shift+D also toggle view modes** (only `command` is checked;
   same root as the Alt+W/F item above).
 
+## View state storage (review minors, 2026-10-25)
+
+- A failed or interrupted state write leaves a `<hash>.tmp-<pid>` file in
+  `docs/` that prune never removes; no fsync before the rename.
+- Window files without a state file (noido killed within 2 s of opening a new
+  document) are never pruned.
+- `main` asks for the window file before `load`, relying on the re-filing
+  rename overwriting the copied window file; untested in that order. Calling
+  `load` first would be clearer.
+- Windows puts state in `%LOCALAPPDATA%\noido\data`, not
+  `%LOCALAPPDATA%\noido` as the spec says; macOS folder is `noido`, not a
+  bundle id.
+- Two instances on one document can both write its window file (eframe's
+  write isn't atomic); a broken file falls back to the default window.
+- Path-fallback ties within the same second are picked arbitrarily.
+
 ## Deferred features
 
 - **Automated interactive testing** of the egui frontend: drive key presses,

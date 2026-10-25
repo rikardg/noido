@@ -149,9 +149,23 @@ impl View {
         if count == 0 {
             return;
         }
+        let page = state.centre.page.min(count - 1);
+        let size = self.layout.page_size(page).unwrap_or(Size {
+            width: 0.0,
+            height: 0.0,
+        });
+        // A hand-edited or damaged value must not move the view off the page.
+        let on_page = |v: f32, length: f32| {
+            if v.is_finite() {
+                v.clamp(0.0, length.max(0.0))
+            } else {
+                0.0
+            }
+        };
         let centre = DocPoint {
-            page: state.centre.page.min(count - 1),
-            ..state.centre
+            page,
+            x: on_page(state.centre.x, size.width),
+            y: on_page(state.centre.y, size.height),
         };
         let dual = state.dual;
         self.layout.set_mode(LayoutMode { dual, paged: None });
@@ -820,6 +834,31 @@ mod tests {
         view.restore(&saved(ZoomMode::FitWidth, 1.0, false, true, 5));
         assert!(view.dual());
         assert_eq!(view.current_spread(), Some(2));
+    }
+
+    #[test]
+    fn restore_ignores_non_finite_values() {
+        let mut state = saved(ZoomMode::Custom, f32::NAN, true, false, 4);
+        state.centre.x = f32::NAN;
+        state.centre.y = f32::INFINITY;
+        let mut view = View::new(vec![size(612.0, 792.0); 10]);
+        view.restore(&state);
+        view.set_viewport_size(636.0, 800.0);
+        let restored = view.state().unwrap();
+        assert!(restored.scale.is_finite());
+        assert!(restored.centre.x.is_finite() && restored.centre.y.is_finite());
+        let (x, y) = view.offset();
+        assert!(x.is_finite() && y.is_finite());
+        assert_eq!(restored.centre.page, 4);
+    }
+
+    #[test]
+    fn restore_keeps_point_on_its_page() {
+        let mut state = saved(ZoomMode::FitWidth, 1.0, true, false, 4);
+        state.centre.y = 5000.0;
+        let mut view = letter_view();
+        view.restore(&state);
+        assert_eq!(doc_at(&view, (318.0, 400.0)).page, 4);
     }
 
     #[test]
