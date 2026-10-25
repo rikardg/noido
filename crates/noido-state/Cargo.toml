@@ -1,0 +1,20 @@
+[package]
+name = "noido-state"
+description = "noido per-document view state, stored in the platform's state directory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+noido-core.workspace = true
+blake3.workspace = true
+directories.workspace = true
+serde.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
