@@ -195,6 +195,30 @@ impl View {
             self.scrolled_to(self.offset.0, y);
             return;
         }
+        self.flip(spread, down);
+    }
+
+    /// A wheel step in paged mode: flips to the adjacent spread when the
+    /// current one fits the viewport vertically. Otherwise the wheel scrolls
+    /// within the spread, which the frontend handles, so this does nothing.
+    pub fn wheel_flip(&mut self, down: bool) {
+        if let Some(spread) = self.current_spread()
+            && self.wheel_flips()
+        {
+            self.flip(spread, down);
+        }
+    }
+
+    /// Whether the wheel flips spreads ([`View::wheel_flip`]) rather than
+    /// scrolling: paged mode with the spread fitting the viewport vertically.
+    pub fn wheel_flips(&self) -> bool {
+        !self.continuous() && self.max_offset().1 <= EDGE_EPSILON
+    }
+
+    /// Shows the spread after (`down`) or before `spread`, from the side facing
+    /// it: the top when going down, the bottom when going up. Does nothing at
+    /// either end of the document.
+    fn flip(&mut self, spread: usize, down: bool) {
         let next = if down {
             spread + 1
         } else {
@@ -560,6 +584,41 @@ mod tests {
     }
 
     #[test]
+    fn wheel_flips_when_page_fits() {
+        let mut view = paged_view();
+        view.apply(Action::FitPage);
+        view.wheel_flip(true);
+        assert_eq!(view.current_spread(), Some(1));
+        view.wheel_flip(false);
+        assert_eq!(view.current_spread(), Some(0));
+    }
+
+    #[test]
+    fn wheel_does_not_flip_when_page_is_taller() {
+        // Fit width leaves the Letter page 16 points taller than the window.
+        let mut view = paged_view();
+        view.wheel_flip(true);
+        assert_eq!(view.current_spread(), Some(0));
+    }
+
+    #[test]
+    fn wheel_flip_stops_at_ends() {
+        let mut view = paged_view();
+        view.apply(Action::FitPage);
+        view.wheel_flip(false);
+        assert_eq!(view.current_spread(), Some(0));
+    }
+
+    #[test]
+    fn wheel_flip_ignored_in_continuous_mode() {
+        let mut view = letter_view();
+        view.apply(Action::FitPage);
+        let before = view.offset();
+        view.wheel_flip(true);
+        assert_eq!(view.offset(), before);
+    }
+
+    #[test]
     fn zero_pages_is_safe() {
         let mut view = View::new(vec![]);
         view.set_viewport_size(636.0, 800.0);
@@ -580,6 +639,7 @@ mod tests {
             view.apply(action);
         }
         view.zoom_by(2.0, Some((10.0, 10.0)));
+        view.wheel_flip(true);
         view.scrolled_to(100.0, 100.0);
         assert_eq!(view.offset(), (0.0, 0.0));
     }

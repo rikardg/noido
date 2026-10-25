@@ -12,6 +12,9 @@ use noido_render::{DocumentInfo, RenderRequest, Renderer};
 const PREFETCH: usize = 1;
 /// Pages beyond the visible ones whose images are kept, on each side.
 const KEEP: usize = 2;
+/// Trackpad scroll distance, in UI points, that flips one page in paged mode
+/// (about one mouse wheel step).
+const TRACKPAD_FLIP_DISTANCE: f32 = 125.0;
 /// Offset difference, in UI points, below which egui's scroll position is left alone.
 const OFFSET_EPSILON: f32 = 0.5;
 
@@ -30,6 +33,8 @@ pub struct NoidoApp {
     textures: HashMap<usize, TextureHandle>,
     keymap: Keymap,
     last_scroll: Option<ScrollState>,
+    /// Trackpad distance scrolled towards the next flip, positive downwards.
+    flip_distance: f32,
 }
 
 impl NoidoApp {
@@ -42,6 +47,7 @@ impl NoidoApp {
             textures: HashMap::new(),
             keymap: Keymap::native(),
             last_scroll: None,
+            flip_distance: 0.0,
         }
     }
 
@@ -61,7 +67,7 @@ impl NoidoApp {
         if ctx.text_edit_focused() {
             return;
         }
-        let (presses, zoom, pointer) = ctx.input(|i| {
+        let (presses, wheel, zoom, pointer) = ctx.input(|i| {
             let presses: Vec<KeyPress> = i
                 .events
                 .iter()
@@ -78,13 +84,36 @@ impl NoidoApp {
                     _ => None,
                 })
                 .collect();
-            (presses, i.zoom_delta(), i.pointer.hover_pos())
+            let wheel: Vec<WheelStep> = i
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::MouseWheel {
+                        unit,
+                        delta,
+                        phase,
+                        source,
+                        modifiers,
+                    } => Some(WheelStep {
+                        unit: *unit,
+                        down: -delta.y,
+                        phase: *phase,
+                        source: *source,
+                        modifiers: *modifiers,
+                    }),
+                    _ => None,
+                })
+                .collect();
+            (presses, wheel, i.zoom_delta(), i.pointer.hover_pos())
         });
 
         for press in presses {
             if let Some(action) = self.keymap.action(press) {
                 self.view.apply(action);
             }
+        }
+        for step in wheel {
+            self.wheel_flip(step);
         }
         if zoom != 1.0 {
             let anchor = self.last_scroll.and_then(|last| {
@@ -93,6 +122,37 @@ impl NoidoApp {
                     .map(|p| (p.x - last.inner.min.x, p.y - last.inner.min.y))
             });
             self.view.zoom_by(zoom, anchor);
+        }
+    }
+
+    /// In paged mode with the page fitting the window, vertical wheel input
+    /// flips pages: each mouse wheel step flips once, trackpad scrolling flips
+    /// once per [`TRACKPAD_FLIP_DISTANCE`]. Momentum, zoom (Mod) and sideways
+    /// (Shift, or horizontal movement) never flip.
+    fn wheel_flip(&mut self, step: WheelStep) {
+        use egui::{MouseWheelSource, MouseWheelUnit, TouchPhase};
+        let ignored = step.modifiers.command
+            || step.modifiers.shift
+            || step.source == MouseWheelSource::Momentum
+            || !self.view.wheel_flips();
+        if ignored || step.phase == TouchPhase::Start {
+            self.flip_distance = 0.0;
+        }
+        if ignored || step.down == 0.0 {
+            return;
+        }
+        match step.unit {
+            MouseWheelUnit::Line | MouseWheelUnit::Page => self.view.wheel_flip(step.down > 0.0),
+            MouseWheelUnit::Point => {
+                self.flip_distance += step.down;
+                if self.flip_distance.abs() >= TRACKPAD_FLIP_DISTANCE {
+                    self.view.wheel_flip(self.flip_distance > 0.0);
+                    self.flip_distance = 0.0;
+                }
+            }
+        }
+        if matches!(step.phase, TouchPhase::End | TouchPhase::Cancel) {
+            self.flip_distance = 0.0;
         }
     }
 
@@ -215,6 +275,17 @@ impl NoidoApp {
             });
         });
     }
+}
+
+/// The parts of a mouse wheel event that decide whether it flips a page.
+#[derive(Clone, Copy)]
+struct WheelStep {
+    unit: egui::MouseWheelUnit,
+    /// Vertical movement, positive towards the end of the document.
+    down: f32,
+    phase: egui::TouchPhase,
+    source: egui::MouseWheelSource,
+    modifiers: egui::Modifiers,
 }
 
 fn core_key(key: egui::Key) -> Option<Key> {
@@ -401,6 +472,111 @@ mod tests {
         assert!(h.app.view.dual());
         let layout = h.app.view.layout();
         assert!(layout.page_rect(1).unwrap().x > layout.page_rect(0).unwrap().x);
+    }
+
+    fn wheel(unit: egui::MouseWheelUnit, dy: f32, source: egui::MouseWheelSource) -> Event {
+        Event::MouseWheel {
+            unit,
+            delta: vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            source,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    /// Paged mode with the page fitted, so the wheel flips.
+    fn fitted_paged() -> Harness {
+        let mut h = Harness::new();
+        h.press(egui::Key::C, Modifiers::NONE);
+        h.press(egui::Key::F, Modifiers::NONE);
+        h.frames(2, vec![]);
+        h
+    }
+
+    #[test]
+    fn wheel_step_flips_fitting_page() {
+        let mut h = fitted_paged();
+        let step = wheel(
+            egui::MouseWheelUnit::Line,
+            -1.0,
+            egui::MouseWheelSource::Wheel,
+        );
+        h.frames(1, vec![step]);
+        assert_eq!(h.app.view.current_spread(), Some(1));
+        let back = wheel(
+            egui::MouseWheelUnit::Line,
+            1.0,
+            egui::MouseWheelSource::Wheel,
+        );
+        h.frames(1, vec![back]);
+        assert_eq!(h.app.view.current_spread(), Some(0));
+    }
+
+    #[test]
+    fn trackpad_flips_after_enough_distance() {
+        let mut h = fitted_paged();
+        let swipe = |dy| {
+            wheel(
+                egui::MouseWheelUnit::Point,
+                dy,
+                egui::MouseWheelSource::Trackpad,
+            )
+        };
+        h.frames(1, vec![swipe(-50.0)]);
+        assert_eq!(h.app.view.current_spread(), Some(0));
+        h.frames(1, vec![swipe(-100.0)]);
+        assert_eq!(h.app.view.current_spread(), Some(1));
+    }
+
+    #[test]
+    fn momentum_never_flips() {
+        let mut h = fitted_paged();
+        let coast = wheel(
+            egui::MouseWheelUnit::Point,
+            -500.0,
+            egui::MouseWheelSource::Momentum,
+        );
+        h.frames(1, vec![coast]);
+        assert_eq!(h.app.view.current_spread(), Some(0));
+    }
+
+    #[test]
+    fn sideways_scrolling_never_flips() {
+        let mut h = fitted_paged();
+        let sideways = Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(-3.0, 0.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: Modifiers::NONE,
+        };
+        let shifted = Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, -3.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: Modifiers::SHIFT,
+        };
+        h.frames(1, vec![sideways, shifted]);
+        assert_eq!(h.app.view.current_spread(), Some(0));
+    }
+
+    #[test]
+    fn wheel_scrolls_tall_page_without_flipping() {
+        let mut h = Harness::new();
+        h.press(egui::Key::C, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(!h.app.view.wheel_flips());
+        let step = wheel(
+            egui::MouseWheelUnit::Line,
+            -1.0,
+            egui::MouseWheelSource::Wheel,
+        );
+        // egui scrolls the area under the pointer.
+        h.frames(1, vec![Event::PointerMoved(pos2(450.0, 500.0))]);
+        h.frames(10, vec![step]);
+        assert_eq!(h.app.view.current_spread(), Some(0));
+        assert!(h.app.view.offset().1 > 0.0);
     }
 
     #[test]

@@ -24,14 +24,19 @@ Paged mode navigation (single and dual alike; a spread behaves like a page):
   shows the next page from its top.
 - PageUp mirrors this: at the top, a press shows the previous page from its
   bottom.
-- The wheel and drag only scroll within the current page; they never flip.
+- The wheel and drag scroll within the current page. Exception (amended
+  after trying it): when the whole page (spread) fits the window vertically,
+  vertical wheel input flips instead — one flip per mouse wheel step, one per
+  125 points of trackpad scrolling; trackpad momentum, Mod (zoom) and sideways
+  scrolling (horizontal movement or Shift) never flip. Drag never flips.
 - When the page fits the window (e.g. after `f`), every PageDown is a flip.
 
 Continuous mode keeps today's behaviour (PageUp/PageDown scroll a screenful).
 
 ## Proposals accepted in conversation (my calls)
 
-- After a flip: same horizontal position and zoom.
+- After a flip: same horizontal position and zoom; in fit modes the new
+  spread is refitted (fit page can change the zoom if spreads differ in size).
 - Fit width and fit page measure the spread in dual mode (both pages and the
   gap between them). In paged mode `f` therefore shows exactly one whole page
   or spread; in continuous mode it only sets the zoom.
