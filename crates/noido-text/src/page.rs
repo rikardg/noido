@@ -1,8 +1,12 @@
 //! Assembling a page's glyphs into lines and words.
 
+use std::sync::OnceLock;
+
 use noido_engine::{Glyph, Point};
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
+
+use crate::search::Forms;
 
 /// A move across the baseline further than this many ems starts a new line,
 /// as does a move back along it.
@@ -29,6 +33,8 @@ pub struct PageText {
     chars: Vec<CharInfo>,
     /// Per glyph, its bounds.
     bounds: Vec<Rect>,
+    /// The forms search matches against, built on the first search.
+    pub(crate) forms: OnceLock<Forms>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -65,6 +71,7 @@ impl PageText {
             text,
             chars,
             bounds,
+            forms: OnceLock::new(),
         }
     }
 

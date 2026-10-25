@@ -2,7 +2,9 @@
 //! it. Pure: no threads, no engine calls.
 
 mod page;
+mod search;
 #[cfg(test)]
 mod testing;
 
 pub use page::*;
+pub use search::*;
