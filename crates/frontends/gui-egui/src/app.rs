@@ -549,12 +549,6 @@ impl NoidoApp {
         self.update_focus();
         self.update_thumbnails(&ctx);
 
-        let (x, y) = self.view.offset();
-        let wanted = vec2(x, y);
-        let move_scroll = self
-            .last_scroll
-            .is_some_and(|last| (last.offset - wanted).abs().max_elem() > OFFSET_EPSILON);
-
         if !cfg!(target_os = "macos") {
             // Before the page view, so a press on an edge resizes rather than
             // starting a drag of the page.
@@ -565,7 +559,21 @@ impl NoidoApp {
             sidebar::show(ui, &mut self.sidebar);
         }
 
-        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+        // The page area changes size this frame when the sidebar opens or
+        // closes; lay the pages out for it now, not a frame late.
+        let frame = egui::Frame::central_panel(ui.style());
+        let area = ui.available_rect_before_wrap() - frame.total_margin();
+        if self.last_scroll.is_some() {
+            self.view.set_viewport_size(area.width(), area.height());
+        }
+
+        let (x, y) = self.view.offset();
+        let wanted = vec2(x, y);
+        let move_scroll = self
+            .last_scroll
+            .is_some_and(|last| (last.offset - wanted).abs().max_elem() > OFFSET_EPSILON);
+
+        frame.show(ui, |ui| {
             // egui fades the edges of scroll areas; on pages it reads as a shadow.
             ui.spacing_mut().scroll.fade.strength = 0.0;
             // Left drag pans the document (until selection tools need the button).
@@ -1186,6 +1194,56 @@ mod tests {
         assert!(!h.app.sidebar.open);
         assert_eq!(h.app.view.viewport_size().0, width);
         assert_eq!(h.app.view.scale(), scale);
+    }
+
+    /// Whether the last frame painted a shape covering `rect` (within 1 point).
+    fn painted(h: &Harness, rect: Rect) -> bool {
+        h.shapes.iter().any(|clipped| {
+            let shape = clipped.shape.visual_bounding_rect();
+            (shape.min - rect.min).length() < 1.0 && (shape.max - rect.max).length() < 1.0
+        })
+    }
+
+    #[test]
+    fn toggling_sidebar_draws_pages_in_place_at_once() {
+        sidebar_toggle_draws_in_place(Harness::new());
+    }
+
+    /// Zoomed out, the page keeps its size but is centred in a narrower area.
+    #[test]
+    fn toggling_sidebar_recentres_unchanged_pages_at_once() {
+        let mut h = Harness::new();
+        for _ in 0..3 {
+            h.press(egui::Key::Minus, Modifiers::COMMAND);
+        }
+        sidebar_toggle_draws_in_place(h);
+    }
+
+    fn sidebar_toggle_draws_in_place(mut h: Harness) {
+        // Where the first page settles with the sidebar open, then closed.
+        let page_rect = |h: &mut Harness| {
+            h.frames(5, vec![]);
+            h.shapes
+                .iter()
+                .map(|clipped| clipped.shape.visual_bounding_rect())
+                .filter(|rect| rect.width() > 300.0 && rect.height() > 300.0)
+                .min_by(|a, b| a.min.y.total_cmp(&b.min.y))
+                .unwrap()
+        };
+        h.press(egui::Key::F9, Modifiers::NONE);
+        let open = page_rect(&mut h);
+        // The measured page area is what the scroll area then reports, so
+        // the two never disagree from frame to frame.
+        let inner = h.app.last_scroll.unwrap().inner;
+        assert_eq!(h.app.view.viewport_size(), (inner.width(), inner.height()));
+        h.press(egui::Key::F9, Modifiers::NONE);
+        let closed = page_rect(&mut h);
+        assert_ne!(open, closed);
+
+        h.press(egui::Key::F9, Modifiers::NONE);
+        assert!(painted(&h, open), "opening: page not at {open:?}");
+        h.press(egui::Key::F9, Modifiers::NONE);
+        assert!(painted(&h, closed), "closing: page not at {closed:?}");
     }
 
     #[test]
