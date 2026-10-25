@@ -143,6 +143,10 @@ impl Layout {
         self.page_sizes.len()
     }
 
+    pub fn page_sizes(&self) -> &[Size] {
+        &self.page_sizes
+    }
+
     pub fn page_size(&self, page: usize) -> Option<Size> {
         self.page_sizes.get(page).copied()
     }

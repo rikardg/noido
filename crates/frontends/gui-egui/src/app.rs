@@ -10,11 +10,12 @@ use noido_core::{
 use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
 use noido_state::{DocState, Slot, Store};
 
+use crate::frame;
+use crate::image::PageImage;
 use crate::instance::Activation;
+use crate::sidebar::{self, SidebarView};
 use crate::titlebar::{self, TITLE_BAR_HEIGHT};
 use crate::watch::{Reload, Watcher};
-use crate::image::PageImage;
-use crate::{frame, sidebar};
 
 /// Spreads (pages in single mode) rendered at full resolution around the
 /// current one, after the visible ones: the current spread, then six ahead
@@ -56,6 +57,8 @@ pub struct NoidoApp {
     /// The direction the focus last moved in.
     direction: Direction,
     sidebar: SidebarState,
+    /// The sidebar's thumbnails.
+    sidebar_view: SidebarView,
     /// The document's file name, shown in the title bar.
     name: String,
     /// The search field's text.
@@ -147,6 +150,7 @@ impl NoidoApp {
             focus: None,
             direction: Direction::Forward,
             sidebar: SidebarState::default(),
+            sidebar_view: SidebarView::new(page_count),
             search_focus_requested: false,
             name: String::new(),
             search: String::new(),
@@ -161,6 +165,12 @@ impl NoidoApp {
     /// Shows `name` in the title bar.
     pub fn with_name(mut self, name: String) -> Self {
         self.name = name;
+        self
+    }
+
+    /// Renders the sidebar's visible thumbnails sharp with `renderer`.
+    pub fn with_sidebar_renderer(mut self, renderer: Renderer) -> Self {
+        self.sidebar_view = self.sidebar_view.with_renderer(renderer);
         self
     }
 
@@ -638,6 +648,7 @@ impl NoidoApp {
         let ctx = ui.ctx().clone();
         self.come_forward(&ctx);
         self.receive_renders(&ctx);
+        self.sidebar_view.receive(&ctx, self.view.layout());
         self.sync_from_egui();
         self.receive_reload();
         self.handle_input(&ctx);
@@ -651,7 +662,13 @@ impl NoidoApp {
         }
         self.title_bar(ui);
         if self.sidebar.open {
-            sidebar::show(ui, &mut self.sidebar);
+            let input = sidebar::Input {
+                layout: self.view.layout(),
+                lowres: self.thumbnails.as_ref().map(|t| &t.textures),
+            };
+            self.sidebar_view.show(ui, &mut self.sidebar, &input);
+        } else {
+            self.sidebar_view.closed();
         }
 
         // The page area changes size this frame when the sidebar opens or
@@ -2029,5 +2046,221 @@ mod tests {
         h.reload(Arc::new(FailingEngine(10)), recompiled_key());
         h.until(|h| !has_thumbnail(h));
         assert!(!has_thumbnail(&h), "old thumbnail of page 1 kept");
+    }
+
+    /// Ten Letter pages; records the page and scale of every render.
+    #[derive(Clone, Default)]
+    struct RecordingEngine(Arc<std::sync::Mutex<Vec<(usize, f32)>>>);
+
+    impl RecordingEngine {
+        fn recorded(&self) -> Vec<(usize, f32)> {
+            self.0.lock().unwrap().clone()
+        }
+
+        fn pages(&self) -> std::collections::BTreeSet<usize> {
+            self.recorded().into_iter().map(|(page, _)| page).collect()
+        }
+    }
+
+    impl PdfEngine for RecordingEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(self.clone()))
+        }
+    }
+
+    impl Document for RecordingEngine {
+        fn page_count(&self) -> usize {
+            BlankDocument.page_count()
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument.page_size(page)
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            scale: f32,
+            tile: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            self.0.lock().unwrap().push((page, scale));
+            BlankDocument.render_tile(page, scale, tile)
+        }
+    }
+
+    /// A harness with the sidebar open, its sharp thumbnails from `engine`.
+    fn with_sidebar(engine: RecordingEngine) -> Harness {
+        let mut h = Harness::build(|app| {
+            let renderer =
+                Renderer::start_background(Arc::new(engine), Arc::new(Vec::new()), Box::new(|| {}));
+            app.with_sidebar_renderer(renderer)
+        });
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        h
+    }
+
+    /// The pages the sidebar drew last frame.
+    fn drawn_pages(h: &Harness) -> Vec<usize> {
+        h.app
+            .sidebar_view
+            .drawn()
+            .iter()
+            .map(|(page, _)| *page)
+            .collect()
+    }
+
+    /// Scrolls the sidebar by `dy` points with the wheel.
+    fn wheel_sidebar(h: &mut Harness, dy: f32) {
+        h.frames(1, vec![Event::PointerMoved(pos2(100.0, 500.0))]);
+        let step = wheel(
+            egui::MouseWheelUnit::Point,
+            dy,
+            egui::MouseWheelSource::Wheel,
+        );
+        h.frames(1, vec![step]);
+        h.frames(30, vec![]);
+    }
+
+    #[test]
+    fn sidebar_shows_a_thumbnail_per_visible_page() {
+        let h = with_sidebar(RecordingEngine::default());
+        let drawn = h.app.sidebar_view.drawn();
+        assert!(drawn.len() >= 2, "{drawn:?}");
+        let pages = drawn_pages(&h);
+        assert_eq!(pages, (0..pages.len()).collect::<Vec<_>>());
+        let width = h.app.sidebar_view.thumb_width();
+        assert!(
+            (width - (h.app.sidebar.width - 2.0 * noido_core::COLUMN_MARGIN)).abs() < 2.0,
+            "{width} in a sidebar {} wide",
+            h.app.sidebar.width
+        );
+        for (_, rect) in drawn {
+            assert!((rect.width() - width).abs() < 0.5, "{rect:?}");
+            assert!((rect.height() / rect.width() - 792.0 / 612.0).abs() < 0.01);
+            assert!(rect.max.x <= h.app.sidebar.width);
+        }
+    }
+
+    #[test]
+    fn sidebar_shows_pages_not_spreads_in_dual_mode() {
+        let mut h = with_sidebar(RecordingEngine::default());
+        let before = h.app.sidebar_view.drawn().to_vec();
+        h.press(egui::Key::D, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.view.dual());
+        assert_eq!(h.app.sidebar_view.drawn(), &before[..]);
+    }
+
+    #[test]
+    fn sidebar_requests_only_visible_pages_at_its_width() {
+        let engine = RecordingEngine::default();
+        let mut h = with_sidebar(engine.clone());
+        let drawn: std::collections::BTreeSet<usize> = drawn_pages(&h).into_iter().collect();
+        h.until(|_| engine.pages() == drawn);
+        assert_eq!(engine.pages(), drawn);
+        let scale = h.app.sidebar_view.thumb_width() / 612.0;
+        for (page, recorded) in engine.recorded() {
+            assert!(
+                (recorded / scale - 1.0).abs() < 0.01,
+                "page {page}: {recorded} vs {scale}"
+            );
+        }
+    }
+
+    #[test]
+    fn widening_sidebar_requests_larger_scale() {
+        let engine = RecordingEngine::default();
+        let mut h = with_sidebar(engine.clone());
+        h.until(|_| !engine.recorded().is_empty());
+        let (width, scale) = (h.app.sidebar.width, engine.recorded()[0].1);
+        h.drag(pos2(width - 1.0, 500.0), vec2(100.0, 0.0));
+        h.frames(2, vec![]);
+        assert!(
+            h.app.sidebar.width > width + 50.0,
+            "{}",
+            h.app.sidebar.width
+        );
+        h.until(|_| engine.recorded().iter().any(|&(_, s)| s > scale * 1.2));
+        assert!(engine.recorded().iter().any(|&(_, s)| s > scale * 1.2));
+    }
+
+    #[test]
+    fn sidebar_rerequests_on_pixels_per_point_change() {
+        let engine = RecordingEngine::default();
+        let mut h = with_sidebar(engine.clone());
+        h.until(|_| !engine.recorded().is_empty());
+        h.ctx.set_pixels_per_point(2.0);
+        h.frames(2, vec![]);
+        // The window is narrower in points now, so the sidebar may be too.
+        let scale = h.app.sidebar_view.thumb_width() * 2.0 / 612.0;
+        let sharp = |s: f32| (s / scale - 1.0).abs() < 0.01;
+        h.until(|_| engine.recorded().iter().any(|&(_, s)| sharp(s)));
+        assert!(
+            engine.recorded().iter().any(|&(_, s)| sharp(s)),
+            "{:?} vs {scale}",
+            engine.recorded()
+        );
+    }
+
+    #[test]
+    fn sidebar_drops_sharp_images_scrolled_out() {
+        let engine = RecordingEngine::default();
+        let mut h = with_sidebar(engine.clone());
+        h.until(|h| h.app.sidebar_view.sharp_pages().contains(&0));
+        wheel_sidebar(&mut h, -10_000.0);
+        let drawn = drawn_pages(&h);
+        assert!(drawn.contains(&9), "{drawn:?}");
+        let sharp = h.app.sidebar_view.sharp_pages();
+        assert!(!sharp.contains(&0), "{sharp:?}");
+        assert!(sharp.iter().all(|page| drawn.contains(page)), "{sharp:?}");
+    }
+
+    #[test]
+    fn closing_sidebar_drops_sharp_images() {
+        let mut h = with_sidebar(RecordingEngine::default());
+        h.until(|h| !h.app.sidebar_view.sharp_pages().is_empty());
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(5, vec![]);
+        assert!(h.app.sidebar_view.sharp_pages().is_empty());
+        assert!(h.app.sidebar_view.drawn().is_empty());
+    }
+
+    #[test]
+    fn sidebar_draws_lowres_without_sharp() {
+        let mut h = Harness::build(|app| {
+            // Fails to open: no low-res thumbnails arrive to replace ours.
+            let thumbnailer = Thumbnailer::start(
+                Arc::new(UnopenableEngine),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            );
+            app.with_thumbnails(thumbnailer)
+        });
+        let lowres = blank_texture(&h.ctx, "lowres");
+        h.app
+            .thumbnails
+            .as_mut()
+            .unwrap()
+            .textures
+            .insert(0, lowres.clone());
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        let (_, first) = h.app.sidebar_view.drawn()[0];
+        let shown = h.shapes.iter().any(|clipped| match &clipped.shape {
+            egui::Shape::Mesh(mesh) => {
+                mesh.texture_id == lowres.texture.id()
+                    && first.contains(clipped.shape.visual_bounding_rect().center())
+            }
+            _ => false,
+        });
+        assert!(shown);
+    }
+
+    /// An engine that opens nothing.
+    struct UnopenableEngine;
+
+    impl PdfEngine for UnopenableEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Err(EngineError::Open("stub".into()))
+        }
     }
 }

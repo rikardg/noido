@@ -92,6 +92,8 @@ fn run(path: &Path) -> Result<(), String> {
     };
     // Shares the document bytes with the renderer; opens it in the background.
     let thumbnailer = Thumbnailer::start(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
+    let sidebar_renderer =
+        Renderer::start_background(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
     let (renderer, info) = Renderer::start(Arc::new(HayroEngine), bytes, waker(&ctx))
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
@@ -124,7 +126,8 @@ fn run(path: &Path) -> Result<(), String> {
     };
     let app = NoidoApp::new(renderer, info)
         .with_name(name.clone())
-        .with_thumbnails(thumbnailer);
+        .with_thumbnails(thumbnailer)
+        .with_sidebar_renderer(sidebar_renderer);
     let app = match activation {
         Some(activation) => app.with_activation(activation),
         None => app,

@@ -807,7 +807,10 @@ mod tests {
         assert_eq!(view.offset().1, view.max_offset().1);
         let mut view = paged_view();
         view.go_to_page(99);
-        assert_eq!(view.current_spread(), Some(view.layout().spread_count() - 1));
+        assert_eq!(
+            view.current_spread(),
+            Some(view.layout().spread_count() - 1)
+        );
     }
 
     #[test]

@@ -137,9 +137,15 @@ mod tests {
         assert!(near(first.height, h));
         let label = column.label(0).unwrap();
         assert!(near(label.y, 12.0 + h));
-        assert_eq!((label.x, label.width, label.height), (12.0, 236.0, LABEL_HEIGHT));
+        assert_eq!(
+            (label.x, label.width, label.height),
+            (12.0, 236.0, LABEL_HEIGHT)
+        );
         assert!(near(column.thumb(1).unwrap().y, 12.0 + h + 32.0));
-        assert!(near(column.content_height(), 3.0 * (h + 32.0) - 12.0 + 24.0));
+        assert!(near(
+            column.content_height(),
+            3.0 * (h + 32.0) - 12.0 + 24.0
+        ));
         assert!(column.thumb(3).is_none());
     }
 
