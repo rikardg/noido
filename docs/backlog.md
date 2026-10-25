@@ -5,6 +5,10 @@ when it is fixed.
 
 ## Known issues
 
+- **Try the LaTeX loop by hand (user).** Run `latexmk -pvc` (or repeated
+  `pdflatex`) with noido open: it should follow each compile, keep the
+  place, and survive a failing build.
+
 - **Render-thread panic leaves the window blank.** If the engine panics on a
   page, the render thread dies silently and every page stays a white
   placeholder. Wrap `render_tile` in `catch_unwind` and report it as
@@ -90,6 +94,32 @@ when it is fixed.
 - After a mouse click an icon button keeps focus, so Space or Enter presses
   it again.
 
+## Reload and one window per file (review minors, 2026-10-25)
+
+- A second launch while the first is still starting (reading the file,
+  loading state, parsing) waits 1 s, gets no answer and opens a second
+  window: the first only serves after `Renderer::start`. Serve right after
+  `claim`.
+- Two launches at the same moment can both become first: the second's
+  `try_overwrite` unlinks the first's live socket. Retry `connect` once on
+  `AddrInUse` before overwriting, or lock around the claim.
+- A write between reading the file and `Watcher::start` is missed until
+  the next change. Arm the debounce once at start (`open_new` skips an
+  unchanged hash anyway).
+- Watcher overflow or rescan events carry no paths, so they're dropped;
+  treat `event.need_rescan()` as a change.
+- Without `XDG_RUNTIME_DIR` the socket is `/tmp/noido-<hash>.sock`, which
+  another local user can predict and squat (every launch on that file then
+  exits silently). Use a per-user 0700 directory and check its owner.
+- `prune` trusts the window name in a state file: a hand-edited
+  `window = "../../x"` makes it delete `docs/../../x.window.ron`. Accept only
+  64 hex characters, as `files_with` does.
+- The socket file stays after a normal quit (the serving thread owns the
+  listener); harmless, the next launch replaces it.
+- Tests: no reload to fewer pages in paged or dual mode comparing the
+  centre; the activation path isn't checked while minimised on Windows or
+  macOS (eframe may not run `ui()` then).
+
 ## Deferred features
 
 - **Automated interactive testing** of the egui frontend: drive key presses,
@@ -143,7 +173,8 @@ when it is fixed.
   file on the app icon.
 - **Bringing the window forward on Windows, checked on Windows:** the
   foreground rules may need `AllowSetForegroundWindow` from the second
-  launch.
+  launch. The handover itself no longer relies on pipe timeouts (unsupported
+  there) but has never run on Windows.
 - **Notes in a right sidebar.** The left sidebar holds search results,
   thumbnails and the outline; the right one holds the reader's notes:
   bookmarks, freeform notes, lasso captures (a region of the page) and text
