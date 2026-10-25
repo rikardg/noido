@@ -1,6 +1,8 @@
 //! noido's own title bar: sidebar toggle, search field, the document's name
 //! with page and zoom, and the menu.
 
+use eframe::egui::text::{CCursor, CCursorRange};
+use eframe::egui::text_edit::TextEditState;
 use eframe::egui::{
     self, Align, Color32, Layout, Painter, Rect, Response, RichText, Sense, Stroke, TextStyle,
     TextWrapMode, ViewportCommand, WidgetText, pos2, vec2,
@@ -56,8 +58,9 @@ impl Default for Rects {
 pub struct Output {
     /// From the sidebar toggle and the menu.
     pub actions: Vec<Action>,
-    /// Enter was pressed in the search field.
-    pub submitted: bool,
+    /// Enter (true) or Shift+Enter (false) was pressed in the search field:
+    /// go to the next or the previous hit.
+    pub step: Option<bool>,
     /// Esc was pressed in the search field.
     pub cancelled: bool,
     /// The search field lost focus some other way, e.g. a click elsewhere.
@@ -77,7 +80,7 @@ pub fn status_text(page: usize, count: usize, scale: f32) -> String {
 pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> Output {
     let mut output = Output {
         actions: vec![],
-        submitted: false,
+        step: None,
         cancelled: false,
         left: false,
         focused: false,
@@ -127,14 +130,18 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
                 .hint_text("Search")
                 .desired_width(width.max(SEARCH_MIN_WIDTH)),
         );
-        let (enter, escape) = ui.input(|i| {
+        let (enter, escape, shift) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Enter),
                 i.key_pressed(egui::Key::Escape),
+                // From the key event itself: Shift as it was when Enter went down.
+                i.events.iter().any(|e| {
+                    matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if modifiers.shift)
+                }),
             )
         });
         if field.lost_focus() && enter {
-            output.submitted = true;
+            output.step = Some(!shift);
             // Stays in the field: Enter will step through hits.
             field.request_focus();
         }
@@ -144,6 +151,11 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         output.focused = field.has_focus();
         if focus {
             field.request_focus();
+            // Selected, so typing replaces the last query.
+            let mut state = TextEditState::load(ui.ctx(), field.id).unwrap_or_default();
+            let all = CCursorRange::two(CCursor::new(0), CCursor::new(search.chars().count()));
+            state.cursor.set_char_range(Some(all));
+            state.store(ui.ctx(), field.id);
         }
         output.rects.search = field.rect;
 

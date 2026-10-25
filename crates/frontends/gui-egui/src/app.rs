@@ -309,6 +309,35 @@ impl NoidoApp {
         }
     }
 
+    /// Goes to the next hit (`forward`) or the previous one: from the
+    /// current hit if the view is still where it put it, else from the view.
+    fn step_hit(&mut self, forward: bool) {
+        let hits = &self.search_state.hits;
+        let target = if self.search_state.at_hit && hits.current().is_some() {
+            if forward {
+                hits.next()
+            } else {
+                hits.previous()
+            }
+        } else {
+            let (x, y) = self.view.offset();
+            let (_, height) = self.view.viewport_size();
+            let layout = self.view.layout();
+            if forward {
+                layout
+                    .doc_point(x, y)
+                    .and_then(|top| hits.first_at_or_after(top))
+            } else {
+                layout
+                    .doc_point(x, y + height)
+                    .and_then(|bottom| hits.last_before(bottom))
+            }
+        };
+        if let Some(index) = target {
+            self.go_to_hit(index);
+        }
+    }
+
     /// Makes hit `index` current and brings it into view.
     fn go_to_hit(&mut self, index: usize) {
         self.search_state.hits.set_current(Some(index));
@@ -566,6 +595,9 @@ impl NoidoApp {
             .show(ui, |ui| titlebar::show(ui, &bar, &mut self.search, focus))
             .inner;
         self.bar = output.rects;
+        if let Some(forward) = output.step {
+            self.step_hit(forward);
+        }
         if output.cancelled {
             if self.search.is_empty() {
                 if std::mem::take(&mut self.sidebar_opened_by_search) {
@@ -600,7 +632,8 @@ impl NoidoApp {
             }
             Action::FocusSearch => self.search_focus_requested = true,
             // Not view moves: going to a hit isn't the reader moving away.
-            Action::NextHit | Action::PreviousHit => {}
+            Action::NextHit => self.step_hit(true),
+            Action::PreviousHit => self.step_hit(false),
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             _ => {
                 self.view.apply(action);
@@ -3094,5 +3127,125 @@ mod tests {
         assert_eq!(found, [4, 8]);
         assert_eq!(hits.current(), Some(0));
         assert_eq!(h.app.view.offset(), offset);
+    }
+
+    /// Ten pages, "cat" on pages 2 (twice), 5 and 7.
+    fn more_cats() -> TextEngine {
+        let mut pages: Vec<&[&str]> = vec![&["a dog"]; 10];
+        pages[2] = &["a cat", "the cat sat"];
+        pages[5] = &["cat"];
+        pages[7] = &["one cat"];
+        TextEngine::new(&pages)
+    }
+
+    fn current(h: &Harness) -> Option<usize> {
+        h.app.search_state.hits.current()
+    }
+
+    #[test]
+    fn enter_goes_to_next_hit_and_wraps() {
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        assert_eq!(current(&h), Some(0));
+        h.press(egui::Key::Enter, Modifiers::NONE);
+        assert_eq!(current(&h), Some(1));
+        h.frames(1, vec![]);
+        assert!(h.ctx.text_edit_focused(), "Enter keeps the field focused");
+        h.press(egui::Key::Enter, Modifiers::NONE);
+        h.press(egui::Key::Enter, Modifiers::NONE);
+        assert_eq!(current(&h), Some(3));
+        assert_eq!(h.app.view.centre_page(), Some(7));
+        h.press(egui::Key::Enter, Modifiers::NONE);
+        assert_eq!(current(&h), Some(0));
+    }
+
+    #[test]
+    fn shift_enter_goes_back() {
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        h.press(egui::Key::Enter, Modifiers::SHIFT);
+        assert_eq!(current(&h), Some(3));
+        h.press(egui::Key::Enter, Modifiers::SHIFT);
+        assert_eq!(current(&h), Some(2));
+    }
+
+    #[test]
+    fn mod_g_and_f3_outside_field() {
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        h.click(pos2(600.0, 500.0));
+        assert!(!h.ctx.text_edit_focused());
+        h.press(egui::Key::G, Modifiers::COMMAND);
+        assert_eq!(current(&h), Some(1));
+        h.press(egui::Key::F3, Modifiers::NONE);
+        assert_eq!(current(&h), Some(2));
+        h.press(egui::Key::G, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert_eq!(current(&h), Some(1));
+        h.press(egui::Key::F3, Modifiers::SHIFT);
+        assert_eq!(current(&h), Some(0));
+    }
+
+    #[test]
+    fn next_after_scrolling_goes_from_view() {
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        go_to(&mut h, 6);
+        h.press(egui::Key::G, Modifiers::COMMAND);
+        assert_eq!(current(&h), Some(3));
+        assert_eq!(h.app.view.centre_page(), Some(7));
+    }
+
+    #[test]
+    fn previous_after_scrolling_goes_from_view() {
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        go_to(&mut h, 6);
+        h.press(egui::Key::G, Modifiers::COMMAND | Modifiers::SHIFT);
+        // The last hit starting above the view's bottom: page 5's, or page
+        // 6's view reaches page 7's top.
+        let page = h
+            .app
+            .search_state
+            .hits
+            .get(current(&h).unwrap())
+            .unwrap()
+            .page;
+        assert!(page == 5 || page == 7, "{page}");
+        assert_ne!(current(&h), Some(1));
+    }
+
+    #[test]
+    fn next_without_hits_does_nothing() {
+        let mut h = searching(&more_cats());
+        let offset = h.app.view.offset();
+        h.press(egui::Key::G, Modifiers::COMMAND);
+        h.press(egui::Key::F3, Modifiers::SHIFT);
+        assert_eq!(current(&h), None);
+        assert_eq!(h.app.view.offset(), offset);
+        search_for(&mut h, "zebra");
+        h.press(egui::Key::Enter, Modifiers::NONE);
+        assert_eq!(current(&h), None);
+    }
+
+    #[test]
+    fn next_in_paged_mode_flips_to_hit() {
+        let mut h = searching(&more_cats());
+        h.press(egui::Key::C, Modifiers::NONE);
+        assert!(!h.app.view.continuous());
+        search_for(&mut h, "cat");
+        assert_eq!(h.app.view.current_spread(), Some(2));
+        h.press(egui::Key::G, Modifiers::COMMAND);
+        h.press(egui::Key::G, Modifiers::COMMAND);
+        assert_eq!(h.app.view.current_spread(), Some(5));
+    }
+
+    #[test]
+    fn mod_f_selects_existing_text() {
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        h.click(pos2(600.0, 500.0));
+        focus_search(&mut h);
+        h.typed("dog");
+        assert_eq!(h.app.search, "dog");
     }
 }
