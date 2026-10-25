@@ -1,12 +1,16 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::{
     self, Color32, ColorImage, Rect, ScrollArea, Sense, TextureHandle, TextureOptions, Vec2, pos2,
     vec2,
 };
-use noido_core::{Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, View, render_scale};
+use noido_core::{
+    Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, View, ViewState, render_scale,
+};
 use noido_render::{DocumentInfo, RenderRequest, Renderer};
+use noido_state::{DocKey, Store};
 
 /// Spreads (pages in single mode) beyond the visible ones that are rendered
 /// ahead, on each side.
@@ -18,6 +22,9 @@ const KEEP: usize = 2;
 const TRACKPAD_FLIP_DISTANCE: f32 = 125.0;
 /// Offset difference, in UI points, below which egui's scroll position is left alone.
 const OFFSET_EPSILON: f32 = 0.5;
+
+/// Seconds the view must stay unchanged before its state is saved.
+const SAVE_DELAY: f64 = 2.0;
 
 /// What egui's scroll area reported at the end of the last frame.
 #[derive(Clone, Copy)]
@@ -36,6 +43,54 @@ pub struct NoidoApp {
     last_scroll: Option<ScrollState>,
     /// Trackpad distance scrolled towards the next flip, positive downwards.
     flip_distance: f32,
+    persistence: Option<Persistence>,
+}
+
+/// Saves the view state of the open document.
+struct Persistence {
+    store: Store,
+    key: DocKey,
+    saved: Option<ViewState>,
+    /// A state not saved yet, and the time it was first seen.
+    changed: Option<(ViewState, f64)>,
+    /// Whether a failed save was already reported.
+    warned: bool,
+}
+
+impl Persistence {
+    /// Saves `state` once it has been unchanged for [`SAVE_DELAY`] at `now`;
+    /// otherwise returns how long until then.
+    fn update(&mut self, state: ViewState, now: f64) -> Option<f64> {
+        if self.saved == Some(state) {
+            self.changed = None;
+            return None;
+        }
+        let since = match self.changed {
+            Some((changed, since)) if changed == state => since,
+            _ => {
+                self.changed = Some((state, now));
+                now
+            }
+        };
+        let left = SAVE_DELAY - (now - since);
+        if left > 0.0 {
+            return Some(left);
+        }
+        self.save(state);
+        None
+    }
+
+    fn save(&mut self, state: ViewState) {
+        if let Err(e) = self.store.save(&self.key, &state)
+            && !self.warned
+        {
+            eprintln!("noido: cannot save view state: {e}");
+            self.warned = true;
+        }
+        // Also after a failure, so it isn't retried every frame.
+        self.saved = Some(state);
+        self.changed = None;
+    }
 }
 
 impl NoidoApp {
@@ -49,6 +104,38 @@ impl NoidoApp {
             keymap: Keymap::native(),
             last_scroll: None,
             flip_distance: 0.0,
+            persistence: None,
+        }
+    }
+
+    /// Restores `restored` and saves the view state from now on.
+    pub fn with_persistence(
+        mut self,
+        store: Store,
+        key: DocKey,
+        restored: Option<ViewState>,
+    ) -> Self {
+        if let Some(state) = &restored {
+            self.view.restore(state);
+        }
+        self.persistence = Some(Persistence {
+            store,
+            key,
+            saved: restored,
+            changed: None,
+            warned: false,
+        });
+        self
+    }
+
+    /// Saves the view state once it has settled.
+    fn persist(&mut self, ctx: &egui::Context) {
+        let (Some(persistence), Some(state)) = (&mut self.persistence, self.view.state()) else {
+            return;
+        };
+        let now = ctx.input(|i| i.time);
+        if let Some(left) = persistence.update(state, now) {
+            ctx.request_repaint_after(Duration::from_secs_f64(left));
         }
     }
 
@@ -244,6 +331,19 @@ impl eframe::App for NoidoApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
     }
+
+    fn on_exit(&mut self) {
+        if let (Some(persistence), Some(state)) = (&mut self.persistence, self.view.state())
+            && persistence.saved != Some(state)
+        {
+            persistence.save(state);
+        }
+    }
+
+    /// The window file holds only the window; egui's own memory isn't wanted.
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
 }
 
 impl NoidoApp {
@@ -281,6 +381,7 @@ impl NoidoApp {
                 offset: output.state.clamped_offset(),
             });
         });
+        self.persist(&ctx);
     }
 }
 
@@ -316,6 +417,9 @@ mod tests {
 
     use egui::{Event, Modifiers, RawInput, pos2};
     use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
+
+    use noido_core::ViewState;
+    use noido_state::{DocKey, Store};
 
     use super::*;
 
@@ -354,12 +458,17 @@ mod tests {
 
     impl Harness {
         fn new() -> Self {
+            Self::build(|app| app)
+        }
+
+        /// A harness whose app is first passed through `setup`.
+        fn build(setup: impl FnOnce(NoidoApp) -> NoidoApp) -> Self {
             let (renderer, info) =
                 Renderer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}))
                     .unwrap();
             let mut harness = Self {
                 ctx: egui::Context::default(),
-                app: NoidoApp::new(renderer, info),
+                app: setup(NoidoApp::new(renderer, info)),
                 size: vec2(900.0, 1000.0),
                 time: 0.0,
             };
@@ -619,5 +728,51 @@ mod tests {
             "drifted {}",
             h.distance_from_centre(centre)
         );
+    }
+
+    fn test_key() -> DocKey {
+        DocKey::new(b"test document", std::path::Path::new("/test.pdf"))
+    }
+
+    #[test]
+    fn restored_state_shows_saved_page() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = ViewState {
+            zoom: noido_core::ZoomMode::FitWidth,
+            scale: 1.0,
+            continuous: true,
+            dual: false,
+            centre: noido_core::DocPoint {
+                page: 6,
+                x: 306.0,
+                y: 400.0,
+            },
+        };
+        let h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_key(), Some(state))
+        });
+        assert_eq!(h.centre().page, 6);
+    }
+
+    #[test]
+    fn saves_after_idle_delay() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let mut h =
+            Harness::build(|app| app.with_persistence(Store::at(dir.path()), test_key(), None));
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        h.frames(60, vec![]);
+        assert_eq!(store.load(&test_key()), None, "saved before the delay");
+
+        h.frames(90, vec![]);
+        assert_eq!(store.load(&test_key()), h.app.view.state());
+
+        let file = dir
+            .path()
+            .join("docs")
+            .join(format!("{}.toml", test_key().hex()));
+        std::fs::remove_file(&file).unwrap();
+        h.frames(180, vec![]);
+        assert!(!file.exists(), "unchanged state was saved again");
     }
 }

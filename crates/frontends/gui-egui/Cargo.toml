@@ -15,8 +15,12 @@ noido-engine.workspace = true
 engine-hayro.workspace = true
 noido-render.workspace = true
 noido-core.workspace = true
+noido-state.workspace = true
 eframe.workspace = true
 clap.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

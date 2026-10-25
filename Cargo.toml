@@ -22,7 +22,7 @@ noido-render = { path = "crates/noido-render" }
 noido-core = { path = "crates/noido-core" }
 noido-state = { path = "crates/noido-state" }
 hayro = "0.8"
-eframe = "0.37"
+eframe = { version = "0.37", features = ["persistence"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 blake3 = "1"

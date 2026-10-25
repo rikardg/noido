@@ -11,9 +11,13 @@ use clap::Parser;
 use eframe::egui;
 use engine_hayro::HayroEngine;
 use noido_render::Renderer;
+use noido_state::{DocKey, Store};
 
 use crate::app::NoidoApp;
 use crate::load::load_document;
+
+/// Documents whose state is kept; older ones are forgotten.
+const REMEMBERED_DOCUMENTS: usize = 1000;
 
 /// UI points scrolled per mouse wheel step (egui's default is 40).
 const WHEEL_SCROLL_SPEED: f32 = 125.0;
@@ -38,6 +42,8 @@ fn main() -> ExitCode {
 
 fn run(path: &Path) -> Result<(), String> {
     let bytes = load_document(path)?;
+    let key = DocKey::new(&bytes, path);
+    let store = Store::open_default();
 
     // Created up front so the render thread can wake the UI when a page is ready.
     let ctx = egui::Context::default();
@@ -63,14 +69,26 @@ fn run(path: &Path) -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("{name} — noido"))
+            // Used when no window was saved yet.
             .with_inner_size([900.0, 1100.0]),
+        persist_window: true,
+        persistence_path: store.as_ref().map(|store| store.window_file(&key)),
         ..Default::default()
+    };
+    let app = NoidoApp::new(renderer, info);
+    let app = match store {
+        Some(store) => {
+            store.prune(REMEMBERED_DOCUMENTS);
+            let restored = store.load(&key);
+            app.with_persistence(store, key, restored)
+        }
+        None => app,
     };
     eframe::run_native_ext(
         "noido",
         options,
         Some(ctx),
-        Box::new(|_cc| Ok(Box::new(NoidoApp::new(renderer, info)))),
+        Box::new(|_cc| Ok(Box::new(app))),
     )
     .map_err(|e| format!("cannot open window: {e}"))
 }
