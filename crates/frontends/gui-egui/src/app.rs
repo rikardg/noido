@@ -210,14 +210,19 @@ impl NoidoApp {
         }
         let keep = window_keep(page_count, thumbnails.sent.unwrap_or(0), THUMBNAIL_BUDGET);
         while let Some(thumbnail) = thumbnails.thumbnailer.try_recv() {
-            // A failed thumbnail leaves the page white; its full render reports errors.
-            if let Ok(image) = thumbnail.result
-                && keep.contains(&thumbnail.page)
-            {
-                let name = format!("thumbnail-{}", thumbnail.page);
-                let size = self.view.layout().page_size(thumbnail.page);
-                let texture = PageImage::load(ctx, name, &image, size, thumbnail.scale);
-                thumbnails.textures.insert(thumbnail.page, texture);
+            match thumbnail.result {
+                Ok(image) if keep.contains(&thumbnail.page) => {
+                    let name = format!("thumbnail-{}", thumbnail.page);
+                    let size = self.view.layout().page_size(thumbnail.page);
+                    let texture = PageImage::load(ctx, name, &image, size, thumbnail.scale);
+                    thumbnails.textures.insert(thumbnail.page, texture);
+                }
+                Ok(_) => {}
+                // A failed thumbnail leaves the page white, not showing an
+                // earlier version; its full render reports errors.
+                Err(_) => {
+                    thumbnails.textures.remove(&thumbnail.page);
+                }
             }
         }
     }
@@ -515,6 +520,8 @@ impl NoidoApp {
                 }
                 Err(e) => {
                     eprintln!("noido: page {}: {e}", rendered.page + 1);
+                    // Not an image of an earlier version in its place.
+                    self.textures.remove(&rendered.page);
                     self.tracker.mark_failed(rendered.page, rendered.scale);
                 }
             }
@@ -587,9 +594,9 @@ impl NoidoApp {
                 }
             }
         }
-        for page in self.tracker.forget_outside(keep) {
-            self.textures.remove(&page);
-        }
+        self.tracker.forget_outside(keep.clone());
+        // Also images kept from an earlier version, which the tracker never knew.
+        self.textures.retain(|page, _| keep.contains(page));
 
         let painter = ui.painter();
         for page in visible {
@@ -2022,5 +2029,66 @@ mod tests {
         h.reload(Arc::new(SizedEngine::letter(10)), test_key());
         h.frames(3, vec![]);
         assert_eq!(h.centre().page, moved);
+    }
+
+    /// Pages whose renders always fail.
+    struct FailingEngine(usize);
+
+    impl PdfEngine for FailingEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(FailingEngine(self.0)))
+        }
+    }
+
+    impl Document for FailingEngine {
+        fn page_count(&self) -> usize {
+            self.0
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument.page_size(page)
+        }
+        fn render_tile(&self, _: usize, _: f32, _: PixelRect) -> Result<Rgba8Image, EngineError> {
+            Err(EngineError::Render("broken".into()))
+        }
+    }
+
+    #[test]
+    fn failed_render_drops_old_image() {
+        let mut h = Harness::new();
+        h.until(|h| h.app.textures.contains_key(&0));
+        h.reload(Arc::new(FailingEngine(10)), recompiled_key());
+        h.until(|h| !h.app.textures.contains_key(&0));
+        assert!(!h.app.textures.contains_key(&0), "old image of page 1 kept");
+    }
+
+    #[test]
+    fn old_images_outside_window_are_dropped() {
+        let mut h = Harness::build_with(Arc::new(BlankEngine30), |app| app);
+        h.until(|h| h.app.textures.contains_key(&0));
+        // The new version's renders fail, so nothing replaces the old images.
+        h.reload(Arc::new(FailingEngine(30)), recompiled_key());
+        go_to(&mut h, 25);
+        h.frames(3, vec![]);
+        assert!(
+            !h.app.textures.contains_key(&0),
+            "textures: {:?}",
+            h.app.textures.keys()
+        );
+    }
+
+    #[test]
+    fn failed_thumbnail_drops_old_one() {
+        let mut h = Harness::build(|app| {
+            let thumbnailer =
+                Thumbnailer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}));
+            app.with_thumbnails(thumbnailer)
+        });
+        let has_thumbnail =
+            |h: &Harness| h.app.thumbnails.as_ref().unwrap().textures.contains_key(&0);
+        h.until(has_thumbnail);
+        assert!(has_thumbnail(&h));
+        h.reload(Arc::new(FailingEngine(10)), recompiled_key());
+        h.until(|h| !has_thumbnail(h));
+        assert!(!has_thumbnail(&h), "old thumbnail of page 1 kept");
     }
 }
