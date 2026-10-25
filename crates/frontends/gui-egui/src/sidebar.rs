@@ -155,6 +155,8 @@ impl SidebarView {
 
     /// The scrolling column, kept on the current page.
     fn scrolled(&mut self, ui: &mut egui::Ui, input: &Input) -> Output {
+        // egui fades the edges of scroll areas; on pages it reads as a shadow.
+        ui.spacing_mut().scroll.fade.strength = 0.0;
         let width = ui.available_width();
         let height = ui.available_height();
         let column = Column::new(input.layout.page_sizes(), width);

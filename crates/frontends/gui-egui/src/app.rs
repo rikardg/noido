@@ -2657,4 +2657,25 @@ mod tests {
             h.app.sidebar_view.sharp_pages()
         );
     }
+
+    /// Whether a gradient to transparent, egui's scroll-area edge fade, was
+    /// painted left of `x`.
+    fn fade_left_of(h: &Harness, x: f32) -> bool {
+        h.shapes.iter().any(|clipped| match &clipped.shape {
+            egui::Shape::Mesh(mesh) => {
+                let alphas: Vec<u8> = mesh.vertices.iter().map(|v| v.color.a()).collect();
+                clipped.shape.visual_bounding_rect().max.x <= x
+                    && alphas.contains(&0)
+                    && alphas.iter().any(|&a| a > 0)
+            }
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn sidebar_edges_have_no_fade() {
+        let mut h = sidebar_on(Arc::new(BlankEngine30));
+        wheel_sidebar(&mut h, -2_000.0);
+        assert!(!fade_left_of(&h, h.app.sidebar.width + 1.0));
+    }
 }
