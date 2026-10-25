@@ -54,7 +54,10 @@ fn main() -> ExitCode {
 fn run(path: &Path) -> Result<(), String> {
     // Before reading the file: a launch on an open file only hands over.
     let listener = match instance::claim(path) {
-        Claim::Running => return Ok(()),
+        Claim::Running => {
+            eprintln!("{}", handed_over(path));
+            return Ok(());
+        }
         Claim::First(listener) => Some(listener),
         Claim::Unavailable => None,
     };
@@ -142,6 +145,15 @@ fn run(path: &Path) -> Result<(), String> {
     .map_err(|e| format!("cannot open window: {e}"))
 }
 
+/// What a launch on an already open file prints. The running noido answered,
+/// but whether its window gets focus is up to the window manager.
+fn handed_over(path: &Path) -> String {
+    format!(
+        "noido: {} is already open; asked its window to come forward",
+        path.display()
+    )
+}
+
 /// noido draws its own title bar: on macOS under the system's transparent
 /// one, which keeps its window buttons; elsewhere without the system frame.
 fn own_title_bar(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
@@ -153,5 +165,18 @@ fn own_title_bar(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
             .with_titlebar_buttons_shown(true)
     } else {
         builder.with_decorations(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handover_message_names_the_file() {
+        assert_eq!(
+            handed_over(Path::new("papers/a.pdf")),
+            "noido: papers/a.pdf is already open; asked its window to come forward"
+        );
     }
 }
