@@ -14,6 +14,7 @@ use noido_engine::{Rgba8Image, Size};
 use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
 use noido_state::{DocState, Slot, Store};
 
+use crate::instance::Activation;
 use crate::titlebar::{self, TITLE_BAR_HEIGHT};
 use crate::watch::{Reload, Watcher};
 use crate::{frame, sidebar};
@@ -70,6 +71,8 @@ pub struct NoidoApp {
     bar: titlebar::Rects,
     /// Brings new versions of the document when its file changes.
     watcher: Option<Watcher>,
+    /// Set when a later launch on the same file asks the window forward.
+    activation: Option<Activation>,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -149,6 +152,7 @@ impl NoidoApp {
             sidebar_opened_by_search: false,
             bar: titlebar::Rects::default(),
             watcher: None,
+            activation: None,
         }
     }
 
@@ -226,6 +230,25 @@ impl NoidoApp {
     pub fn with_watcher(mut self, watcher: Watcher) -> Self {
         self.watcher = Some(watcher);
         self
+    }
+
+    /// Comes forward when `activation` is set.
+    pub fn with_activation(mut self, activation: Activation) -> Self {
+        self.activation = Some(activation);
+        self
+    }
+
+    /// Brings the window forward if a later launch asked. On Wayland,
+    /// where an app can't raise itself, the request for attention is what
+    /// shows (on GNOME, a "noido is ready" notice).
+    fn come_forward(&self, ctx: &egui::Context) {
+        if self.activation.as_ref().is_some_and(Activation::take) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
+        }
     }
 
     /// Takes in the newest version of the document the watcher brought, if
@@ -594,6 +617,7 @@ impl NoidoApp {
     /// One frame of the viewer.
     fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.come_forward(&ctx);
         self.receive_renders(&ctx);
         self.sync_from_egui();
         self.receive_reload();
@@ -1921,5 +1945,27 @@ mod tests {
                 .ends_with(format!("{}.window.ron", test_key().hex())),
             "window file moved"
         );
+    }
+
+    #[test]
+    fn activation_raises_window() {
+        let activation = crate::instance::Activation::default();
+        let mut h = Harness::build(|app| app.with_activation(activation.clone()));
+        h.frames(1, vec![]);
+        assert!(!h.commands.contains(&egui::ViewportCommand::Focus));
+        activation.request();
+        h.frames(1, vec![]);
+        assert!(
+            h.commands
+                .contains(&egui::ViewportCommand::Minimized(false))
+        );
+        assert!(h.commands.contains(&egui::ViewportCommand::Focus));
+        assert!(
+            h.commands
+                .contains(&egui::ViewportCommand::RequestUserAttention(
+                    egui::UserAttentionType::Informational
+                ))
+        );
+        assert!(!activation.take(), "left set");
     }
 }

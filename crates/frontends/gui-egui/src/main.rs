@@ -2,6 +2,7 @@
 
 mod app;
 mod frame;
+mod instance;
 mod interrupt;
 mod load;
 mod sidebar;
@@ -19,6 +20,7 @@ use noido_render::{Renderer, Thumbnailer};
 use noido_state::{DocKey, Store};
 
 use crate::app::NoidoApp;
+use crate::instance::Claim;
 use crate::load::load_document;
 use crate::watch::Watcher;
 
@@ -50,6 +52,12 @@ fn main() -> ExitCode {
 }
 
 fn run(path: &Path) -> Result<(), String> {
+    // Before reading the file: a launch on an open file only hands over.
+    let listener = match instance::claim(path) {
+        Claim::Running => return Ok(()),
+        Claim::First(listener) => Some(listener),
+        Claim::Unavailable => None,
+    };
     let bytes = load_document(path)?;
     let key = DocKey::new(&bytes, path);
     // Read before the window file is asked for: the entry names it.
@@ -87,6 +95,7 @@ fn run(path: &Path) -> Result<(), String> {
         let ctx = ctx.clone();
         Arc::new(move || ctx.request_repaint())
     };
+    let activation = listener.map(|listener| listener.serve(wake.clone()));
     let watcher = Watcher::start(path, key, Arc::new(HayroEngine), wake)
         .inspect_err(|e| eprintln!("noido: cannot watch {}: {e}", path.display()))
         .ok();
@@ -112,6 +121,10 @@ fn run(path: &Path) -> Result<(), String> {
     let app = NoidoApp::new(renderer, info)
         .with_name(name.clone())
         .with_thumbnails(thumbnailer);
+    let app = match activation {
+        Some(activation) => app.with_activation(activation),
+        None => app,
+    };
     let app = match watcher {
         Some(watcher) => app.with_watcher(watcher),
         None => app,
