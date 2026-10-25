@@ -41,6 +41,10 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
             check(Action::ToggleDual, "Dual page", Check::Dual),
         ],
         vec![check(Action::ToggleSidebar, "Show sidebar", Check::Sidebar)],
+        vec![
+            entry(Action::NextHit, "Next match"),
+            entry(Action::PreviousHit, "Previous match"),
+        ],
         vec![entry(Action::Quit, "Quit")],
     ]
 }
@@ -63,6 +67,7 @@ mod tests {
                 vec!["Fit width", "Fit page", "Zoom in", "Zoom out"],
                 vec!["Continuous", "Dual page"],
                 vec!["Show sidebar"],
+                vec!["Next match", "Previous match"],
                 vec!["Quit"],
             ]
         );

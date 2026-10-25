@@ -63,7 +63,7 @@ when it is fixed.
   at (0, 0). Ignore non-positive sizes after the first real one.
   (`crates/noido-core/src/view.rs`)
 - **Alt+W / Alt+F trigger the plain-key bindings.** `KeyPress` only carries
-  `command`; carry `alt` (and later `shift`) or skip presses with Alt.
+  `command` and `shift`; carry `alt` or skip presses with Alt.
 - **Kinetic scroll velocity survives a zoom.** A coasting touch drag keeps
   going in the new content coordinates after a zoom. Low impact.
 
@@ -74,8 +74,6 @@ when it is fixed.
 - **Prefetched pages in paged fit-page mode render twice** when the next
   spread fits at a different scale: they are rendered at the current spread's
   scale, then again after the flip. Wasted work only.
-- **Shift+C / Shift+D also toggle view modes** (only `command` is checked;
-  same root as the Alt+W/F item above).
 
 ## View state storage (review minors, 2026-10-25)
 

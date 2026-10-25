@@ -11,15 +11,18 @@ pub enum Key {
     C,
     D,
     Q,
+    G,
+    F3,
     F9,
 }
 
 /// A key with the state of the platform's primary modifier (`command`: Ctrl,
-/// or Cmd on macOS).
+/// or Cmd on macOS) and Shift.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct KeyPress {
     pub key: Key,
     pub command: bool,
+    pub shift: bool,
 }
 
 /// Viewer actions that keys (and later menus) trigger.
@@ -35,6 +38,8 @@ pub enum Action {
     ToggleDual,
     ToggleSidebar,
     FocusSearch,
+    NextHit,
+    PreviousHit,
     Quit,
 }
 
@@ -50,8 +55,16 @@ impl Keymap {
         let plain = |key| KeyPress {
             key,
             command: false,
+            shift: false,
         };
-        let command = |key| KeyPress { key, command: true };
+        let command = |key| KeyPress {
+            command: true,
+            ..plain(key)
+        };
+        let shift = |press: KeyPress| KeyPress {
+            shift: true,
+            ..press
+        };
         let bindings = vec![
             (plain(Key::PageUp), Action::ScrollScreenUp),
             (plain(Key::PageDown), Action::ScrollScreenDown),
@@ -64,6 +77,10 @@ impl Keymap {
             (plain(Key::D), Action::ToggleDual),
             (plain(Key::F9), Action::ToggleSidebar),
             (command(Key::F), Action::FocusSearch),
+            (command(Key::G), Action::NextHit),
+            (shift(command(Key::G)), Action::PreviousHit),
+            (plain(Key::F3), Action::NextHit),
+            (shift(plain(Key::F3)), Action::PreviousHit),
             (command(Key::Q), Action::Quit),
         ];
         Self { bindings }
@@ -91,7 +108,7 @@ impl Keymap {
 }
 
 fn acts_while_editing(press: KeyPress) -> bool {
-    press.command || matches!(press.key, Key::F9 | Key::PageUp | Key::PageDown)
+    press.command || matches!(press.key, Key::F3 | Key::F9 | Key::PageUp | Key::PageDown)
 }
 
 /// How shortcuts are written.
@@ -114,13 +131,17 @@ pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
         Key::C => "C",
         Key::D => "D",
         Key::Q => "Q",
+        Key::G => "G",
+        Key::F3 => "F3",
         Key::F9 => "F9",
     };
-    match (press.command, platform) {
-        (false, _) => key.to_owned(),
-        (true, Platform::Mac) => format!("⌘{key}"),
-        (true, Platform::Other) => format!("Ctrl+{key}"),
-    }
+    let (shift, command) = match platform {
+        Platform::Mac => ("⇧", "⌘"),
+        Platform::Other => ("Shift+", "Ctrl+"),
+    };
+    let shift = if press.shift { shift } else { "" };
+    let command = if press.command { command } else { "" };
+    format!("{shift}{command}{key}")
 }
 
 /// Fraction of the visible height that stays on screen when scrolling a screenful.
@@ -147,7 +168,77 @@ mod tests {
     use super::*;
 
     fn press(key: Key, command: bool) -> KeyPress {
-        KeyPress { key, command }
+        KeyPress {
+            key,
+            command,
+            shift: false,
+        }
+    }
+
+    fn shifted(key: Key, command: bool) -> KeyPress {
+        KeyPress {
+            shift: true,
+            ..press(key, command)
+        }
+    }
+
+    #[test]
+    fn mod_g_and_f3_go_to_next_hit() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::G, true), false),
+            Some(Action::NextHit)
+        );
+        assert_eq!(
+            keymap.action(press(Key::F3, false), false),
+            Some(Action::NextHit)
+        );
+    }
+
+    #[test]
+    fn shift_selects_previous_hit() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(shifted(Key::G, true), false),
+            Some(Action::PreviousHit)
+        );
+        assert_eq!(
+            keymap.action(shifted(Key::F3, false), false),
+            Some(Action::PreviousHit)
+        );
+    }
+
+    #[test]
+    fn f3_acts_while_editing() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::F3, false), true),
+            Some(Action::NextHit)
+        );
+        assert_eq!(
+            keymap.action(shifted(Key::F3, false), true),
+            Some(Action::PreviousHit)
+        );
+    }
+
+    #[test]
+    fn shift_c_does_not_toggle() {
+        let keymap = Keymap::native();
+        assert_eq!(keymap.action(shifted(Key::C, false), false), None);
+        assert_eq!(keymap.action(shifted(Key::D, false), false), None);
+    }
+
+    #[test]
+    fn shortcut_label_shows_shift() {
+        assert_eq!(
+            shortcut_label(shifted(Key::G, true), Platform::Other),
+            "Shift+Ctrl+G"
+        );
+        assert_eq!(shortcut_label(shifted(Key::G, true), Platform::Mac), "⇧⌘G");
+        assert_eq!(
+            shortcut_label(shifted(Key::F3, false), Platform::Other),
+            "Shift+F3"
+        );
     }
 
     #[test]

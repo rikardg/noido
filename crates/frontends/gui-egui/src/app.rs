@@ -435,6 +435,7 @@ impl NoidoApp {
                     } => core_key(*key).map(|key| KeyPress {
                         key,
                         command: modifiers.command,
+                        shift: modifiers.shift,
                     }),
                     _ => None,
                 })
@@ -541,6 +542,8 @@ impl NoidoApp {
                 self.sidebar_opened_by_search = false;
             }
             Action::FocusSearch => self.search_focus_requested = true,
+            // Not view moves: going to a hit isn't the reader moving away.
+            Action::NextHit | Action::PreviousHit => {}
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             _ => {
                 self.view.apply(action);
@@ -822,6 +825,8 @@ fn core_key(key: egui::Key) -> Option<Key> {
         egui::Key::C => Some(Key::C),
         egui::Key::D => Some(Key::D),
         egui::Key::Q => Some(Key::Q),
+        egui::Key::G => Some(Key::G),
+        egui::Key::F3 => Some(Key::F3),
         egui::Key::F9 => Some(Key::F9),
         _ => None,
     }
