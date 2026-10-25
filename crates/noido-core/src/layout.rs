@@ -18,11 +18,23 @@ pub struct PageRect {
     pub height: f32,
 }
 
-/// Continuous vertical layout: pages stacked top to bottom, fitted to the available width.
+/// A point on a page in PDF points from the page's top-left. Points in the
+/// margins or gaps around pages are relative to the nearest page above, so
+/// `x` and `y` may lie outside the page.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DocPoint {
+    pub page: usize,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Continuous vertical layout: pages stacked top to bottom at a given scale,
+/// centred horizontally.
 pub struct Layout {
     page_sizes: Vec<Size>,
     widest: f32,
     scale: f32,
+    content_width: f32,
     rects: Vec<PageRect>,
 }
 
@@ -33,27 +45,26 @@ impl Layout {
             page_sizes,
             widest,
             scale: 0.0,
+            content_width: 0.0,
             rects: Vec::new(),
         };
-        layout.set_available_width(0.0);
+        layout.arrange(0.0, 0.0);
         layout
     }
 
-    pub fn set_available_width(&mut self, width: f32) {
-        self.scale = if self.widest > 0.0 {
-            ((width - 2.0 * MARGIN) / self.widest).max(0.0)
-        } else {
-            0.0
-        };
-        let column = self.widest * self.scale;
+    /// Lays the pages out at `scale` UI points per PDF point. The content is at
+    /// least `available_width` wide.
+    pub fn arrange(&mut self, scale: f32, available_width: f32) {
+        self.scale = scale;
+        self.content_width = available_width.max(self.widest * scale + 2.0 * MARGIN);
         let mut y = MARGIN;
         self.rects = self
             .page_sizes
             .iter()
             .map(|size| {
-                let (w, h) = (size.width * self.scale, size.height * self.scale);
+                let (w, h) = (size.width * scale, size.height * scale);
                 let rect = PageRect {
-                    x: MARGIN + (column - w) / 2.0,
+                    x: (self.content_width - w) / 2.0,
                     y,
                     width: w,
                     height: h,
@@ -64,13 +75,30 @@ impl Layout {
             .collect();
     }
 
-    /// UI points per PDF point.
+    /// UI points per PDF point, as last arranged.
     pub fn scale(&self) -> f32 {
         self.scale
     }
 
+    pub fn page_count(&self) -> usize {
+        self.page_sizes.len()
+    }
+
+    pub fn page_size(&self, page: usize) -> Option<Size> {
+        self.page_sizes.get(page).copied()
+    }
+
+    /// Width of the widest page in PDF points.
+    pub fn widest_page(&self) -> f32 {
+        self.widest
+    }
+
     pub fn page_rect(&self, page: usize) -> Option<PageRect> {
         self.rects.get(page).copied()
+    }
+
+    pub fn content_width(&self) -> f32 {
+        self.content_width
     }
 
     pub fn content_height(&self) -> f32 {
@@ -82,6 +110,26 @@ impl Layout {
         let start = self.rects.partition_point(|r| r.y + r.height <= top);
         let end = self.rects.partition_point(|r| r.y < bottom);
         start..end.max(start)
+    }
+
+    /// The document point at content point (`x`, `y`).
+    pub fn doc_point(&self, x: f32, y: f32) -> Option<DocPoint> {
+        if self.scale <= 0.0 || self.rects.is_empty() {
+            return None;
+        }
+        let page = self.rects.partition_point(|r| r.y <= y).saturating_sub(1);
+        let rect = self.rects[page];
+        Some(DocPoint {
+            page,
+            x: (x - rect.x) / self.scale,
+            y: (y - rect.y) / self.scale,
+        })
+    }
+
+    /// The content point of document point `p`.
+    pub fn content_point(&self, p: DocPoint) -> Option<(f32, f32)> {
+        let rect = self.rects.get(p.page)?;
+        Some((rect.x + p.x * self.scale, rect.y + p.y * self.scale))
     }
 }
 
@@ -106,12 +154,12 @@ mod tests {
 
     fn two_pages() -> Layout {
         let mut layout = Layout::new(vec![size(612.0, 792.0), size(306.0, 396.0)]);
-        layout.set_available_width(636.0);
+        layout.arrange(1.0, 636.0);
         layout
     }
 
     #[test]
-    fn fit_width_scale() {
+    fn arranges_at_scale() {
         let layout = two_pages();
         assert_eq!(layout.scale(), 1.0);
         assert_eq!(
@@ -133,6 +181,7 @@ mod tests {
             })
         );
         assert_eq!(layout.content_height(), 12.0 + 792.0 + 12.0 + 396.0 + 12.0);
+        assert_eq!(layout.content_width(), 636.0);
     }
 
     #[test]
@@ -147,26 +196,51 @@ mod tests {
     #[test]
     fn no_pages_is_safe() {
         let mut layout = Layout::new(vec![]);
-        layout.set_available_width(500.0);
-        assert_eq!(layout.scale(), 0.0);
+        layout.arrange(1.0, 500.0);
         assert_eq!(layout.content_height(), 0.0);
         assert_eq!(layout.page_rect(0), None);
         assert!(layout.visible_pages(0.0, 1000.0).is_empty());
+        assert_eq!(layout.doc_point(10.0, 10.0), None);
     }
 
     #[test]
     fn zero_width_page_is_safe() {
         let mut layout = Layout::new(vec![size(0.0, 100.0)]);
-        layout.set_available_width(500.0);
-        assert_eq!(layout.scale(), 0.0);
+        layout.arrange(1.0, 500.0);
         assert!(layout.page_rect(0).is_some());
+        assert_eq!(layout.widest_page(), 0.0);
     }
 
     #[test]
-    fn narrow_window_never_negative() {
-        let mut layout = two_pages();
-        layout.set_available_width(10.0);
-        assert!(layout.scale() >= 0.0);
+    fn wide_pages_extend_content() {
+        let mut layout = Layout::new(vec![size(612.0, 792.0)]);
+        layout.arrange(2.0, 500.0);
+        assert_eq!(layout.content_width(), 1248.0);
+        assert_eq!(layout.page_rect(0).unwrap().x, 12.0);
+    }
+
+    #[test]
+    fn narrow_pages_centre_in_window() {
+        let mut layout = Layout::new(vec![size(612.0, 792.0)]);
+        layout.arrange(0.5, 1000.0);
+        assert_eq!(layout.page_rect(0).unwrap().x, (1000.0 - 306.0) / 2.0);
+    }
+
+    #[test]
+    fn doc_point_round_trip() {
+        let layout = two_pages();
+        let p = layout.doc_point(300.0, 900.0).unwrap();
+        assert_eq!(p.page, 1);
+        let (x, y) = layout.content_point(p).unwrap();
+        assert!((x - 300.0).abs() < 1e-3 && (y - 900.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn doc_point_in_gap_refers_to_page_above() {
+        let layout = two_pages();
+        let p = layout.doc_point(100.0, 12.0 + 792.0 + 6.0).unwrap();
+        assert_eq!(p.page, 0);
+        assert!((p.y - 798.0).abs() < 1e-3);
     }
 
     #[test]

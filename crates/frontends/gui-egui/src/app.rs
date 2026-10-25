@@ -4,7 +4,7 @@ use eframe::egui::{
     self, Color32, ColorImage, Rect, ScrollArea, Sense, TextureHandle, TextureOptions, pos2, vec2,
 };
 use noido_core::{
-    Key, Keymap, Layout, MAX_RENDER_SIDE, RenderTracker, render_scale, scroll_target,
+    Key, Keymap, Layout, MARGIN, MAX_RENDER_SIDE, RenderTracker, render_scale, scroll_target,
 };
 use noido_engine::Size;
 use noido_render::{DocumentInfo, RenderRequest, Renderer};
@@ -88,7 +88,14 @@ impl NoidoApp {
 
     fn pages(&mut self, ui: &mut egui::Ui, viewport: Rect) {
         self.viewport = viewport;
-        self.layout.set_available_width(ui.available_width());
+        let width = ui.available_width();
+        let widest = self.layout.widest_page();
+        let fit_width = if widest > 0.0 {
+            ((width - 2.0 * MARGIN) / widest).max(0.0)
+        } else {
+            0.0
+        };
+        self.layout.arrange(fit_width, width);
         let (content, _) = ui.allocate_exact_size(
             vec2(ui.available_width(), self.layout.content_height()),
             Sense::hover(),
