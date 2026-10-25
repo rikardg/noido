@@ -287,3 +287,9 @@ when it is fixed.
 - **`Hits::first_at_or_after` / `last_before`** are unused since next and
   previous compare content positions (`first_where` / `last_where`); drop
   them or use them.
+- **Paged fit modes render the neighbouring hits' pages at the current
+  spread's scale.** With mixed page sizes the page is rendered again at its
+  own fit scale after the step, and the page left behind again at the new
+  one's: two extra renders per step. The prefetch window does the same.
+- **The prefetched hit targets shift while a search is still running**
+  (until a hit below the view arrives); a little wasted render work.

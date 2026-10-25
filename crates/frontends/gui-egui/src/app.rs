@@ -751,21 +751,28 @@ impl NoidoApp {
             let window = spread_pages(window.start, window.end - 1);
             window.start.min(visible.start)..window.end.max(visible.end)
         };
-        // The neighbouring hits' spreads, where outside the window.
-        let mut extra: Vec<usize> = Vec::new();
+        // The neighbouring hits' spreads: rendered wherever they are (the
+        // window renders only a few spreads ahead and behind), and kept where
+        // outside the window.
+        let mut ahead: Vec<usize> = Vec::new();
         for page in hit_pages {
             for page in layout.spread_pages(layout.spread_of(page)) {
-                if !window.contains(&page) && !extra.contains(&page) {
-                    extra.push(page);
+                if !visible.contains(&page) && !ahead.contains(&page) {
+                    ahead.push(page);
                 }
             }
         }
+        let extra: Vec<usize> = ahead
+            .iter()
+            .copied()
+            .filter(|page| !window.contains(page))
+            .collect();
 
         // Visible pages first, then the neighbouring hits' (stepping to one
         // is likely while searching), then the window around the current
         // spread, nearest first and mostly ahead.
         let mut order: Vec<usize> = visible.clone().collect();
-        order.extend(&extra);
+        order.extend(&ahead);
         for spread in window_order(spread_count, focus, self.direction, PREFETCH_BUDGET) {
             order.extend(
                 layout
@@ -3529,5 +3536,40 @@ mod tests {
         let rendered = engine.rendered.lock().unwrap().clone();
         assert!(!rendered.is_empty());
         assert!(rendered.iter().all(|&p| p < 30), "{rendered:?}");
+    }
+
+    #[test]
+    fn previous_hit_behind_the_prefetch_window_is_rendered() {
+        let mut pages: Vec<&[&str]> = vec![&["a dog"]; 40];
+        pages[20] = &["cat"];
+        pages[26] = &["cat owl"];
+        let engine = TextEngine::new(&pages);
+        let mut h = searching(&engine);
+        // A jump there, not scrolling past page 20.
+        search_for(&mut h, "owl");
+        assert_eq!(h.app.view.centre_page(), Some(26));
+        assert!(!engine.rendered.lock().unwrap().contains(&20));
+        search_for(&mut h, "cat");
+        assert_eq!(h.app.view.centre_page(), Some(26));
+        // Six pages behind: inside the keep window, outside the 3 behind
+        // rendered ahead.
+        h.until(|_| engine.rendered.lock().unwrap().contains(&20));
+        assert!(engine.rendered.lock().unwrap().contains(&20));
+    }
+
+    #[test]
+    fn dual_mode_renders_hit_spread_ahead() {
+        let engine = far_cats();
+        let mut h = searching(&engine);
+        h.press(egui::Key::D, Modifiers::NONE);
+        search_for(&mut h, "cat");
+        let layout = h.app.view.layout();
+        let spread = layout.spread_pages(layout.spread_of(150));
+        h.until(|_| {
+            let rendered = engine.rendered.lock().unwrap();
+            spread.clone().all(|p| rendered.contains(&p))
+        });
+        let rendered = engine.rendered.lock().unwrap();
+        assert!(spread.clone().all(|p| rendered.contains(&p)), "{spread:?}");
     }
 }
