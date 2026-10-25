@@ -1,6 +1,7 @@
 //! `noido <file.pdf>`: open a PDF in the egui frontend.
 
 mod app;
+mod interrupt;
 mod load;
 
 use std::path::{Path, PathBuf};
@@ -57,6 +58,7 @@ fn run(path: &Path) -> Result<(), String> {
         o.input_options.line_scroll_speed = WHEEL_SCROLL_SPEED;
         o.input_options.scroll_zoom_speed /= factor;
     });
+    interrupt::close_on_interrupt(ctx.clone());
     let waker_ctx = ctx.clone();
     let waker = Box::new(move || waker_ctx.request_repaint());
     let (renderer, info) = Renderer::start(Arc::new(HayroEngine), bytes, waker)
