@@ -1,6 +1,6 @@
 # Title bar and sidebar shell
 
-Date: 2026-10-25 · Status: for approval
+Date: 2026-10-25 · Status: approved
 
 ## Intent
 
@@ -38,6 +38,9 @@ sidebar in later rounds.
 - **Search field width:** follows the sidebar's width when the sidebar is
   open, so the field sits right above the results; minimum 160 points;
   200 points when the sidebar is hidden.
+  *To check by hand (user's question):* the field can be wider with the
+  sidebar hidden (200) than with a narrow sidebar open (160); see whether
+  that looks odd once it can be tried.
 - **Search field keys:** Mod+F focuses it (the design document's Find key).
   Esc in the field leaves it: focus returns to the page, and if Enter
   opened the sidebar, the sidebar closes again.
