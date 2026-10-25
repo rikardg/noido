@@ -10,6 +10,8 @@ use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8I
 
 pub struct Thumbnail {
     pub page: usize,
+    /// The scale it was rendered at.
+    pub scale: f32,
     pub result: Result<Rgba8Image, EngineError>,
 }
 
@@ -82,11 +84,22 @@ fn run(
             if delivered[page] {
                 continue;
             }
-            let result = document.page_size(page).and_then(|size| {
-                let scale = thumbnail_scale(size);
-                document.render_tile(page, scale, PixelRect::full_page(size, scale))
-            });
-            if results.send(Thumbnail { page, result }).is_err() {
+            let (scale, result) = match document.page_size(page) {
+                Ok(size) => {
+                    let scale = thumbnail_scale(size);
+                    let tile = PixelRect::full_page(size, scale);
+                    (scale, document.render_tile(page, scale, tile))
+                }
+                Err(e) => (1.0, Err(e)),
+            };
+            if results
+                .send(Thumbnail {
+                    page,
+                    scale,
+                    result,
+                })
+                .is_err()
+            {
                 return;
             }
             delivered[page] = true;

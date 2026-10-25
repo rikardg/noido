@@ -10,7 +10,7 @@ use noido_core::{
     Direction, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, THUMBNAIL_BUDGET, View,
     ViewState, render_scale, thumbnail_keep,
 };
-use noido_engine::Rgba8Image;
+use noido_engine::{Rgba8Image, Size};
 use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
 use noido_state::{DocKey, Store};
 
@@ -40,7 +40,7 @@ pub struct NoidoApp {
     renderer: Renderer,
     view: View,
     tracker: RenderTracker,
-    textures: HashMap<usize, TextureHandle>,
+    textures: HashMap<usize, PageImage>,
     keymap: Keymap,
     last_scroll: Option<ScrollState>,
     /// Trackpad distance scrolled towards the next flip, positive downwards.
@@ -52,7 +52,7 @@ pub struct NoidoApp {
 /// Low-res images shown for pages whose full render hasn't arrived.
 struct Thumbnails {
     thumbnailer: Thumbnailer,
-    textures: HashMap<usize, TextureHandle>,
+    textures: HashMap<usize, PageImage>,
     /// The page the thumbnailer was last pointed at.
     focus: Option<usize>,
     direction: Direction,
@@ -160,14 +160,15 @@ impl NoidoApp {
                 && keep.contains(&thumbnail.page)
             {
                 let name = format!("thumbnail-{}", thumbnail.page);
-                let texture = load_texture(ctx, name, &image);
+                let size = self.view.layout().page_size(thumbnail.page);
+                let texture = PageImage::load(ctx, name, &image, size, thumbnail.scale);
                 thumbnails.textures.insert(thumbnail.page, texture);
             }
         }
     }
 
     /// The best image of `page`: its full render, else its thumbnail.
-    fn page_image(&self, page: usize) -> Option<&TextureHandle> {
+    fn page_image(&self, page: usize) -> Option<&PageImage> {
         self.textures.get(&page).or_else(|| {
             self.thumbnails
                 .as_ref()
@@ -316,7 +317,8 @@ impl NoidoApp {
             match rendered.result {
                 Ok(image) => {
                     let name = format!("page-{}", rendered.page);
-                    let texture = load_texture(ctx, name, &image);
+                    let size = self.view.layout().page_size(rendered.page);
+                    let texture = PageImage::load(ctx, name, &image, size, rendered.scale);
                     self.textures.insert(rendered.page, texture);
                     self.tracker.mark_ready(rendered.page, rendered.scale);
                 }
@@ -380,9 +382,8 @@ impl NoidoApp {
             };
             let rect = Rect::from_min_size(content.min + vec2(r.x, r.y), vec2(r.width, r.height));
             match self.page_image(page) {
-                Some(texture) => {
-                    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                    painter.image(texture.id(), rect, uv, Color32::WHITE);
+                Some(image) => {
+                    painter.image(image.texture.id(), rect, image.uv, Color32::WHITE);
                 }
                 None => {
                     painter.rect_filled(rect, 0.0, Color32::WHITE);
@@ -451,10 +452,46 @@ impl NoidoApp {
     }
 }
 
-fn load_texture(ctx: &egui::Context, name: String, image: &Rgba8Image) -> TextureHandle {
-    let size = [image.width() as usize, image.height() as usize];
-    let color_image = ColorImage::from_rgba_premultiplied(size, image.pixels());
-    ctx.load_texture(name, color_image, TextureOptions::LINEAR)
+/// A rendered page on the GPU, full resolution or thumbnail.
+#[derive(Clone)]
+struct PageImage {
+    texture: TextureHandle,
+    /// The part of the texture the page covers (see [`page_uv`]).
+    uv: Rect,
+}
+
+impl PageImage {
+    /// Uploads `image`, a render of a page of `size` at `scale`.
+    fn load(
+        ctx: &egui::Context,
+        name: String,
+        image: &Rgba8Image,
+        size: Option<Size>,
+        scale: f32,
+    ) -> Self {
+        let pixels = [image.width() as usize, image.height() as usize];
+        let color_image = ColorImage::from_rgba_premultiplied(pixels, image.pixels());
+        let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        Self {
+            texture: ctx.load_texture(name, color_image, TextureOptions::LINEAR),
+            uv: size.map_or(full, |size| page_uv(size, scale, image)),
+        }
+    }
+}
+
+/// The part of `image` that the page covers. Renders are rounded up to whole
+/// pixels, so the last row and column are partly padding; stretching them
+/// onto the page would squeeze the content towards the top-left, by up to a
+/// pixel of the image (several screen pixels for a thumbnail).
+fn page_uv(size: Size, scale: f32, image: &Rgba8Image) -> Rect {
+    let covered = |length: f32, pixels: u32| (length * scale / pixels as f32).min(1.0);
+    Rect::from_min_max(
+        pos2(0.0, 0.0),
+        pos2(
+            covered(size.width, image.width()),
+            covered(size.height, image.height()),
+        ),
+    )
 }
 
 /// The parts of a mouse wheel event that decide whether it flips a page.
@@ -885,9 +922,9 @@ mod tests {
         assert!(!file.exists(), "unchanged state was saved again");
     }
 
-    fn blank_texture(ctx: &egui::Context, name: &str) -> TextureHandle {
-        let image = ColorImage::from_rgba_premultiplied([1, 1], &[255; 4]);
-        ctx.load_texture(name, image, TextureOptions::LINEAR)
+    fn blank_texture(ctx: &egui::Context, name: &str) -> PageImage {
+        let image = Rgba8Image::from_premultiplied(1, 1, vec![255; 4]).unwrap();
+        PageImage::load(ctx, name.into(), &image, None, 1.0)
     }
 
     #[test]
@@ -904,9 +941,15 @@ mod tests {
         let thumbnails = &mut h.app.thumbnails.as_mut().unwrap().textures;
         thumbnails.clear();
         thumbnails.insert(3, thumbnail.clone());
-        assert_eq!(h.app.page_image(3).map(|t| t.id()), Some(thumbnail.id()));
+        assert_eq!(
+            h.app.page_image(3).map(|i| i.texture.id()),
+            Some(thumbnail.texture.id())
+        );
         h.app.textures.insert(3, full.clone());
-        assert_eq!(h.app.page_image(3).map(|t| t.id()), Some(full.id()));
+        assert_eq!(
+            h.app.page_image(3).map(|i| i.texture.id()),
+            Some(full.texture.id())
+        );
         assert!(h.app.page_image(4).is_none());
     }
 
@@ -938,9 +981,32 @@ mod tests {
             h.frames(1, vec![]);
         }
         let thumbnails = &h.app.thumbnails.as_ref().unwrap().textures;
-        let thumbnail = thumbnails.get(&page).expect("thumbnail arrived").id();
+        let thumbnail = thumbnails
+            .get(&page)
+            .expect("thumbnail arrived")
+            .texture
+            .id();
         assert!(!h.app.textures.contains_key(&page));
-        assert_eq!(h.app.page_image(page).map(|t| t.id()), Some(thumbnail));
+        assert_eq!(
+            h.app.page_image(page).map(|i| i.texture.id()),
+            Some(thumbnail)
+        );
         drop(gate);
+    }
+
+    #[test]
+    fn page_uv_covers_only_the_page() {
+        // Letter at thumbnail scale is 155.3 px tall, rendered into 156 rows;
+        // the last 0.7 row is padding and must not be stretched onto the page.
+        let letter = Size {
+            width: 612.0,
+            height: 792.0,
+        };
+        let scale = noido_core::thumbnail_scale(letter);
+        let image = Rgba8Image::from_premultiplied(120, 156, vec![255; 120 * 156 * 4]).unwrap();
+        let uv = page_uv(letter, scale, &image);
+        assert_eq!(uv.min, pos2(0.0, 0.0));
+        assert_eq!(uv.max.x, 1.0);
+        assert!((uv.max.y - 792.0 * scale / 156.0).abs() < 1e-6, "{uv:?}");
     }
 }
