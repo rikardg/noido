@@ -3,6 +3,7 @@
 mod app;
 mod interrupt;
 mod load;
+mod sidebar;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -51,6 +52,8 @@ fn run(path: &Path) -> Result<(), String> {
     // Mod +/-/0 zoom the document, not egui's interface.
     ctx.options_mut(|o| {
         o.zoom_with_keyboard = false;
+        // Mod+Q quits through noido's keymap, like every other shortcut.
+        o.quit_shortcuts.clear();
         // Mouse wheel steps scroll further than egui's default. egui derives
         // Mod+wheel zoom from the same scaled delta, so slow zoom down by the
         // same factor to keep it unchanged.

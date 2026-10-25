@@ -7,12 +7,14 @@ use eframe::egui::{
     vec2,
 };
 use noido_core::{
-    Direction, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, SidebarState,
+    Action, Direction, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, SidebarState,
     THUMBNAIL_BUDGET, View, render_scale, window_keep, window_order,
 };
 use noido_engine::{Rgba8Image, Size};
 use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
 use noido_state::{DocKey, DocState, Store};
+
+use crate::sidebar;
 
 /// Spreads (pages in single mode) rendered at full resolution around the
 /// current one, after the visible ones: the current spread, then six ahead
@@ -26,6 +28,9 @@ const KEEP: usize = 8;
 const TRACKPAD_FLIP_DISTANCE: f32 = 125.0;
 /// Offset difference, in UI points, below which egui's scroll position is left alone.
 const OFFSET_EPSILON: f32 = 0.5;
+
+/// Height of the title bar, in UI points.
+const TITLE_BAR_HEIGHT: f32 = 40.0;
 
 /// Seconds the view must stay unchanged before its state is saved.
 const SAVE_DELAY: f64 = 2.0;
@@ -54,6 +59,8 @@ pub struct NoidoApp {
     /// The direction the focus last moved in.
     direction: Direction,
     sidebar: SidebarState,
+    /// Mod+F was pressed: the search field takes focus next frame.
+    search_focus_requested: bool,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -127,6 +134,7 @@ impl NoidoApp {
             focus: None,
             direction: Direction::Forward,
             sidebar: SidebarState::default(),
+            search_focus_requested: false,
         }
     }
 
@@ -247,9 +255,7 @@ impl NoidoApp {
     }
 
     fn handle_input(&mut self, ctx: &egui::Context) {
-        if ctx.text_edit_focused() {
-            return;
-        }
+        let editing = ctx.text_edit_focused();
         let (presses, wheel, zoom, pointer) = ctx.input(|i| {
             let presses: Vec<KeyPress> = i
                 .events
@@ -291,8 +297,8 @@ impl NoidoApp {
         });
 
         for press in presses {
-            if let Some(action) = self.keymap.action(press, false) {
-                self.view.apply(action);
+            if let Some(action) = self.keymap.action(press, editing) {
+                self.apply(ctx, action);
             }
         }
         for step in wheel {
@@ -305,6 +311,16 @@ impl NoidoApp {
                     .map(|p| (p.x - last.inner.min.x, p.y - last.inner.min.y))
             });
             self.view.zoom_by(zoom, anchor);
+        }
+    }
+
+    /// Carries out `action`, from a key or the menu.
+    fn apply(&mut self, ctx: &egui::Context, action: Action) {
+        match action {
+            Action::ToggleSidebar => self.sidebar.open = !self.sidebar.open,
+            Action::FocusSearch => self.search_focus_requested = true,
+            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            _ => self.view.apply(action),
         }
     }
 
@@ -479,6 +495,14 @@ impl NoidoApp {
         let move_scroll = self
             .last_scroll
             .is_some_and(|last| (last.offset - wanted).abs().max_elem() > OFFSET_EPSILON);
+
+        // Filled with the bar's controls in the next step.
+        egui::Panel::top("titlebar")
+            .exact_size(TITLE_BAR_HEIGHT)
+            .show(ui, |_ui| {});
+        if self.sidebar.open {
+            sidebar::show(ui, &mut self.sidebar);
+        }
 
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
             // egui fades the edges of scroll areas; on pages it reads as a shadow.
@@ -677,6 +701,8 @@ mod tests {
         time: f64,
         /// What the last frame painted.
         shapes: Vec<egui::epaint::ClippedShape>,
+        /// What the last frame asked of the window.
+        commands: Vec<egui::ViewportCommand>,
     }
 
     impl Harness {
@@ -696,12 +722,16 @@ mod tests {
         ) -> Self {
             let (renderer, info) =
                 Renderer::start(engine, Arc::new(Vec::new()), Box::new(|| {})).unwrap();
+            let ctx = egui::Context::default();
+            // As in main: quitting goes through the keymap.
+            ctx.options_mut(|o| o.quit_shortcuts.clear());
             let mut harness = Self {
-                ctx: egui::Context::default(),
+                ctx,
                 app: setup(NoidoApp::new(renderer, info)),
                 size: vec2(900.0, 1000.0),
                 time: 0.0,
                 shapes: vec![],
+                commands: vec![],
             };
             harness.frames(3, vec![]);
             harness
@@ -720,6 +750,11 @@ mod tests {
                 let app = &mut self.app;
                 let output = self.ctx.run_ui(input, |ui| app.show(ui));
                 self.shapes = output.shapes.clone();
+                self.commands = output
+                    .viewport_output
+                    .get(&egui::ViewportId::ROOT)
+                    .map(|viewport| viewport.commands.clone())
+                    .unwrap_or_default();
                 output.drop_without_applying_deltas();
             }
         }
@@ -1024,6 +1059,64 @@ mod tests {
         h.app.sidebar.open = true;
         h.frames(150, vec![]);
         assert!(store.load(&test_key()).unwrap().sidebar.open);
+    }
+
+    #[test]
+    fn f9_opens_sidebar_and_page_view_narrows() {
+        let mut h = Harness::new();
+        let (width, _) = h.app.view.viewport_size();
+        let scale = h.app.view.scale();
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(3, vec![]);
+        assert!(h.app.sidebar.open);
+        let (narrower, _) = h.app.view.viewport_size();
+        let sidebar = h.app.sidebar.width;
+        assert!(
+            (width - narrower - sidebar).abs() < 20.0,
+            "{width} - {narrower} vs sidebar {sidebar}"
+        );
+        assert!(h.app.view.scale() < scale);
+
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(3, vec![]);
+        assert!(!h.app.sidebar.open);
+        assert_eq!(h.app.view.viewport_size().0, width);
+        assert_eq!(h.app.view.scale(), scale);
+    }
+
+    #[test]
+    fn restored_sidebar_width_is_clamped() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = DocState {
+            view: ViewState {
+                zoom: noido_core::ZoomMode::FitWidth,
+                scale: 1.0,
+                continuous: true,
+                dual: false,
+                centre: noido_core::DocPoint {
+                    page: 0,
+                    x: 306.0,
+                    y: 400.0,
+                },
+            },
+            sidebar: SidebarState {
+                open: true,
+                width: 2000.0,
+            },
+        };
+        let mut h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_key(), Some(state))
+        });
+        h.frames(3, vec![]);
+        assert!(h.app.sidebar.width <= 450.0, "{}", h.app.sidebar.width);
+        assert!(h.app.view.viewport_size().0 >= 400.0);
+    }
+
+    #[test]
+    fn mod_q_sends_close() {
+        let mut h = Harness::new();
+        h.press(egui::Key::Q, Modifiers::COMMAND);
+        assert!(h.commands.contains(&egui::ViewportCommand::Close));
     }
 
     fn blank_texture(ctx: &egui::Context, name: &str) -> PageImage {
