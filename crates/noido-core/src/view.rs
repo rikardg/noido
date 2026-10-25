@@ -159,7 +159,10 @@ impl View {
         let ratio = |available: f32, length: f32| (length > 0.0).then(|| available / length);
         let scale = match mode {
             ZoomMode::Custom => Some(self.scale()),
-            ZoomMode::FitWidth => ratio(width, self.layout.widest_page()),
+            ZoomMode::FitWidth => ratio(
+                width - self.layout.spread_gap(0),
+                self.layout.widest_spread(),
+            ),
             ZoomMode::FitPage => {
                 let (cx, cy) = self.centre();
                 let page = self
