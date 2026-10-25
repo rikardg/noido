@@ -104,3 +104,11 @@ when it is fixed.
 - Several full-render threads, each with its own `Document`, sharing the
   priority queue, so one slow page (150–900 ms for art-heavy books) doesn't
   hold up the next. Only if renders still feel slow after the priority fix.
+
+## Far future
+
+- **Our own OCR** for scanned PDFs without a usable text layer, so search,
+  selection and notes work on them too. Example: `vehicles-…-annas-archive.pdf`
+  in testfiles is 600 dpi page scans; only the cover has an (invisible, poor)
+  OCR layer. Options: run an OCR engine (e.g. Tesseract) in the background and
+  keep the result in a sidecar, or suggest `ocrmypdf` to the user.
