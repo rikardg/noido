@@ -8,17 +8,18 @@ use eframe::egui::{
 };
 use noido_core::{
     Direction, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, THUMBNAIL_BUDGET, View,
-    ViewState, render_scale, window_keep,
+    ViewState, render_scale, window_keep, window_order,
 };
 use noido_engine::{Rgba8Image, Size};
 use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
 use noido_state::{DocKey, Store};
 
-/// Spreads (pages in single mode) beyond the visible ones that are rendered
-/// ahead, on each side.
-const PREFETCH: usize = 1;
-/// Spreads beyond the visible ones whose images are kept, on each side.
-const KEEP: usize = 2;
+/// Spreads (pages in single mode) rendered at full resolution around the
+/// current one, after the visible ones: the current spread, then three ahead
+/// and one behind in the direction of travel (see [`window_order`]).
+const PREFETCH_BUDGET: usize = 5;
+/// Spreads on each side of the current one whose full renders are kept.
+const KEEP: usize = 4;
 /// Trackpad scroll distance, in UI points, that flips one page in paged mode
 /// (about one mouse wheel step).
 const TRACKPAD_FLIP_DISTANCE: f32 = 125.0;
@@ -47,6 +48,10 @@ pub struct NoidoApp {
     flip_distance: f32,
     persistence: Option<Persistence>,
     thumbnails: Option<Thumbnails>,
+    /// The page at the window centre.
+    focus: Option<usize>,
+    /// The direction the focus last moved in.
+    direction: Direction,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -54,8 +59,7 @@ struct Thumbnails {
     thumbnailer: Thumbnailer,
     textures: HashMap<usize, PageImage>,
     /// The page the thumbnailer was last pointed at.
-    focus: Option<usize>,
-    direction: Direction,
+    sent: Option<usize>,
 }
 
 /// Saves the view state of the open document.
@@ -118,6 +122,8 @@ impl NoidoApp {
             flip_distance: 0.0,
             persistence: None,
             thumbnails: None,
+            focus: None,
+            direction: Direction::Forward,
         }
     }
 
@@ -126,10 +132,26 @@ impl NoidoApp {
         self.thumbnails = Some(Thumbnails {
             thumbnailer,
             textures: HashMap::new(),
-            focus: None,
-            direction: Direction::Forward,
+            sent: None,
         });
         self
+    }
+
+    /// Follows the page at the window centre and the direction it moves in.
+    fn update_focus(&mut self) {
+        let Some(page) = self.view.centre_page() else {
+            return;
+        };
+        if let Some(old) = self.focus
+            && old != page
+        {
+            self.direction = if page > old {
+                Direction::Forward
+            } else {
+                Direction::Backward
+            };
+        }
+        self.focus = Some(page);
     }
 
     /// Points the thumbnailer at the current page and takes in its thumbnails.
@@ -138,22 +160,15 @@ impl NoidoApp {
             return;
         };
         let page_count = self.view.layout().page_count();
-        if let Some(page) = self.view.centre_page()
-            && thumbnails.focus != Some(page)
+        if let Some(page) = self.focus
+            && thumbnails.sent != Some(page)
         {
-            if let Some(old) = thumbnails.focus {
-                thumbnails.direction = if page > old {
-                    Direction::Forward
-                } else {
-                    Direction::Backward
-                };
-            }
-            thumbnails.focus = Some(page);
-            thumbnails.thumbnailer.set_focus(page, thumbnails.direction);
+            thumbnails.sent = Some(page);
+            thumbnails.thumbnailer.set_focus(page, self.direction);
             let keep = window_keep(page_count, page, THUMBNAIL_BUDGET);
             thumbnails.textures.retain(|page, _| keep.contains(page));
         }
-        let keep = window_keep(page_count, thumbnails.focus.unwrap_or(0), THUMBNAIL_BUDGET);
+        let keep = window_keep(page_count, thumbnails.sent.unwrap_or(0), THUMBNAIL_BUDGET);
         while let Some(thumbnail) = thumbnails.thumbnailer.try_recv() {
             // A failed thumbnail leaves the page white; its full render reports errors.
             if let Ok(image) = thumbnail.result
@@ -344,31 +359,54 @@ impl NoidoApp {
             return;
         }
 
-        let page_count = layout.page_count();
         let visible = layout.visible_pages(viewport.min.y, viewport.max.y);
-        // The visible pages widened by whole spreads, so a spread is never half rendered.
-        let around = |extra: usize| {
-            if visible.is_empty() || layout.spread_count() == 0 {
-                return visible.clone();
-            }
-            let first = layout.spread_of(visible.start).saturating_sub(extra);
-            let last = (layout.spread_of(visible.end - 1) + extra).min(layout.spread_count() - 1);
-            layout.spread_pages(first).start..layout.spread_pages(last).end.min(page_count)
+        let spread_count = layout.spread_count();
+        // Pages of the spreads `first..=last`, so a spread is never half rendered.
+        let spread_pages = |first: usize, last: usize| {
+            layout.spread_pages(first).start..layout.spread_pages(last).end
+        };
+        let visible = if visible.is_empty() {
+            visible
+        } else {
+            spread_pages(
+                layout.spread_of(visible.start),
+                layout.spread_of(visible.end - 1),
+            )
+        };
+
+        // Visible pages first, then the window around the current spread,
+        // nearest first and mostly ahead.
+        let focus = layout.spread_of(self.focus.unwrap_or(visible.start));
+        let mut order: Vec<usize> = visible.clone().collect();
+        for spread in window_order(spread_count, focus, self.direction, PREFETCH_BUDGET) {
+            order.extend(
+                layout
+                    .spread_pages(spread)
+                    .filter(|page| !visible.contains(page)),
+            );
+        }
+        let window = window_keep(spread_count, focus, KEEP);
+        let keep = if window.is_empty() {
+            visible.clone()
+        } else {
+            let window = spread_pages(window.start, window.end - 1);
+            window.start.min(visible.start)..window.end.max(visible.end)
         };
 
         // Set before requesting: the render thread skips pages outside this
         // range, and the tracker forgets them below, so none stays pending.
-        let keep = around(KEEP);
         self.renderer.set_keep(keep.clone());
 
         let display_scale = self.view.scale() * ui.ctx().pixels_per_point();
         if display_scale > 0.0 {
-            let wanted = self.tracker.wanted(around(PREFETCH), |page| {
-                let size = layout.page_size(page).expect("page in range");
-                render_scale(size, display_scale, MAX_RENDER_SIDE)
-            });
-            for (page, scale) in wanted {
-                self.renderer.request(RenderRequest { page, scale });
+            for page in order {
+                let wanted = self.tracker.wanted(page..page + 1, |page| {
+                    let size = layout.page_size(page).expect("page in range");
+                    render_scale(size, display_scale, MAX_RENDER_SIDE)
+                });
+                for (page, scale) in wanted {
+                    self.renderer.request(RenderRequest { page, scale });
+                }
             }
         }
         for page in self.tracker.forget_outside(keep) {
@@ -419,6 +457,7 @@ impl NoidoApp {
         self.receive_renders(&ctx);
         self.sync_from_egui();
         self.handle_input(&ctx);
+        self.update_focus();
         self.update_thumbnails(&ctx);
 
         let (x, y) = self.view.offset();
@@ -1008,5 +1047,27 @@ mod tests {
         assert_eq!(uv.min, pos2(0.0, 0.0));
         assert_eq!(uv.max.x, 1.0);
         assert!((uv.max.y - 792.0 * scale / 156.0).abs() < 1e-6, "{uv:?}");
+    }
+
+    #[test]
+    fn renders_three_spreads_ahead_and_one_behind() {
+        let mut h = fitted_paged();
+        for _ in 0..5 {
+            h.press(egui::Key::PageDown, Modifiers::NONE);
+        }
+        assert_eq!(h.app.view.current_spread(), Some(5));
+        let ready = |h: &Harness| (4..=8).all(|page| h.app.textures.contains_key(&page));
+        for _ in 0..200 {
+            if ready(&h) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            h.frames(1, vec![]);
+        }
+        let mut pages: Vec<_> = h.app.textures.keys().copied().collect();
+        pages.sort();
+        assert!(ready(&h), "textures: {pages:?}");
+        assert!(!pages.contains(&9), "rendered beyond the window: {pages:?}");
+        assert!(!pages.contains(&0), "kept beyond the window: {pages:?}");
     }
 }
