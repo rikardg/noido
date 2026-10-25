@@ -15,6 +15,7 @@ use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
 use noido_state::{DocState, Slot, Store};
 
 use crate::titlebar::{self, TITLE_BAR_HEIGHT};
+use crate::watch::{Reload, Watcher};
 use crate::{frame, sidebar};
 
 /// Spreads (pages in single mode) rendered at full resolution around the
@@ -67,6 +68,8 @@ pub struct NoidoApp {
     sidebar_opened_by_search: bool,
     /// Where the title bar's parts were drawn last frame.
     bar: titlebar::Rects,
+    /// Brings new versions of the document when its file changes.
+    watcher: Option<Watcher>,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -145,6 +148,7 @@ impl NoidoApp {
             search: String::new(),
             sidebar_opened_by_search: false,
             bar: titlebar::Rects::default(),
+            watcher: None,
         }
     }
 
@@ -216,6 +220,53 @@ impl NoidoApp {
                 .as_ref()
                 .and_then(|thumbnails| thumbnails.textures.get(&page))
         })
+    }
+
+    /// Shows the new versions of the document that `watcher` brings.
+    pub fn with_watcher(mut self, watcher: Watcher) -> Self {
+        self.watcher = Some(watcher);
+        self
+    }
+
+    /// Takes in the newest version of the document the watcher brought, if
+    /// any. Called after the view has caught up with egui's scrolling, so
+    /// the place it keeps is the current one.
+    fn receive_reload(&mut self) {
+        let Some(watcher) = &self.watcher else {
+            return;
+        };
+        if let Some(reload) = std::iter::from_fn(|| watcher.try_recv()).last() {
+            self.reload(reload);
+        }
+    }
+
+    /// Shows `reload`, a new version of the document, at the same place.
+    fn reload(&mut self, reload: Reload) {
+        let state = self.view.state();
+        let (width, height) = self.view.viewport_size();
+        let mut view = View::new(reload.info.page_sizes);
+        view.set_viewport_size(width, height);
+        if let Some(state) = &state {
+            // Clamps to the last page when pages were lost.
+            view.restore(state);
+        }
+        let page_count = view.layout().page_count();
+        self.view = view;
+        self.tracker = RenderTracker::new(page_count);
+        // Dropping the old renderer drops renders still on their way.
+        self.renderer = reload.renderer;
+        // The old images stay in the new layout until new renders replace
+        // them, so the page doesn't flash white.
+        self.textures.retain(|&page, _| page < page_count);
+        if let Some(thumbnails) = &mut self.thumbnails {
+            thumbnails.thumbnailer = reload.thumbnailer;
+            thumbnails.sent = None;
+            thumbnails.textures.retain(|&page, _| page < page_count);
+        }
+        self.focus = None;
+        if let Some(persistence) = &mut self.persistence {
+            persistence.store.rekey(&mut persistence.slot, reload.key);
+        }
     }
 
     /// Restores `restored` and saves the document's state from now on.
@@ -545,6 +596,7 @@ impl NoidoApp {
         let ctx = ui.ctx().clone();
         self.receive_renders(&ctx);
         self.sync_from_egui();
+        self.receive_reload();
         self.handle_input(&ctx);
         self.update_focus();
         self.update_thumbnails(&ctx);
@@ -777,6 +829,8 @@ mod tests {
         commands: Vec<egui::ViewportCommand>,
         /// Whether the window is reported as maximised.
         maximized: bool,
+        /// Hands the app new versions of the document, like the watcher.
+        reloads: std::sync::mpsc::Sender<crate::watch::Reload>,
     }
 
     impl Harness {
@@ -799,14 +853,16 @@ mod tests {
             let ctx = egui::Context::default();
             // As in main: quitting goes through the keymap.
             ctx.options_mut(|o| o.quit_shortcuts.clear());
+            let (reloads, watcher) = crate::watch::Watcher::fake();
             let mut harness = Self {
                 ctx,
-                app: setup(NoidoApp::new(renderer, info)),
+                app: setup(NoidoApp::new(renderer, info)).with_watcher(watcher),
                 size: vec2(900.0, 1000.0),
                 time: 0.0,
                 shapes: vec![],
                 commands: vec![],
                 maximized: false,
+                reloads,
             };
             harness.frames(3, vec![]);
             harness
@@ -838,6 +894,34 @@ mod tests {
                     self.commands.extend(viewport.commands.iter().cloned());
                 }
                 output.drop_without_applying_deltas();
+            }
+        }
+
+        /// Hands the app a new version of the document, opened with `engine`
+        /// and identified by `key`, and runs a frame.
+        fn reload(&mut self, engine: Arc<dyn PdfEngine>, key: DocKey) {
+            let bytes = Arc::new(Vec::new());
+            let (renderer, info) =
+                Renderer::start(engine.clone(), bytes.clone(), Box::new(|| {})).unwrap();
+            let thumbnailer = Thumbnailer::start(engine, bytes, Box::new(|| {}));
+            let reload = crate::watch::Reload {
+                renderer,
+                thumbnailer,
+                info,
+                key,
+            };
+            self.reloads.send(reload).unwrap();
+            self.frames(1, vec![]);
+        }
+
+        /// Runs frames until `done`, for at most a second.
+        fn until(&mut self, done: impl Fn(&Harness) -> bool) {
+            for _ in 0..200 {
+                if done(self) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                self.frames(1, vec![]);
             }
         }
 
@@ -1655,6 +1739,187 @@ mod tests {
         assert!(
             (pulled - resting).abs() < 0.5,
             "page top {resting} -> {pulled}"
+        );
+    }
+
+    /// `self.0` pages of `self.1`, rendering as a white pixel.
+    #[derive(Clone, Copy)]
+    struct SizedEngine(usize, Size);
+
+    impl SizedEngine {
+        /// `pages` Letter pages.
+        fn letter(pages: usize) -> Self {
+            Self(
+                pages,
+                Size {
+                    width: 612.0,
+                    height: 792.0,
+                },
+            )
+        }
+    }
+
+    impl PdfEngine for SizedEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(*self))
+        }
+    }
+
+    impl Document for SizedEngine {
+        fn page_count(&self) -> usize {
+            self.0
+        }
+        fn page_size(&self, _page: usize) -> Result<Size, EngineError> {
+            Ok(self.1)
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            scale: f32,
+            tile: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            BlankDocument.render_tile(page, scale, tile)
+        }
+    }
+
+    fn recompiled_key() -> DocKey {
+        DocKey::new(
+            b"test document, recompiled",
+            std::path::Path::new("/test.pdf"),
+        )
+    }
+
+    /// Where the last frame drew page images (not white placeholders).
+    fn images(h: &Harness) -> Vec<Rect> {
+        h.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                    Some(clipped.shape.visual_bounding_rect())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Presses Page Down until the centre is on `page` or later.
+    fn go_to(h: &mut Harness, page: usize) {
+        for _ in 0..100 {
+            if h.centre().page >= page {
+                return;
+            }
+            h.press(egui::Key::PageDown, Modifiers::NONE);
+        }
+        panic!("never reached page {page}");
+    }
+
+    #[test]
+    fn reload_keeps_page_and_spot() {
+        let mut h = Harness::new();
+        go_to(&mut h, 6);
+        let centre = h.centre();
+        // A4 now: the spot is in page points, so it stays on the page.
+        let a4 = Size {
+            width: 595.0,
+            height: 842.0,
+        };
+        h.reload(Arc::new(SizedEngine(12, a4)), recompiled_key());
+        h.frames(3, vec![]);
+        assert_eq!(h.app.view.layout().page_count(), 12);
+        assert_eq!(h.app.view.layout().page_size(0), Some(a4));
+        // Fit width centres the narrower page, so only the height on the
+        // page is kept exactly.
+        assert_eq!(h.centre().page, centre.page);
+        assert!(
+            (h.centre().y - centre.y).abs() < 0.5,
+            "moved from {centre:?} to {:?}",
+            h.centre()
+        );
+    }
+
+    #[test]
+    fn reload_clamps_to_last_page() {
+        let mut h = Harness::new();
+        go_to(&mut h, 8);
+        h.reload(Arc::new(SizedEngine::letter(4)), recompiled_key());
+        h.frames(3, vec![]);
+        assert_eq!(h.centre().page, 3);
+    }
+
+    #[test]
+    fn reload_keeps_modes_and_sidebar() {
+        let mut h = Harness::new();
+        h.press(egui::Key::D, Modifiers::NONE);
+        h.press(egui::Key::C, Modifiers::NONE);
+        h.press(egui::Key::Equals, Modifiers::COMMAND);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(3, vec![]);
+        let before = h.app.view.state().unwrap();
+        h.reload(Arc::new(SizedEngine::letter(12)), recompiled_key());
+        h.frames(3, vec![]);
+        assert_eq!(h.app.view.layout().page_count(), 12);
+        let after = h.app.view.state().unwrap();
+        assert_eq!(after.zoom, before.zoom);
+        assert_eq!(after.scale, before.scale);
+        assert_eq!(after.continuous, before.continuous);
+        assert_eq!(after.dual, before.dual);
+        assert!(h.app.sidebar.open);
+    }
+
+    #[test]
+    fn reload_keeps_old_images_until_new_ones_arrive() {
+        let mut h = Harness::new();
+        h.until(|h| !images(h).is_empty());
+        let before = images(&h);
+        assert!(!before.is_empty(), "no page rendered");
+        // Renders of the new version wait until the gate goes.
+        let (gate, gated) = std::sync::mpsc::channel::<()>();
+        let engine = GatedEngine(Arc::new(std::sync::Mutex::new(gated)));
+        h.reload(Arc::new(engine), recompiled_key());
+        assert_eq!(images(&h), before);
+        drop(gate);
+    }
+
+    #[test]
+    fn reload_drops_images_past_new_count() {
+        let mut h = Harness::new();
+        go_to(&mut h, 8);
+        h.until(|h| h.app.textures.keys().any(|&page| page >= 4));
+        assert!(h.app.textures.keys().any(|&page| page >= 4));
+        h.reload(Arc::new(SizedEngine::letter(4)), recompiled_key());
+        assert!(
+            h.app.textures.keys().all(|&page| page < 4),
+            "textures: {:?}",
+            h.app.textures.keys()
+        );
+    }
+
+    #[test]
+    fn reload_saves_under_new_key() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let mut h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), None)
+        });
+        h.frames(150, vec![]);
+        assert!(store.load(test_key()).1.is_some(), "not saved before");
+
+        h.reload(Arc::new(SizedEngine::letter(12)), recompiled_key());
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        h.frames(150, vec![]);
+        let state_file = |key: DocKey| dir.path().join("docs").join(format!("{}.toml", key.hex()));
+        assert!(
+            state_file(recompiled_key()).exists(),
+            "not saved under the new key"
+        );
+        assert!(!state_file(test_key()).exists(), "old state left behind");
+        let (slot, saved) = store.load(recompiled_key());
+        assert_eq!(saved.map(|state| state.view), h.app.view.state());
+        assert!(
+            store
+                .window_file(&slot)
+                .ends_with(format!("{}.window.ron", test_key().hex())),
+            "window file moved"
         );
     }
 }

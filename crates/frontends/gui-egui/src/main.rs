@@ -6,8 +6,6 @@ mod interrupt;
 mod load;
 mod sidebar;
 mod titlebar;
-// Used by the app from the next commit on.
-#[allow(dead_code)]
 mod watch;
 
 use std::path::{Path, PathBuf};
@@ -22,6 +20,7 @@ use noido_state::{DocKey, Store};
 
 use crate::app::NoidoApp;
 use crate::load::load_document;
+use crate::watch::Watcher;
 
 /// Documents whose state is kept; older ones are forgotten.
 const REMEMBERED_DOCUMENTS: usize = 1000;
@@ -56,7 +55,7 @@ fn run(path: &Path) -> Result<(), String> {
     // Read before the window file is asked for: the entry names it.
     let session = Store::open_default().map(|store| {
         store.prune(REMEMBERED_DOCUMENTS);
-        let (slot, restored) = store.load(key);
+        let (slot, restored) = store.load(key.clone());
         (store, slot, restored)
     });
 
@@ -84,6 +83,14 @@ fn run(path: &Path) -> Result<(), String> {
     let (renderer, info) = Renderer::start(Arc::new(HayroEngine), bytes, waker(&ctx))
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
+    let wake: watch::Waker = {
+        let ctx = ctx.clone();
+        Arc::new(move || ctx.request_repaint())
+    };
+    let watcher = Watcher::start(path, key, Arc::new(HayroEngine), wake)
+        .inspect_err(|e| eprintln!("noido: cannot watch {}: {e}", path.display()))
+        .ok();
+
     let name = path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
@@ -105,6 +112,10 @@ fn run(path: &Path) -> Result<(), String> {
     let app = NoidoApp::new(renderer, info)
         .with_name(name.clone())
         .with_thumbnails(thumbnailer);
+    let app = match watcher {
+        Some(watcher) => app.with_watcher(watcher),
+        None => app,
+    };
     let app = match session {
         Some((store, slot, restored)) => app.with_persistence(store, slot, restored),
         None => app,

@@ -95,7 +95,8 @@ fn open_new(
 
 /// Watches the document's file; dropping it stops watching.
 pub struct Watcher {
-    _watcher: RecommendedWatcher,
+    /// `None` for a fake.
+    _watcher: Option<RecommendedWatcher>,
     reloads: Receiver<Reload>,
 }
 
@@ -141,13 +142,24 @@ impl Watcher {
             })
             .map_err(|e| e.to_string())?;
         Ok(Watcher {
-            _watcher: watcher,
+            _watcher: Some(watcher),
             reloads,
         })
     }
 
     pub fn try_recv(&self) -> Option<Reload> {
         self.reloads.try_recv().ok()
+    }
+
+    /// A watcher that hands over what is sent to it, for tests.
+    #[cfg(test)]
+    pub fn fake() -> (Sender<Reload>, Watcher) {
+        let (sender, reloads) = mpsc::channel();
+        let watcher = Watcher {
+            _watcher: None,
+            reloads,
+        };
+        (sender, watcher)
     }
 }
 
