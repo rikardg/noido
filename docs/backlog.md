@@ -46,7 +46,10 @@ when it is fixed.
 - **Automated interactive testing** of the egui frontend: drive key presses,
   wheel/pinch zoom, scrolling and resizing headlessly and check the result
   (scroll offset, zoom, rendered output). Candidate: `egui_kittest`, which runs
-  the app without a desktop session. Do not fake input on the real desktop —
+  the app without a desktop session. A minimal headless harness already
+  exists (`Harness` in `crates/frontends/gui-egui/src/app.rs` tests: real app,
+  fake engine, key events and window sizes via `RawInput`); extend it or move
+  to `egui_kittest`. Do not fake input on the real desktop —
   on GNOME that triggers a remote-desktop permission prompt.
 
 - Vim key layer (zathura-style), with key sequences and counts.
