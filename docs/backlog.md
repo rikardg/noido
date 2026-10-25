@@ -97,6 +97,10 @@ when it is fixed.
   (`PREFETCH_BUDGET` 10, `KEEP` 8 today): a page is ~6 MB at 900 pt fit
   width but ~27 MB maximised and ~48 MB at 400 %, so 17 kept spreads can
   reach hundreds of MB. Evict farthest first past a limit.
+- Softer-looking thumbnails: at 120 px they look blocky/blurry when
+  stretched; 240 px was tried and judged not worth it. Ideas: a smoother
+  upscale (e.g. bicubic or a blur pass, in a shader or on the CPU before
+  upload), mipmapped sampling, or a fade from thumbnail to full render.
 - Several full-render threads, each with its own `Document`, sharing the
   priority queue, so one slow page (150–900 ms for art-heavy books) doesn't
   hold up the next. Only if renders still feel slow after the priority fix.
