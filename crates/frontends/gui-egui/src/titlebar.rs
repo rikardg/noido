@@ -11,6 +11,8 @@ use noido_core::{Action, Check, Keymap, Platform, SidebarState, menu, shortcut_l
 
 /// Height of the bar, in UI points.
 pub const TITLE_BAR_HEIGHT: f32 = 40.0;
+/// The search field's height: egui's 20 pt and 2 pt more above and below.
+const SEARCH_HEIGHT: f32 = 24.0;
 /// The narrowest the search field gets.
 const SEARCH_MIN_WIDTH: f32 = 160.0;
 /// The search field's width while the sidebar is hidden.
@@ -130,7 +132,9 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         let field = ui.add(
             egui::TextEdit::singleline(search)
                 .hint_text("Search")
-                .desired_width(width.max(SEARCH_MIN_WIDTH)),
+                .desired_width(width.max(SEARCH_MIN_WIDTH))
+                .min_size(vec2(0.0, SEARCH_HEIGHT))
+                .vertical_align(Align::Center),
         );
         let (enter, escape, shift) = ui.input(|i| {
             (

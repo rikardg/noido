@@ -3572,4 +3572,11 @@ mod tests {
         let rendered = engine.rendered.lock().unwrap();
         assert!(spread.clone().all(|p| rendered.contains(&p)), "{spread:?}");
     }
+
+    #[test]
+    fn search_field_has_room_above_and_below_the_text() {
+        let h = Harness::new();
+        // egui's 20 pt, plus 2 pt above and below.
+        assert_eq!(h.app.bar.search.height(), 24.0);
+    }
 }
