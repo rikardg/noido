@@ -1,6 +1,6 @@
 use noido_engine::Size;
 
-use crate::{Action, Layout, LayoutMode, MARGIN, scroll_target};
+use crate::{Action, DocPoint, Layout, LayoutMode, MARGIN, scroll_target};
 
 /// Smallest and largest zoom, in UI points per PDF point.
 pub const MIN_ZOOM: f32 = 0.1;
@@ -18,6 +18,18 @@ pub enum ZoomMode {
     Custom,
 }
 
+/// What is remembered about a view between runs: zoom, arrangement and the
+/// document point at the viewport centre.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewState {
+    pub zoom: ZoomMode,
+    /// The scale; only used to restore custom zoom (fit modes refit).
+    pub scale: f32,
+    pub continuous: bool,
+    pub dual: bool,
+    pub centre: DocPoint,
+}
+
 /// Offset distance, in UI points, within which the view counts as being at
 /// the top or bottom edge.
 const EDGE_EPSILON: f32 = 0.5;
@@ -29,6 +41,8 @@ pub struct View {
     mode: ZoomMode,
     viewport: (f32, f32),
     offset: (f32, f32),
+    /// A restored centre point waiting for the first non-empty viewport.
+    pending: Option<DocPoint>,
 }
 
 impl View {
@@ -38,6 +52,7 @@ impl View {
             mode: ZoomMode::FitWidth,
             viewport: (0.0, 0.0),
             offset: (0.0, 0.0),
+            pending: None,
         };
         let scale = view.fit_scale(ZoomMode::FitWidth);
         view.layout.arrange(scale, 0.0, 0.0);
@@ -90,13 +105,85 @@ impl View {
         let was_empty = self.viewport.0 <= 0.0 || self.viewport.1 <= 0.0;
         self.viewport = (width, height);
         let scale = self.fit_scale(self.mode);
-        if was_empty {
+        if was_empty && self.pending.is_some() {
+            self.place_pending();
+        } else if was_empty {
             // Nothing was on screen yet: start at the top.
             self.layout.arrange(scale, width, height);
             self.clamp_offset();
         } else {
             self.rescale(scale, old_centre, self.centre());
         }
+    }
+
+    /// A snapshot to restore in a later run; `None` with zero pages.
+    pub fn state(&self) -> Option<ViewState> {
+        if self.layout.page_count() == 0 {
+            return None;
+        }
+        let (cx, cy) = self.centre();
+        let centre = self
+            .pending
+            .or_else(|| {
+                self.layout
+                    .doc_point(self.offset.0 + cx, self.offset.1 + cy)
+            })
+            .unwrap_or(DocPoint {
+                page: 0,
+                x: 0.0,
+                y: 0.0,
+            });
+        Some(ViewState {
+            zoom: self.mode,
+            scale: self.scale(),
+            continuous: self.continuous(),
+            dual: self.dual(),
+            centre,
+        })
+    }
+
+    /// Restores a snapshot from [`View::state`], clamped to this document.
+    /// The centre point is placed now, or on the first non-empty viewport.
+    pub fn restore(&mut self, state: &ViewState) {
+        let count = self.layout.page_count();
+        if count == 0 {
+            return;
+        }
+        let centre = DocPoint {
+            page: state.centre.page.min(count - 1),
+            ..state.centre
+        };
+        let dual = state.dual;
+        self.layout.set_mode(LayoutMode { dual, paged: None });
+        let paged = (!state.continuous).then(|| self.layout.spread_of(centre.page));
+        self.layout.set_mode(LayoutMode { dual, paged });
+        self.mode = state.zoom;
+        if state.zoom == ZoomMode::Custom {
+            let scale = if state.scale.is_finite() {
+                state.scale.clamp(MIN_ZOOM, MAX_ZOOM)
+            } else {
+                1.0
+            };
+            self.layout.arrange(scale, self.viewport.0, self.viewport.1);
+        }
+        self.pending = Some(centre);
+        if self.viewport.0 > 0.0 && self.viewport.1 > 0.0 {
+            self.place_pending();
+        }
+    }
+
+    /// Fits the view and puts the pending restored point at the centre.
+    fn place_pending(&mut self) {
+        let Some(point) = self.pending.take() else {
+            return;
+        };
+        let scale = self.fit_scale_for(self.mode, self.layout.spread_of(point.page));
+        self.layout.arrange(scale, self.viewport.0, self.viewport.1);
+        if let Some((x, y)) = self.layout.content_point(point) {
+            let (cx, cy) = self.centre();
+            self.offset = (x - cx, y - cy);
+        }
+        self.clamp_offset();
     }
 
     /// Records a scroll the frontend performed itself.
@@ -310,7 +397,7 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DocPoint, PAGE_GAP};
+    use crate::PAGE_GAP;
 
     fn size(width: f32, height: f32) -> Size {
         Size { width, height }
@@ -641,6 +728,107 @@ mod tests {
         view.zoom_by(2.0, Some((10.0, 10.0)));
         view.wheel_flip(true);
         view.scrolled_to(100.0, 100.0);
+        assert_eq!(view.offset(), (0.0, 0.0));
+    }
+
+    fn saved(zoom: ZoomMode, scale: f32, continuous: bool, dual: bool, page: usize) -> ViewState {
+        ViewState {
+            zoom,
+            scale,
+            continuous,
+            dual,
+            centre: DocPoint {
+                page,
+                // The horizontal centre of a fit-width page: reachable.
+                x: 306.0,
+                y: 400.0,
+            },
+        }
+    }
+
+    fn assert_same_state(a: ViewState, b: ViewState) {
+        assert_eq!(
+            (a.zoom, a.continuous, a.dual, a.centre.page),
+            (b.zoom, b.continuous, b.dual, b.centre.page)
+        );
+        assert!((a.scale - b.scale).abs() < 1e-4, "{a:?} vs {b:?}");
+        assert_near((a.centre.x, a.centre.y), (b.centre.x, b.centre.y), 0.5);
+    }
+
+    #[test]
+    fn state_round_trips_in_every_mode() {
+        for (continuous, dual, zoom_in) in [
+            (true, false, false),
+            (true, true, false),
+            (false, false, false),
+            (false, true, false),
+            (true, false, true),
+            (false, true, true),
+        ] {
+            let mut view = letter_view();
+            if zoom_in {
+                view.apply(Action::ZoomIn);
+            }
+            view.scrolled_to(0.0, 3000.0);
+            if dual {
+                view.apply(Action::ToggleDual);
+            }
+            if !continuous {
+                view.apply(Action::ToggleContinuous);
+            }
+            view.scrolled_to(10.0, 40.0);
+            let state = view.state().unwrap();
+
+            let mut restored = letter_view();
+            restored.restore(&state);
+            assert_same_state(restored.state().unwrap(), state);
+        }
+    }
+
+    #[test]
+    fn restore_before_viewport_lands_on_centre() {
+        let state = saved(ZoomMode::FitWidth, 1.0, true, false, 6);
+        let mut view = View::new(vec![size(612.0, 792.0); 10]);
+        view.restore(&state);
+        view.set_viewport_size(636.0, 800.0);
+        let centre = doc_at(&view, (318.0, 400.0));
+        assert_eq!(centre.page, 6);
+        assert_near((centre.x, centre.y), (306.0, 400.0), 0.5);
+    }
+
+    #[test]
+    fn restore_fit_width_refits_new_window() {
+        let state = letter_view().state().unwrap();
+        let mut view = View::new(vec![size(612.0, 792.0); 10]);
+        view.restore(&state);
+        view.set_viewport_size(1248.0, 800.0);
+        assert_eq!(view.mode(), ZoomMode::FitWidth);
+        assert_eq!(view.scale(), 2.0);
+    }
+
+    #[test]
+    fn restore_clamps_stale_state() {
+        let mut view = letter_view();
+        view.restore(&saved(ZoomMode::Custom, 50.0, true, false, 99));
+        assert_eq!(view.scale(), MAX_ZOOM);
+        assert_eq!(doc_at(&view, (318.0, 400.0)).page, 9);
+    }
+
+    #[test]
+    fn restore_paged_shows_saved_spread() {
+        let mut view = letter_view();
+        view.restore(&saved(ZoomMode::FitWidth, 1.0, false, true, 5));
+        assert!(view.dual());
+        assert_eq!(view.current_spread(), Some(2));
+    }
+
+    #[test]
+    fn restore_with_zero_pages_does_nothing() {
+        let mut view = View::new(vec![]);
+        view.restore(&saved(ZoomMode::Custom, 2.0, false, true, 3));
+        view.set_viewport_size(636.0, 800.0);
+        assert!(view.state().is_none());
+        assert!(view.continuous());
         assert_eq!(view.offset(), (0.0, 0.0));
     }
 }
