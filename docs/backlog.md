@@ -312,3 +312,14 @@ when it is fixed.
 - **`results_are_cards_of_one_height` is weak:** `> 4 × body` holds mostly
   by the padding; assert the height from the font metrics, and add a test
   that a match near the end of a long context is inside the shown rows.
+
+## Arrow keys (review minors, 2026-10-26)
+
+- **Alt+arrow (and Ctrl+arrow on macOS) scroll as plain arrows:** `KeyPress`
+  carries only Mod and Shift. Drop presses with other modifiers, or add a
+  flag.
+- **Holding an arrow in fit-page paged mode flips ~30 spreads a second**, as
+  fast as key repeat; check that renders and prefetch don't churn.
+- **Test gaps:** no harness test of an arrow flip in paged mode; no view
+  test that ←/→ do nothing on a tall paged page that fits the width;
+  `arrows_move_the_cursor_while_searching` only means something for ↓.

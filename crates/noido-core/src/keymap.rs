@@ -20,6 +20,15 @@ pub enum Key {
     ArrowRight,
 }
 
+impl Key {
+    pub fn is_arrow(self) -> bool {
+        matches!(
+            self,
+            Key::ArrowUp | Key::ArrowDown | Key::ArrowLeft | Key::ArrowRight
+        )
+    }
+}
+
 /// A key with the state of the platform's primary modifier (`command`: Ctrl,
 /// or Cmd on macOS) and Shift.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

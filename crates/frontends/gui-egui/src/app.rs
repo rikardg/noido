@@ -554,7 +554,12 @@ impl NoidoApp {
             (presses, wheel, i.zoom_delta(), i.pointer.hover_pos())
         });
 
+        // egui moves focus with the arrows, and menus take them too.
+        let egui_arrows = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
         for press in presses {
+            if egui_arrows && press.key.is_arrow() {
+                continue;
+            }
             if let Some(action) = self.keymap.action(press, editing) {
                 self.apply(ctx, action);
             }
@@ -650,8 +655,13 @@ impl NoidoApp {
             Action::PreviousHit => self.step_hit(false),
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             _ => {
+                let place = |view: &View| (view.offset(), view.current_spread(), view.scale());
+                let before = place(&self.view);
                 self.view.apply(action);
-                self.reader_moved();
+                // An arrow at an edge moves nothing; the place stays.
+                if place(&self.view) != before {
+                    self.reader_moved();
+                }
             }
         }
     }
@@ -1360,6 +1370,44 @@ mod tests {
         h.press(egui::Key::ArrowRight, Modifiers::NONE);
         h.frames(2, vec![]);
         assert_eq!(h.app.view.offset(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn arrows_leave_the_view_while_menu_is_open() {
+        let mut h = Harness::new();
+        h.click(h.app.bar.menu.center());
+        h.frames(2, vec![]);
+        assert!(egui::Popup::is_any_open(&h.ctx), "menu not open");
+        h.press(egui::Key::ArrowDown, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.view.offset(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn arrows_leave_the_view_while_a_widget_has_focus() {
+        let mut h = Harness::new();
+        h.press(egui::Key::Tab, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.ctx.memory(|m| m.focused().is_some()), "nothing focused");
+        h.press(egui::Key::ArrowDown, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.view.offset(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn arrow_that_moves_nothing_keeps_place_at_hit() {
+        // Continuous fit width: left and right have nowhere to go.
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        h.press(egui::Key::G, Modifiers::COMMAND);
+        // Out of the search field.
+        h.click(h.app.last_scroll.unwrap().inner.center());
+        h.frames(2, vec![]);
+        assert!(!h.ctx.text_edit_focused());
+        assert!(h.app.search_state.at_hit);
+        h.press(egui::Key::ArrowRight, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.search_state.at_hit);
     }
 
     #[test]
@@ -3472,11 +3520,12 @@ mod tests {
         assert!(shown.contains(&5), "{shown:?}");
         h.click(pos2(600.0, 500.0));
         // A reader move that keeps the spread: next/previous go from the view.
-        h.press(egui::Key::F, Modifiers::NONE);
+        h.press(egui::Key::Minus, Modifiers::COMMAND);
         assert_eq!(h.app.view.current_spread(), spread);
         h.press(egui::Key::F3, Modifiers::SHIFT);
         assert_eq!(current(&h), Some(0), "the visible hit on page 5");
-        h.press(egui::Key::F, Modifiers::NONE);
+        h.press(egui::Key::Equals, Modifiers::COMMAND);
+        assert_eq!(h.app.view.current_spread(), spread);
         h.press(egui::Key::F3, Modifiers::NONE);
         assert_eq!(current(&h), Some(0), "the visible hit on page 5");
     }
