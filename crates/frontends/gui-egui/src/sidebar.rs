@@ -449,48 +449,56 @@ impl SidebarView {
             number,
             weak,
         );
-        // The excerpt: the lines around the match.
+        // The excerpt: the whole context laid out once, shifted up and
+        // clipped to the lines around the match. Laying out only those
+        // lines could wrap them differently, by a pixel.
         let context: Vec<char> = hit.text.context.text.chars().collect();
         let bold = &hit.text.context.bold;
-        let job = |range: Range<usize>, max_rows: usize| {
-            let format = |color| TextFormat::simple(font.clone(), color);
-            let part = |from: usize, to: usize| {
-                context[from.clamp(range.start, range.end)..to.clamp(range.start, range.end)]
-                    .iter()
-                    .collect::<String>()
-            };
-            let mut job = LayoutJob::default();
-            job.append(&part(0, bold.start), 0.0, format(text));
-            // egui's default fonts have no bold: the match stands out in the
-            // strong text colour on a faint highlight.
-            job.append(
-                &part(bold.start, bold.end),
-                0.0,
-                TextFormat {
-                    background: HIGHLIGHT_FILL,
-                    ..format(if current {
-                        text
-                    } else {
-                        visuals.strong_text_color()
-                    })
-                },
-            );
-            job.append(&part(bold.end, context.len()), 0.0, format(text));
-            job.wrap.max_width = width;
-            job.wrap.max_rows = max_rows;
-            job
-        };
-        let all = ui.fonts_mut(|fonts| fonts.layout_job(job(0..context.len(), usize::MAX)));
-        let rows: Vec<usize> = all
+        let format = |color| TextFormat::simple(font.clone(), color);
+        let part = |range: Range<usize>| context[range].iter().collect::<String>();
+        let mut job = LayoutJob::default();
+        job.append(&part(0..bold.start), 0.0, format(text));
+        // egui's default fonts have no bold: the match stands out in the
+        // strong text colour on a faint highlight.
+        job.append(
+            &part(bold.clone()),
+            0.0,
+            TextFormat {
+                background: HIGHLIGHT_FILL,
+                ..format(if current {
+                    text
+                } else {
+                    visuals.strong_text_color()
+                })
+            },
+        );
+        job.append(&part(bold.end..context.len()), 0.0, format(text));
+        job.wrap.max_width = width;
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        let rows: Vec<usize> = galley
             .rows
             .iter()
             .map(|row| row.char_count_including_newline().0)
             .collect();
         let shown = rows_around(&rows, bold.start, EXCERPT_ROWS);
-        // Laid out again from a row's start, it wraps the same way.
-        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job(shown, EXCERPT_ROWS)));
-        let at = egui::pos2(left, top + page.size().y + CARD_HEADER_GAP);
-        ui.painter().galley(at, galley, text);
+        let (Some(first), Some(last)) = (
+            galley.rows.get(shown.start),
+            shown
+                .end
+                .checked_sub(1)
+                .and_then(|row| galley.rows.get(row)),
+        ) else {
+            return;
+        };
+        let top = top + page.size().y + CARD_HEADER_GAP;
+        let clip = Rect::from_min_max(
+            egui::pos2(inner.min.x, top),
+            egui::pos2(inner.max.x, top + last.rect().max.y - first.rect().min.y),
+        );
+        // Within the list's own clip, so it stays inside the scroll area.
+        let clip = clip.intersect(ui.painter().clip_rect());
+        let at = egui::pos2(left, top - first.rect().min.y);
+        ui.painter().with_clip_rect(clip).galley(at, galley, text);
     }
 
     /// Asks for sharp renders of the `visible` pages and drops the rest.
@@ -567,24 +575,22 @@ fn hits_text(number: usize, count: usize) -> String {
     }
 }
 
-/// The characters of up to `wanted` rows, of the lengths `rows`, with the
-/// row holding character `at` in the middle, or as near as the first and
-/// last rows allow.
+/// Up to `wanted` of the rows, of the lengths `rows`, with the row holding
+/// character `at` in the middle, or as near as the first and last rows
+/// allow.
 fn rows_around(rows: &[usize], at: usize, wanted: usize) -> Range<usize> {
-    let mut start = 0;
+    let mut end = 0;
     let row = rows
         .iter()
         .position(|&len| {
-            start += len;
-            at < start
+            end += len;
+            at < end
         })
         .unwrap_or(rows.len().saturating_sub(1));
     let first = row
         .saturating_sub(wanted / 2)
         .min(rows.len().saturating_sub(wanted));
-    let last = (first + wanted).min(rows.len());
-    let offset = |row: usize| rows[..row].iter().sum::<usize>();
-    offset(first)..offset(last)
+    first..(first + wanted).min(rows.len())
 }
 
 #[cfg(test)]
@@ -603,24 +609,24 @@ mod tests {
         // Rows of 10, 12, 8, 9 and 11 characters; the match starts at 25,
         // in the third row (22..30).
         let rows = [10, 12, 8, 9, 11];
-        assert_eq!(rows_around(&rows, 25, 3), 10..39);
+        assert_eq!(rows_around(&rows, 25, 3), 1..4);
     }
 
     #[test]
     fn rows_around_at_start_takes_first_rows() {
         let rows = [10, 12, 8, 9, 11];
-        assert_eq!(rows_around(&rows, 3, 3), 0..30);
+        assert_eq!(rows_around(&rows, 3, 3), 0..3);
     }
 
     #[test]
     fn rows_around_at_end_takes_last_rows() {
         let rows = [10, 12, 8, 9, 11];
-        assert_eq!(rows_around(&rows, 45, 3), 22..50);
+        assert_eq!(rows_around(&rows, 45, 3), 2..5);
     }
 
     #[test]
     fn rows_around_few_rows_takes_all() {
-        assert_eq!(rows_around(&[10, 5], 12, 3), 0..15);
+        assert_eq!(rows_around(&[10, 5], 12, 3), 0..2);
         assert_eq!(rows_around(&[], 0, 3), 0..0);
     }
 }

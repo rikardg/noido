@@ -293,3 +293,9 @@ when it is fixed.
   one's: two extra renders per step. The prefetch window does the same.
 - **The prefetched hit targets shift while a search is still running**
   (until a hit below the view arrives); a little wasted render work.
+- **Result card headers can overlap at the narrowest sidebar** (160 pt):
+  "Page 1234" and "120/120 hits" in small type nearly fill the 136 pt; elide
+  the page text when both don't fit.
+- **`results_are_cards_of_one_height` is weak:** `> 4 × body` holds mostly
+  by the padding; assert the height from the font metrics, and add a test
+  that a match near the end of a long context is inside the shown rows.
