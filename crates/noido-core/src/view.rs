@@ -338,14 +338,37 @@ impl View {
         if next >= self.layout.spread_count() {
             return;
         }
+        self.show_spread(next, down);
+    }
+
+    /// Shows `spread` in paged mode, refitted, from the top or the bottom.
+    fn show_spread(&mut self, spread: usize, from_top: bool) {
         self.layout.set_mode(LayoutMode {
-            paged: Some(next),
+            paged: Some(spread),
             ..self.layout.mode()
         });
-        let scale = self.fit_scale_for(self.mode, next);
+        let scale = self.fit_scale_for(self.mode, spread);
         self.layout.arrange(scale, self.viewport.0, self.viewport.1);
-        self.offset.1 = if down { 0.0 } else { f32::MAX };
+        self.offset.1 = if from_top { 0.0 } else { f32::MAX };
         self.clamp_offset();
+    }
+
+    /// Goes to `page` (the last page if past it) without changing zoom or
+    /// arrangement: in continuous mode its top lands at the top of the
+    /// viewport, as far as scrolling allows; in paged mode its spread is
+    /// shown from the top.
+    pub fn go_to_page(&mut self, page: usize) {
+        let Some(last) = self.layout.page_count().checked_sub(1) else {
+            return;
+        };
+        let page = page.min(last);
+        if self.continuous() {
+            if let Some(rect) = self.layout.page_rect(page) {
+                self.scrolled_to(self.offset.0, rect.y - MARGIN);
+            }
+        } else {
+            self.show_spread(self.layout.spread_of(page), true);
+        }
     }
 
     fn zoom_to(&mut self, scale: f32, anchor: (f32, f32)) {
@@ -724,6 +747,75 @@ mod tests {
         let before = view.offset();
         view.wheel_flip(true);
         assert_eq!(view.offset(), before);
+    }
+
+    #[test]
+    fn go_to_page_continuous_puts_top_at_top() {
+        let mut view = letter_view();
+        view.go_to_page(4);
+        let rect = view.layout().page_rect(4).unwrap();
+        assert!((view.offset().1 - (rect.y - MARGIN)).abs() < 0.01);
+        assert_eq!(view.mode(), ZoomMode::FitWidth);
+        assert_eq!(view.scale(), 1.0);
+        assert!(view.continuous());
+    }
+
+    #[test]
+    fn go_to_page_keeps_custom_zoom() {
+        let mut view = letter_view();
+        view.apply(Action::ZoomIn);
+        view.apply(Action::ZoomIn);
+        let scale = view.scale();
+        view.go_to_page(3);
+        assert_eq!(view.mode(), ZoomMode::Custom);
+        assert_eq!(view.scale(), scale);
+        let rect = view.layout().page_rect(3).unwrap();
+        assert!((rect.y - view.offset().1 - MARGIN).abs() < 0.01);
+    }
+
+    #[test]
+    fn go_to_page_paged_shows_spread() {
+        let mut view = paged_view();
+        view.apply(Action::ScrollScreenDown);
+        view.go_to_page(6);
+        assert!(!view.continuous());
+        assert_eq!(view.current_spread(), Some(6));
+        assert_eq!(view.offset().1, 0.0);
+    }
+
+    #[test]
+    fn go_to_page_paged_dual_shows_spread_of_page() {
+        let mut view = paged_view();
+        view.apply(Action::ToggleDual);
+        view.go_to_page(4);
+        assert!(view.dual());
+        assert_eq!(view.current_spread(), Some(view.layout().spread_of(4)));
+        assert_eq!(view.offset().1, 0.0);
+    }
+
+    #[test]
+    fn go_to_last_page_clamps() {
+        let mut view = letter_view();
+        view.go_to_page(99);
+        let rect = view.layout().page_rect(9).unwrap();
+        assert_eq!(view.offset().1, rect.y - MARGIN);
+        // Zoomed out, the last page can't reach the top: scrolled to the end.
+        for _ in 0..3 {
+            view.apply(Action::ZoomOut);
+        }
+        view.go_to_page(9);
+        assert_eq!(view.offset().1, view.max_offset().1);
+        let mut view = paged_view();
+        view.go_to_page(99);
+        assert_eq!(view.current_spread(), Some(view.layout().spread_count() - 1));
+    }
+
+    #[test]
+    fn go_to_page_with_zero_pages_is_safe() {
+        let mut view = View::new(vec![]);
+        view.set_viewport_size(636.0, 800.0);
+        view.go_to_page(0);
+        assert_eq!(view.offset(), (0.0, 0.0));
     }
 
     #[test]
