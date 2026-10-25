@@ -1,5 +1,10 @@
 //! The render thread. PDF engines are not thread-safe, so one thread opens
-//! the document, owns it, and renders pages on request.
+//! the document, owns it, and renders pages on request. A second thread
+//! renders thumbnails on its own copy.
+
+mod thumbnails;
+
+pub use thumbnails::{Thumbnail, Thumbnailer};
 
 use std::ops::Range;
 use std::sync::mpsc::{self, Receiver, Sender};
