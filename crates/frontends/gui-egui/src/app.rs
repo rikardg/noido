@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::{
     self, Color32, ColorImage, Rect, ScrollArea, Sense, TextureHandle, TextureOptions, Vec2, pos2,
     vec2,
@@ -195,7 +196,12 @@ impl NoidoApp {
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
             // egui fades the edges of scroll areas; on pages it reads as a shadow.
             ui.spacing_mut().scroll.fade.strength = 0.0;
-            let mut scroll_area = ScrollArea::both().auto_shrink(false);
+            // Left drag pans the document (until selection tools need the button).
+            let source = ScrollSource {
+                drag: DragScroll::Always,
+                ..Default::default()
+            };
+            let mut scroll_area = ScrollArea::both().auto_shrink(false).scroll_source(source);
             if move_scroll {
                 // egui checks a new offset against last frame's content size;
                 // past it, rubber-banding would spring the view away from the anchor.
@@ -343,6 +349,35 @@ mod tests {
             "drifted {}",
             h.distance_from_centre(centre)
         );
+    }
+
+    #[test]
+    fn left_drag_pans_both_axes() {
+        let mut h = Harness::new();
+        h.press(egui::Key::Plus, Modifiers::COMMAND);
+        h.press(egui::Key::Plus, Modifiers::COMMAND);
+        h.frames(5, vec![]);
+        let (x0, y0) = h.app.view.offset();
+
+        let at = |x: f32, y: f32| Event::PointerMoved(pos2(x, y));
+        let button = |x: f32, y: f32, pressed: bool| Event::PointerButton {
+            pos: pos2(x, y),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frames(1, vec![at(500.0, 600.0)]);
+        h.frames(1, vec![button(500.0, 600.0, true)]);
+        for step in 1..=10 {
+            let t = step as f32 / 10.0;
+            h.frames(1, vec![at(500.0 - 100.0 * t, 600.0 - 200.0 * t)]);
+        }
+        h.frames(1, vec![button(400.0, 400.0, false)]);
+        h.frames(5, vec![]);
+
+        let (x1, y1) = h.app.view.offset();
+        assert!(x1 > x0 + 50.0, "x {x0} -> {x1}");
+        assert!(y1 > y0 + 150.0, "y {y0} -> {y1}");
     }
 
     #[test]
