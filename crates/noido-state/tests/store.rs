@@ -2,21 +2,24 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use noido_core::{DocPoint, ViewState, ZoomMode};
-use noido_state::{DocKey, Store};
+use noido_core::{DocPoint, SidebarState, ViewState, ZoomMode};
+use noido_state::{DocKey, DocState, Store};
 use tempfile::TempDir;
 
-fn state(page: usize) -> ViewState {
-    ViewState {
-        zoom: ZoomMode::Custom,
-        scale: 1.5,
-        continuous: false,
-        dual: true,
-        centre: DocPoint {
-            page,
-            x: 10.0,
-            y: 20.5,
+fn state(page: usize) -> DocState {
+    DocState {
+        view: ViewState {
+            zoom: ZoomMode::Custom,
+            scale: 1.5,
+            continuous: false,
+            dual: true,
+            centre: DocPoint {
+                page,
+                x: 10.0,
+                y: 20.5,
+            },
         },
+        sidebar: SidebarState::default(),
     }
 }
 
@@ -164,4 +167,35 @@ fn window_file_copies_newest() {
     );
     assert_eq!(store.window_file(&y), y_window);
     assert_eq!(fs::read_to_string(&y_window).unwrap(), "y window");
+}
+
+#[test]
+fn sidebar_round_trips() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        sidebar: SidebarState {
+            open: true,
+            width: 312.5,
+        },
+        ..state(3)
+    };
+    store.save(&key, &saved).unwrap();
+    assert_eq!(store.load(&key), Some(saved));
+}
+
+#[test]
+fn v1_file_without_sidebar_loads_defaults() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    fs::create_dir_all(docs(&dir)).unwrap();
+    fs::write(
+        docs(&dir).join(format!("{}.toml", key.hex())),
+        "version = 1\npath = \"/papers/a.pdf\"\nsaved = 0\nzoom = \"custom\"\n\
+         scale = 1.5\ncontinuous = false\ndual = true\npage = 3\nx = 10.0\ny = 20.5\n",
+    )
+    .unwrap();
+    assert_eq!(store.load(&key), Some(state(3)));
 }

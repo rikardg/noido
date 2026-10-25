@@ -7,12 +7,12 @@ use eframe::egui::{
     vec2,
 };
 use noido_core::{
-    Direction, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, THUMBNAIL_BUDGET, View,
-    ViewState, render_scale, window_keep, window_order,
+    Direction, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, SidebarState,
+    THUMBNAIL_BUDGET, View, render_scale, window_keep, window_order,
 };
 use noido_engine::{Rgba8Image, Size};
 use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
-use noido_state::{DocKey, Store};
+use noido_state::{DocKey, DocState, Store};
 
 /// Spreads (pages in single mode) rendered at full resolution around the
 /// current one, after the visible ones: the current spread, then six ahead
@@ -53,6 +53,7 @@ pub struct NoidoApp {
     focus: Option<usize>,
     /// The direction the focus last moved in.
     direction: Direction,
+    sidebar: SidebarState,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -63,13 +64,13 @@ struct Thumbnails {
     sent: Option<usize>,
 }
 
-/// Saves the view state of the open document.
+/// Saves the state of the open document.
 struct Persistence {
     store: Store,
     key: DocKey,
-    saved: Option<ViewState>,
+    saved: Option<DocState>,
     /// A state not saved yet, and the time it was first seen.
-    changed: Option<(ViewState, f64)>,
+    changed: Option<(DocState, f64)>,
     /// Whether a failed save was already reported.
     warned: bool,
 }
@@ -77,7 +78,7 @@ struct Persistence {
 impl Persistence {
     /// Saves `state` once it has been unchanged for [`SAVE_DELAY`] at `now`;
     /// otherwise returns how long until then.
-    fn update(&mut self, state: ViewState, now: f64) -> Option<f64> {
+    fn update(&mut self, state: DocState, now: f64) -> Option<f64> {
         if self.saved == Some(state) {
             self.changed = None;
             return None;
@@ -97,7 +98,7 @@ impl Persistence {
         None
     }
 
-    fn save(&mut self, state: ViewState) {
+    fn save(&mut self, state: DocState) {
         if let Err(e) = self.store.save(&self.key, &state)
             && !self.warned
         {
@@ -125,6 +126,7 @@ impl NoidoApp {
             thumbnails: None,
             focus: None,
             direction: Direction::Forward,
+            sidebar: SidebarState::default(),
         }
     }
 
@@ -192,15 +194,16 @@ impl NoidoApp {
         })
     }
 
-    /// Restores `restored` and saves the view state from now on.
+    /// Restores `restored` and saves the document's state from now on.
     pub fn with_persistence(
         mut self,
         store: Store,
         key: DocKey,
-        restored: Option<ViewState>,
+        restored: Option<DocState>,
     ) -> Self {
         if let Some(state) = &restored {
-            self.view.restore(state);
+            self.view.restore(&state.view);
+            self.sidebar = state.sidebar;
         }
         self.persistence = Some(Persistence {
             store,
@@ -212,9 +215,17 @@ impl NoidoApp {
         self
     }
 
-    /// Saves the view state once it has settled.
+    /// What is remembered about the document now; `None` without pages.
+    fn doc_state(&self) -> Option<DocState> {
+        Some(DocState {
+            view: self.view.state()?,
+            sidebar: self.sidebar,
+        })
+    }
+
+    /// Saves the document's state once it has settled.
     fn persist(&mut self, ctx: &egui::Context) {
-        let (Some(persistence), Some(state)) = (&mut self.persistence, self.view.state()) else {
+        let (Some(state), Some(persistence)) = (self.doc_state(), &mut self.persistence) else {
             return;
         };
         let now = ctx.input(|i| i.time);
@@ -440,7 +451,7 @@ impl eframe::App for NoidoApp {
     }
 
     fn on_exit(&mut self) {
-        if let (Some(persistence), Some(state)) = (&mut self.persistence, self.view.state())
+        if let (Some(state), Some(persistence)) = (self.doc_state(), &mut self.persistence)
             && persistence.saved != Some(state)
         {
             persistence.save(state);
@@ -571,9 +582,9 @@ mod tests {
     use egui::{Event, Modifiers, RawInput, pos2};
     use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 
-    use noido_core::ViewState;
+    use noido_core::{SidebarState, ViewState};
     use noido_render::Thumbnailer;
-    use noido_state::{DocKey, Store};
+    use noido_state::{DocKey, DocState, Store};
 
     use super::*;
 
@@ -968,8 +979,12 @@ mod tests {
                 y: 400.0,
             },
         };
+        let restored = DocState {
+            view: state,
+            sidebar: SidebarState::default(),
+        };
         let h = Harness::build(|app| {
-            app.with_persistence(Store::at(dir.path()), test_key(), Some(state))
+            app.with_persistence(Store::at(dir.path()), test_key(), Some(restored))
         });
         assert_eq!(h.centre().page, 6);
     }
@@ -985,7 +1000,10 @@ mod tests {
         assert_eq!(store.load(&test_key()), None, "saved before the delay");
 
         h.frames(90, vec![]);
-        assert_eq!(store.load(&test_key()), h.app.view.state());
+        assert_eq!(
+            store.load(&test_key()).map(|state| state.view),
+            h.app.view.state()
+        );
 
         let file = dir
             .path()
@@ -994,6 +1012,18 @@ mod tests {
         std::fs::remove_file(&file).unwrap();
         h.frames(180, vec![]);
         assert!(!file.exists(), "unchanged state was saved again");
+    }
+
+    #[test]
+    fn sidebar_change_is_saved() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let mut h =
+            Harness::build(|app| app.with_persistence(Store::at(dir.path()), test_key(), None));
+        h.frames(150, vec![]);
+        h.app.sidebar.open = true;
+        h.frames(150, vec![]);
+        assert!(store.load(&test_key()).unwrap().sidebar.open);
     }
 
     fn blank_texture(ctx: &egui::Context, name: &str) -> PageImage {

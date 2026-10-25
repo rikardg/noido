@@ -1,6 +1,6 @@
 //! Per-document view state, kept in the platform's directory for application
 //! state. Each document has up to two files in `docs/`: `<hash>.toml` with its
-//! [`ViewState`] and `<hash>.window.ron`, eframe's saved window geometry.
+//! [`DocState`] and `<hash>.window.ron`, eframe's saved window geometry.
 
 use std::fs;
 use std::io;
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
-use noido_core::{DocPoint, ViewState, ZoomMode};
+use noido_core::{DocPoint, SIDEBAR_DEFAULT_WIDTH, SidebarState, ViewState, ZoomMode};
 use serde::{Deserialize, Serialize};
 
 const VERSION: u32 = 1;
@@ -37,6 +37,13 @@ impl DocKey {
     }
 }
 
+/// What is remembered about a document.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DocState {
+    pub view: ViewState,
+    pub sidebar: SidebarState,
+}
+
 /// The state directory and the documents' files in it.
 pub struct Store {
     docs: PathBuf,
@@ -60,7 +67,7 @@ impl Store {
     /// The document's saved state: by hash, else by path (a file edited in
     /// place), in which case its files are re-filed under the new hash.
     /// Missing, unreadable or unknown entries give `None`.
-    pub fn load(&self, key: &DocKey) -> Option<ViewState> {
+    pub fn load(&self, key: &DocKey) -> Option<DocState> {
         if let Some(entry) = read_entry(&self.state_file(key)) {
             return Some(entry.state());
         }
@@ -79,7 +86,7 @@ impl Store {
     }
 
     /// Writes the document's state; the file is replaced atomically.
-    pub fn save(&self, key: &DocKey, state: &ViewState) -> io::Result<()> {
+    pub fn save(&self, key: &DocKey, state: &DocState) -> io::Result<()> {
         fs::create_dir_all(&self.docs)?;
         let entry = Entry::new(&key.path, state);
         let text = toml::to_string(&entry).map_err(io::Error::other)?;
@@ -182,6 +189,15 @@ struct Entry {
     page: usize,
     x: f32,
     y: f32,
+    // Absent from files written before the sidebar existed.
+    #[serde(default)]
+    sidebar_open: bool,
+    #[serde(default = "default_sidebar_width")]
+    sidebar_width: f32,
+}
+
+fn default_sidebar_width() -> f32 {
+    SIDEBAR_DEFAULT_WIDTH
 }
 
 #[derive(Serialize, Deserialize)]
@@ -193,7 +209,8 @@ enum Zoom {
 }
 
 impl Entry {
-    fn new(path: &Path, state: &ViewState) -> Self {
+    fn new(path: &Path, doc: &DocState) -> Self {
+        let state = &doc.view;
         Self {
             version: VERSION,
             path: path.to_string_lossy().into_owned(),
@@ -211,11 +228,13 @@ impl Entry {
             page: state.centre.page,
             x: state.centre.x,
             y: state.centre.y,
+            sidebar_open: doc.sidebar.open,
+            sidebar_width: doc.sidebar.width,
         }
     }
 
-    fn state(&self) -> ViewState {
-        ViewState {
+    fn state(&self) -> DocState {
+        let view = ViewState {
             zoom: match self.zoom {
                 Zoom::FitWidth => ZoomMode::FitWidth,
                 Zoom::FitPage => ZoomMode::FitPage,
@@ -228,6 +247,13 @@ impl Entry {
                 page: self.page,
                 x: self.x,
                 y: self.y,
+            },
+        };
+        DocState {
+            view,
+            sidebar: SidebarState {
+                open: self.sidebar_open,
+                width: self.sidebar_width,
             },
         }
     }
