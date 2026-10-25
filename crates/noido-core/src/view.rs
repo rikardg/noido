@@ -40,7 +40,7 @@ impl View {
             offset: (0.0, 0.0),
         };
         let scale = view.fit_scale(ZoomMode::FitWidth);
-        view.layout.arrange(scale, 0.0);
+        view.layout.arrange(scale, 0.0, 0.0);
         view
     }
 
@@ -92,7 +92,7 @@ impl View {
         let scale = self.fit_scale(self.mode);
         if was_empty {
             // Nothing was on screen yet: start at the top.
-            self.layout.arrange(scale, width);
+            self.layout.arrange(scale, width, height);
             self.clamp_offset();
         } else {
             self.rescale(scale, old_centre, self.centre());
@@ -160,7 +160,7 @@ impl View {
         self.layout.set_mode(LayoutMode { dual, paged });
         let spread = paged.unwrap_or_else(|| self.layout.spread_of(page));
         let scale = self.fit_scale_for(self.mode, spread);
-        self.layout.arrange(scale, self.viewport.0);
+        self.layout.arrange(scale, self.viewport.0, self.viewport.1);
 
         if continuous {
             if let Some((x, y)) = anchor.and_then(|p| self.layout.content_point(p)) {
@@ -235,7 +235,7 @@ impl View {
             ..self.layout.mode()
         });
         let scale = self.fit_scale_for(self.mode, next);
-        self.layout.arrange(scale, self.viewport.0);
+        self.layout.arrange(scale, self.viewport.0, self.viewport.1);
         self.offset.1 = if down { 0.0 } else { f32::MAX };
         self.clamp_offset();
     }
@@ -254,7 +254,7 @@ impl View {
     fn rescale(&mut self, scale: f32, from: (f32, f32), to: (f32, f32)) {
         let (ox, oy) = self.offset;
         let anchor = self.layout.doc_point(ox + from.0, oy + from.1);
-        self.layout.arrange(scale, self.viewport.0);
+        self.layout.arrange(scale, self.viewport.0, self.viewport.1);
         if let Some((x, y)) = anchor.and_then(|p| self.layout.content_point(p)) {
             self.offset = (x - to.0, y - to.1);
         }

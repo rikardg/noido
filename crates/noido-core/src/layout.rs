@@ -51,6 +51,7 @@ pub struct Layout {
     mode: LayoutMode,
     scale: f32,
     content_width: f32,
+    content_height: f32,
     rects: Vec<Option<PageRect>>,
     rows: Vec<Row>,
 }
@@ -62,10 +63,11 @@ impl Layout {
             mode: LayoutMode::default(),
             scale: 0.0,
             content_width: 0.0,
+            content_height: 0.0,
             rects: Vec::new(),
             rows: Vec::new(),
         };
-        layout.arrange(0.0, 0.0);
+        layout.arrange(0.0, 0.0, 0.0);
         layout
     }
 
@@ -79,8 +81,9 @@ impl Layout {
     }
 
     /// Lays the shown rows out at `scale` UI points per PDF point. The content
-    /// is at least `available_width` wide.
-    pub fn arrange(&mut self, scale: f32, available_width: f32) {
+    /// is at least `available_width` × `available_height`; rows that are
+    /// narrower or shorter are centred.
+    pub fn arrange(&mut self, scale: f32, available_width: f32, available_height: f32) {
         self.scale = scale;
         let shown = match self.mode.paged {
             Some(spread) => spread.min(self.spread_count())..(spread + 1).min(self.spread_count()),
@@ -97,7 +100,12 @@ impl Layout {
 
         self.rects = vec![None; self.page_sizes.len()];
         self.rows.clear();
-        let mut y = MARGIN;
+        let rows_height: f32 = row_widths
+            .iter()
+            .map(|&(spread, _)| self.spread_size(spread).map_or(0.0, |s| s.height) * scale)
+            .sum::<f32>()
+            + PAGE_GAP * row_widths.len().saturating_sub(1) as f32;
+        let mut y = MARGIN + ((available_height - rows_height - 2.0 * MARGIN) / 2.0).max(0.0);
         for (spread, row_width) in row_widths {
             let pages = self.spread_pages(spread);
             let height = self.spread_size(spread).map_or(0.0, |s| s.height) * scale;
@@ -120,6 +128,10 @@ impl Layout {
             });
             y += height + PAGE_GAP;
         }
+        self.content_height = match self.rows.last() {
+            Some(last) => available_height.max(last.top + last.height + MARGIN),
+            None => 0.0,
+        };
     }
 
     /// UI points per PDF point, as last arranged.
@@ -192,7 +204,7 @@ impl Layout {
     }
 
     pub fn content_height(&self) -> f32 {
-        self.rows.last().map_or(0.0, |r| r.top + r.height + MARGIN)
+        self.content_height
     }
 
     /// Shown pages in rows intersecting the vertical span `[top, bottom)`.
@@ -257,7 +269,7 @@ mod tests {
 
     fn two_pages() -> Layout {
         let mut layout = Layout::new(vec![size(612.0, 792.0), size(306.0, 396.0)]);
-        layout.arrange(1.0, 636.0);
+        layout.arrange(1.0, 636.0, 0.0);
         layout
     }
 
@@ -299,7 +311,7 @@ mod tests {
     #[test]
     fn no_pages_is_safe() {
         let mut layout = Layout::new(vec![]);
-        layout.arrange(1.0, 500.0);
+        layout.arrange(1.0, 500.0, 0.0);
         assert_eq!(layout.content_height(), 0.0);
         assert_eq!(layout.page_rect(0), None);
         assert!(layout.visible_pages(0.0, 1000.0).is_empty());
@@ -309,7 +321,7 @@ mod tests {
     #[test]
     fn zero_width_page_is_safe() {
         let mut layout = Layout::new(vec![size(0.0, 100.0)]);
-        layout.arrange(1.0, 500.0);
+        layout.arrange(1.0, 500.0, 0.0);
         assert!(layout.page_rect(0).is_some());
         assert_eq!(layout.widest_spread(), 0.0);
     }
@@ -317,7 +329,7 @@ mod tests {
     #[test]
     fn wide_pages_extend_content() {
         let mut layout = Layout::new(vec![size(612.0, 792.0)]);
-        layout.arrange(2.0, 500.0);
+        layout.arrange(2.0, 500.0, 0.0);
         assert_eq!(layout.content_width(), 1248.0);
         assert_eq!(layout.page_rect(0).unwrap().x, 12.0);
     }
@@ -325,7 +337,7 @@ mod tests {
     #[test]
     fn narrow_pages_centre_in_window() {
         let mut layout = Layout::new(vec![size(612.0, 792.0)]);
-        layout.arrange(0.5, 1000.0);
+        layout.arrange(0.5, 1000.0, 0.0);
         assert_eq!(layout.page_rect(0).unwrap().x, (1000.0 - 306.0) / 2.0);
     }
 
@@ -353,7 +365,7 @@ mod tests {
     fn arranged(pages: Vec<Size>, mode: LayoutMode, width: f32) -> Layout {
         let mut layout = Layout::new(pages);
         layout.set_mode(mode);
-        layout.arrange(1.0, width);
+        layout.arrange(1.0, width, 0.0);
         layout
     }
 
@@ -419,6 +431,31 @@ mod tests {
         let single = arranged(letters(4), LayoutMode::default(), 636.0);
         assert_eq!(single.spread_of(3), 3);
         assert_eq!(Layout::new(vec![]).spread_count(), 0);
+    }
+
+    #[test]
+    fn short_content_is_centred_vertically() {
+        let paged = LayoutMode {
+            dual: true,
+            paged: Some(0),
+        };
+        let mut layout = Layout::new(letters(2));
+        layout.set_mode(paged);
+        layout.arrange(1.0, 1260.0, 1000.0);
+        // One 792-high row plus margins is 816; the remaining 184 is split.
+        assert_eq!(layout.page_rect(0).unwrap().y, 12.0 + 92.0);
+        assert_eq!(layout.content_height(), 1000.0);
+    }
+
+    #[test]
+    fn tall_content_is_not_shifted() {
+        let mut layout = Layout::new(letters(3));
+        layout.arrange(1.0, 636.0, 1000.0);
+        assert_eq!(layout.page_rect(0).unwrap().y, 12.0);
+        assert_eq!(
+            layout.content_height(),
+            12.0 + 3.0 * 792.0 + 2.0 * 12.0 + 12.0
+        );
     }
 
     #[test]
