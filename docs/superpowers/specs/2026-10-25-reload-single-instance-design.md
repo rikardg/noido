@@ -1,6 +1,6 @@
 # Reload on change, one window per file
 
-Date: 2026-10-25 · Status: draft
+Date: 2026-10-25 · Status: approved
 
 ## Intent
 
