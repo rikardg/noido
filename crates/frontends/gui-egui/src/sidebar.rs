@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
+use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
     Column, Layout, MAX_RENDER_SIDE, RenderTracker, SIDEBAR_MAX_FRACTION, SIDEBAR_MIN_WIDTH,
@@ -161,6 +162,9 @@ impl SidebarView {
     fn scrolled(&mut self, ui: &mut egui::Ui, input: &Input) -> Output {
         // egui fades the edges of scroll areas; on pages it reads as a shadow.
         ui.spacing_mut().scroll.fade.strength = 0.0;
+        // No overscroll at the ends, as on the pages; it would also undo the
+        // offsets set to follow the current page.
+        ui.spacing_mut().scroll.kinetic.rubber_band = false;
         let width = ui.available_width();
         let height = ui.available_height();
         let column = Column::new(input.layout.page_sizes(), width);
@@ -174,7 +178,14 @@ impl SidebarView {
             self.followed = Some(current);
             column.reveal(current, self.offset, height)
         });
-        let mut area = ScrollArea::vertical().auto_shrink(false);
+        // Left drag scrolls, as on the pages.
+        let source = ScrollSource {
+            drag: DragScroll::Always,
+            ..Default::default()
+        };
+        let mut area = ScrollArea::vertical()
+            .auto_shrink(false)
+            .scroll_source(source);
         if let Some(target) = target {
             area = area.vertical_scroll_offset(target);
         }

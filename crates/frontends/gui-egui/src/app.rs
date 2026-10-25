@@ -2723,4 +2723,19 @@ mod tests {
         // Only the current page has them.
         assert_eq!(rects.len(), 2, "{rects:?}");
     }
+
+    #[test]
+    fn dragging_sidebar_scrolls_it_without_clicking() {
+        let mut h = sidebar_on(Arc::new(BlankEngine30));
+        let (_, before) = h.app.sidebar_view.drawn()[0];
+        h.drag(before.center(), vec2(0.0, -300.0));
+        h.frames(10, vec![]);
+        let first = drawn_pages(&h)[0];
+        let (_, after) = h.app.sidebar_view.drawn()[0];
+        assert!(
+            first > 0 || after.min.y < before.min.y - 200.0,
+            "{before:?} {after:?}"
+        );
+        assert_eq!(h.app.chosen, None, "the drag counted as a click");
+    }
 }
