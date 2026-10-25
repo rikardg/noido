@@ -588,6 +588,7 @@ impl NoidoApp {
             continuous: self.view.continuous(),
             dual: self.view.dual(),
             keymap: &self.keymap,
+            counter: self.search_state.counter(),
         };
         let focus = std::mem::take(&mut self.search_focus_requested);
         let output = egui::Panel::top("titlebar")
@@ -764,6 +765,7 @@ impl NoidoApp {
         self.textures.retain(|page, _| keep.contains(page));
 
         let painter = ui.painter();
+        let hits = &self.search_state.hits;
         for page in visible {
             let Some(r) = layout.page_rect(page) else {
                 continue;
@@ -775,6 +777,20 @@ impl NoidoApp {
                 }
                 None => {
                     painter.rect_filled(rect, 0.0, Color32::WHITE);
+                }
+            }
+            // Matches over the page, the current one stronger.
+            let first = hits.first_on(page).unwrap_or(0);
+            for (i, hit) in hits.on_page(page).iter().enumerate() {
+                let fill = if hits.current() == Some(first + i) {
+                    search::CURRENT_FILL
+                } else {
+                    search::HIGHLIGHT_FILL
+                };
+                for area in &hit.text.rects {
+                    let min = rect.min + vec2(area.x, area.y) * layout.scale();
+                    let size = vec2(area.width, area.height) * layout.scale();
+                    painter.rect_filled(Rect::from_min_size(min, size), 0.0, fill);
                 }
             }
         }
@@ -826,6 +842,10 @@ impl NoidoApp {
                 lowres: self.thumbnails.as_ref().map(|t| &t.textures),
                 current: self.current_page(),
                 highlighted: self.highlighted(),
+                results: self.search_state.searched().map(|_| sidebar::Results {
+                    hits: &self.search_state.hits,
+                    status: self.search_state.status(self.view.layout().page_count()),
+                }),
             };
             let output = self.sidebar_view.show(ui, &mut self.sidebar, &input);
             if let Some(page) = output.clicked {
@@ -835,6 +855,9 @@ impl NoidoApp {
             }
             if output.browsing.is_some() {
                 self.browse = output.browsing;
+            }
+            if let Some(index) = output.hit {
+                self.go_to_hit(index);
             }
         } else {
             self.sidebar_view.closed();
@@ -3010,8 +3033,11 @@ mod tests {
     fn search_for(h: &mut Harness, text: &str) {
         focus_search(h);
         h.typed(text);
-        h.until(|h| h.app.search_state.finished());
-        assert!(h.app.search_state.finished(), "search never finished");
+        let done = |h: &Harness| {
+            h.app.search_state.searched() == Some(text) && h.app.search_state.finished()
+        };
+        h.until(done);
+        assert!(done(h), "search never finished");
     }
 
     #[test]
@@ -3247,5 +3273,104 @@ mod tests {
         focus_search(&mut h);
         h.typed("dog");
         assert_eq!(h.app.search, "dog");
+    }
+
+    /// The rectangles filled with `colour` below the title bar.
+    fn filled(h: &Harness, colour: Color32) -> Vec<Rect> {
+        h.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(r) if r.fill == colour && r.rect.min.y >= TITLE_BAR_HEIGHT => {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn highlights_drawn_for_visible_hits() {
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        h.frames(2, vec![]);
+        let current = filled(&h, search::CURRENT_FILL);
+        assert_eq!(current.len(), 1, "{current:?}");
+        // "a cat": "cat" is chars 2..5 of the first line, at 72 + 2 × 6 pt.
+        let scale = h.app.view.scale();
+        assert!(
+            (current[0].width() - 18.0 * scale).abs() < 1.0,
+            "{current:?}"
+        );
+        assert!(
+            (current[0].height() - 12.0 * scale).abs() < 1.0,
+            "{current:?}"
+        );
+        let others = filled(&h, search::HIGHLIGHT_FILL);
+        assert!(!others.is_empty());
+        assert!(others.iter().all(|r| r.min.y > current[0].min.y));
+    }
+
+    #[test]
+    fn sidebar_shows_results_while_text() {
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        h.frames(2, vec![]);
+        assert!(h.app.sidebar.open);
+        assert!(h.app.sidebar_view.drawn().is_empty(), "thumbnails drawn");
+        let rows: Vec<usize> = h
+            .app
+            .sidebar_view
+            .result_rows()
+            .iter()
+            .map(|&(i, _)| i)
+            .collect();
+        assert_eq!(rows, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn click_on_result_goes_to_hit() {
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        h.frames(2, vec![]);
+        let (_, row) = h.app.sidebar_view.result_rows()[3];
+        h.click(row.center());
+        h.frames(2, vec![]);
+        assert_eq!(current(&h), Some(3));
+        assert_eq!(h.app.view.centre_page(), Some(7));
+    }
+
+    #[test]
+    fn results_follow_current_hit() {
+        let pages: Vec<&[&str]> = vec![&["cat"]; 60];
+        let mut h = searching(&TextEngine::new(&pages));
+        search_for(&mut h, "cat");
+        for _ in 0..40 {
+            h.press(egui::Key::G, Modifiers::COMMAND);
+        }
+        h.frames(3, vec![]);
+        assert_eq!(current(&h), Some(40));
+        let rows = h.app.sidebar_view.result_rows();
+        assert!(rows.iter().any(|&(i, _)| i == 40), "{rows:?}");
+    }
+
+    #[test]
+    fn cleared_search_shows_thumbnails_again() {
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(3, vec![]);
+        assert!(h.app.sidebar_view.result_rows().is_empty());
+        assert!(!h.app.sidebar_view.drawn().is_empty());
+        assert!(filled(&h, search::HIGHLIGHT_FILL).is_empty());
+        assert!(filled(&h, search::CURRENT_FILL).is_empty());
+    }
+
+    #[test]
+    fn counter_and_status() {
+        let mut h = searching(&more_cats());
+        search_for(&mut h, "cat");
+        assert_eq!(h.app.search_state.counter(), "1 of 4");
+        search_for(&mut h, "zebra");
+        assert_eq!(h.app.search_state.counter(), "No matches");
     }
 }

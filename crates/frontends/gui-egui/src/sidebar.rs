@@ -1,20 +1,22 @@
-//! The left sidebar: a column of page thumbnails, as wide as the sidebar.
-//! Visible thumbnails are rendered sharp by a renderer of their own; the
-//! low-res thumbnails stand in until those arrive. Search results and the
-//! outline will appear here too.
+//! The left sidebar: a column of page thumbnails, as wide as the sidebar, or
+//! while searching, the list of matches. Visible thumbnails are rendered
+//! sharp by a renderer of their own; the low-res thumbnails stand in until
+//! those arrive. The outline will appear here too.
 
 use std::collections::HashMap;
 use std::ops::Range;
 
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
+use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
-    Column, Layout, MAX_RENDER_SIDE, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState, max_width,
-    render_scale,
+    Column, Hits, Layout, MAX_RENDER_SIDE, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState,
+    max_width, render_scale,
 };
 use noido_render::{RenderRequest, Renderer};
 
 use crate::image::PageImage;
+use crate::search::HIGHLIGHT_FILL;
 
 /// How far the current page's highlight reaches around its thumbnail, and
 /// its corner radius, in points.
@@ -23,6 +25,10 @@ pub const HIGHLIGHT: f32 = 6.0;
 const PILL_PADDING: egui::Vec2 = egui::vec2(8.0, 2.0);
 /// Space between the current page's highlight and its number's pill.
 const PILL_GAP: f32 = 4.0;
+/// Height of a row in the list of matches.
+const RESULT_ROW_HEIGHT: f32 = 28.0;
+/// Space around the list of matches and inside the current row's fill.
+const RESULT_MARGIN: f32 = 8.0;
 
 /// What the sidebar needs from the app each frame.
 pub struct Input<'a> {
@@ -33,6 +39,15 @@ pub struct Input<'a> {
     pub current: Option<usize>,
     /// The pages shown as current: the current page, or its spread.
     pub highlighted: Range<usize>,
+    /// While searching: the matches, shown instead of the thumbnails.
+    pub results: Option<Results<'a>>,
+}
+
+/// The matches of a search, for the sidebar.
+pub struct Results<'a> {
+    pub hits: &'a Hits,
+    /// A line above them: progress, or "No matches".
+    pub status: String,
 }
 
 /// What the reader did in the sidebar.
@@ -42,6 +57,8 @@ pub struct Output {
     pub clicked: Option<usize>,
     /// The reader scrolled the sidebar; the page at its middle.
     pub browsing: Option<usize>,
+    /// A match was clicked: its index.
+    pub hit: Option<usize>,
 }
 
 /// The sidebar's thumbnails and their sharp renders.
@@ -64,6 +81,11 @@ pub struct SidebarView {
     /// Whether the sidebar was shown last frame.
     shown: bool,
     highlighted: Range<usize>,
+    /// The list of matches: its visible rows' screen rects last frame, the
+    /// current match it last scrolled to, and its scroll offset.
+    result_rows: Vec<(usize, Rect)>,
+    followed_hit: Option<usize>,
+    results_offset: f32,
 }
 
 impl SidebarView {
@@ -80,6 +102,9 @@ impl SidebarView {
             width: 0.0,
             shown: false,
             highlighted: 0..0,
+            result_rows: Vec::new(),
+            followed_hit: None,
+            results_offset: 0.0,
         }
     }
 
@@ -147,12 +172,25 @@ impl SidebarView {
         let window = ui.max_rect().width();
         let max = max_width(window);
         let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(0.0);
+        if input.results.is_some() {
+            // The thumbnails are out of sight: no sharp renders for them.
+            self.closed();
+        } else {
+            self.result_rows.clear();
+            self.followed_hit = None;
+        }
         let response = egui::Panel::left("sidebar")
             .resizable(true)
             .frame(frame)
             .default_size(state.clamped(window).width)
             .size_range(SIDEBAR_MIN_WIDTH..=max)
-            .show(ui, |ui| self.scrolled(ui, input));
+            .show(ui, |ui| match &input.results {
+                Some(results) => Output {
+                    hit: self.results(ui, results),
+                    ..Output::default()
+                },
+                None => self.scrolled(ui, input),
+            });
         state.width = response.response.rect.width();
         self.shown = true;
         response.inner
@@ -196,7 +234,7 @@ impl SidebarView {
         self.offset = offset;
         let mut output = Output {
             clicked: shown.inner,
-            browsing: None,
+            ..Output::default()
         };
         if scrolled {
             output.browsing = column.page_at(offset + height / 2.0);
@@ -292,6 +330,132 @@ impl SidebarView {
         clicked
     }
 
+    /// The list of matches, kept on the current one; returns the match
+    /// clicked, if any.
+    fn results(&mut self, ui: &mut egui::Ui, results: &Results) -> Option<usize> {
+        ui.spacing_mut().scroll.fade.strength = 0.0;
+        ui.spacing_mut().scroll.kinetic.rubber_band = false;
+        if !results.status.is_empty() {
+            ui.add_space(RESULT_MARGIN);
+            ui.horizontal(|ui| {
+                ui.add_space(RESULT_MARGIN);
+                ui.weak(&results.status);
+            });
+            ui.add_space(RESULT_MARGIN / 2.0);
+        }
+        let hits = results.hits;
+        let height = ui.available_height();
+        let current = hits.current();
+        // Scrolled to the current match when it changes, the least distance.
+        let target = current
+            .filter(|&c| self.followed_hit != Some(c))
+            .and_then(|c| {
+                self.followed_hit = Some(c);
+                let top = RESULT_MARGIN + c as f32 * RESULT_ROW_HEIGHT;
+                let bottom = top + RESULT_ROW_HEIGHT;
+                if top < self.results_offset {
+                    Some(top - RESULT_MARGIN)
+                } else if bottom > self.results_offset + height {
+                    Some(bottom + RESULT_MARGIN - height)
+                } else {
+                    None
+                }
+            });
+        let source = ScrollSource {
+            drag: DragScroll::Always,
+            ..Default::default()
+        };
+        let mut area = ScrollArea::vertical()
+            .auto_shrink(false)
+            .scroll_source(source);
+        if let Some(target) = target {
+            area = area.vertical_scroll_offset(target.max(0.0));
+        }
+        self.result_rows.clear();
+        let shown = area.show_viewport(ui, |ui, viewport| {
+            let content = vec2(
+                ui.available_width(),
+                2.0 * RESULT_MARGIN + hits.len() as f32 * RESULT_ROW_HEIGHT,
+            );
+            let (area, _) = ui.allocate_exact_size(content, Sense::hover());
+            let first = ((viewport.min.y - RESULT_MARGIN) / RESULT_ROW_HEIGHT)
+                .floor()
+                .max(0.0);
+            let last = ((viewport.max.y - RESULT_MARGIN) / RESULT_ROW_HEIGHT)
+                .ceil()
+                .max(0.0);
+            let mut clicked = None;
+            for index in first as usize..(last as usize).min(hits.len()) {
+                let row = Rect::from_min_size(
+                    area.min + vec2(0.0, RESULT_MARGIN + index as f32 * RESULT_ROW_HEIGHT),
+                    vec2(area.width(), RESULT_ROW_HEIGHT),
+                );
+                let id = ui.scope_id().with(("match", index));
+                if ui.interact(row, id, Sense::click()).clicked() {
+                    clicked = Some(index);
+                }
+                self.result_row(ui, row, hits, index, current == Some(index));
+                self.result_rows.push((index, row));
+            }
+            clicked
+        });
+        self.results_offset = shown.state.clamped_offset().y;
+        shown.inner
+    }
+
+    /// One match: its page number, then its context with the match marked.
+    fn result_row(&self, ui: &egui::Ui, row: Rect, hits: &Hits, index: usize, current: bool) {
+        let Some(hit) = hits.get(index) else {
+            return;
+        };
+        let visuals = ui.visuals();
+        let inner = row.shrink2(vec2(RESULT_MARGIN, 1.0));
+        if current {
+            ui.painter()
+                .rect_filled(inner, RESULT_MARGIN / 2.0, visuals.selection.bg_fill);
+        }
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let (text, weak) = if current {
+            (
+                visuals.selection.stroke.color,
+                visuals.selection.stroke.color,
+            )
+        } else {
+            (visuals.text_color(), visuals.weak_text_color())
+        };
+        let format = |color| TextFormat::simple(font.clone(), color);
+        let mut job = LayoutJob::default();
+        job.append(&format!("p. {}  ", hit.page + 1), 0.0, format(weak));
+        let context: Vec<char> = hit.text.context.text.chars().collect();
+        let bold = &hit.text.context.bold;
+        let part = |range: Range<usize>| context[range].iter().collect::<String>();
+        job.append(&part(0..bold.start), 0.0, format(text));
+        // egui's default fonts have no bold: the match stands out in the
+        // strong text colour on a faint highlight.
+        job.append(
+            &part(bold.clone()),
+            0.0,
+            TextFormat {
+                background: HIGHLIGHT_FILL,
+                ..format(if current {
+                    text
+                } else {
+                    visuals.strong_text_color()
+                })
+            },
+        );
+        job.append(&part(bold.end..context.len()), 0.0, format(text));
+        job.wrap.max_width = inner.width() - RESULT_MARGIN;
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        let at = egui::pos2(
+            inner.min.x + RESULT_MARGIN / 2.0,
+            inner.center().y - galley.size().y / 2.0,
+        );
+        ui.painter().galley(at, galley, text);
+    }
+
     /// Asks for sharp renders of the `visible` pages and drops the rest.
     fn request(
         &mut self,
@@ -320,6 +484,11 @@ impl SidebarView {
     #[cfg(test)]
     pub fn drawn(&self) -> &[(usize, Rect)] {
         &self.drawn
+    }
+
+    #[cfg(test)]
+    pub fn result_rows(&self) -> &[(usize, Rect)] {
+        &self.result_rows
     }
 
     #[cfg(test)]

@@ -1,11 +1,15 @@
 //! Search state: the text thread, the hits of the current query, and when
 //! to search and where to jump.
 
+use eframe::egui::Color32;
 use noido_core::Hits;
 use noido_render::{SearchUpdate, TextSearcher};
 
 /// Seconds after the last change to the field before it is searched.
 pub const DELAY: f64 = 0.2;
+/// The fill over a match on the page, and over the current one.
+pub const HIGHLIGHT_FILL: Color32 = Color32::from_rgba_premultiplied(90, 75, 0, 90);
+pub const CURRENT_FILL: Color32 = Color32::from_rgba_premultiplied(140, 70, 0, 140);
 
 /// What to do with the first hit of a query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,6 +192,26 @@ impl Search {
         self.at_hit = false;
     }
 
+    /// The match counter for the title bar.
+    pub fn counter(&self) -> String {
+        counter_text(
+            self.searched.is_none(),
+            self.hits.current(),
+            self.hits.len(),
+            self.done,
+        )
+    }
+
+    /// The line above the results, for a document of `page_count` pages.
+    pub fn status(&self, page_count: usize) -> String {
+        status_text(
+            self.searched.as_ref().map(|_| self.pages_searched),
+            page_count,
+            self.hits.len(),
+            self.done,
+        )
+    }
+
     /// The field's text as last seen.
     pub fn text(&self) -> &str {
         &self.text
@@ -198,6 +222,7 @@ impl Search {
     }
 
     /// Whether the current query has been searched through.
+    #[cfg(test)]
     pub fn finished(&self) -> bool {
         self.searched.is_some() && self.done.is_some()
     }
@@ -205,5 +230,63 @@ impl Search {
     #[cfg(test)]
     pub fn first(&self) -> First {
         self.first
+    }
+}
+
+/// The match counter beside the search field: "3 of 41", "41 matches",
+/// "No matches"; empty with no query (`blank`) or nothing found yet.
+pub fn counter_text(blank: bool, current: Option<usize>, len: usize, done: Option<bool>) -> String {
+    let more = if done == Some(true) { "+" } else { "" };
+    match (blank, current, len) {
+        (true, _, _) => String::new(),
+        (false, Some(i), _) => format!("{} of {len}{more}", i + 1),
+        (false, None, 0) if done.is_some() => "No matches".into(),
+        (false, None, 0) => String::new(),
+        (false, None, 1) => format!("1 match{more}"),
+        (false, None, _) => format!("{len}{more} matches"),
+    }
+}
+
+/// The line above the results: progress while searching, "No matches" when
+/// done with none, else nothing. `searched` is `None` without a query.
+pub fn status_text(
+    searched: Option<usize>,
+    page_count: usize,
+    hits: usize,
+    done: Option<bool>,
+) -> String {
+    match (searched, done) {
+        (None, _) => String::new(),
+        (Some(pages), None) => format!("Searching… page {pages} of {page_count}"),
+        (Some(_), Some(_)) if hits == 0 => "No matches".into(),
+        (Some(_), Some(_)) => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counter_text_cases() {
+        assert_eq!(counter_text(false, Some(2), 41, None), "3 of 41");
+        assert_eq!(counter_text(false, None, 41, Some(false)), "41 matches");
+        assert_eq!(counter_text(false, None, 1, Some(false)), "1 match");
+        assert_eq!(counter_text(false, Some(2), 5000, Some(true)), "3 of 5000+");
+        assert_eq!(counter_text(false, None, 5000, Some(true)), "5000+ matches");
+        assert_eq!(counter_text(false, None, 0, Some(false)), "No matches");
+        assert_eq!(counter_text(false, None, 0, None), "");
+        assert_eq!(counter_text(true, None, 0, None), "");
+    }
+
+    #[test]
+    fn status_text_cases() {
+        assert_eq!(
+            status_text(Some(12), 600, 4, None),
+            "Searching… page 12 of 600"
+        );
+        assert_eq!(status_text(Some(600), 600, 0, Some(false)), "No matches");
+        assert_eq!(status_text(Some(600), 600, 3, Some(false)), "");
+        assert_eq!(status_text(None, 600, 0, None), "");
     }
 }

@@ -33,6 +33,8 @@ pub struct Bar<'a> {
     pub continuous: bool,
     pub dual: bool,
     pub keymap: &'a Keymap,
+    /// The match counter, shown beside the search field; empty for none.
+    pub counter: String,
 }
 
 /// Where the bar's parts were drawn last frame.
@@ -158,6 +160,9 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
             state.store(ui.ctx(), field.id);
         }
         output.rects.search = field.rect;
+        if !bar.counter.is_empty() {
+            ui.weak(&bar.counter);
+        }
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if !cfg!(target_os = "macos") {
