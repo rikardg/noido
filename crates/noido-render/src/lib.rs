@@ -1,9 +1,11 @@
 //! The render thread. PDF engines are not thread-safe, so one thread opens
 //! the document, owns it, and renders pages on request. A second thread
-//! renders thumbnails on its own copy.
+//! renders thumbnails on its own copy, and a third extracts and searches text.
 
+mod text;
 mod thumbnails;
 
+pub use text::{MAX_HITS, SearchUpdate, TextSearcher};
 pub use thumbnails::{Thumbnail, Thumbnailer};
 
 use std::ops::Range;

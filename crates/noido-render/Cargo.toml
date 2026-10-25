@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 noido-engine.workspace = true
 noido-core.workspace = true
+noido-text.workspace = true
 
 [dev-dependencies]
 engine-hayro.workspace = true
