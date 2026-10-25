@@ -250,6 +250,11 @@ impl View {
             Action::ToggleDual => {
                 self.switch_mode(!self.dual(), self.odd_left(), self.continuous())
             }
+            // Single pages don't pair: nothing on screen changes.
+            Action::ToggleOddLeft if !self.dual() => self.layout.set_mode(LayoutMode {
+                odd_left: !self.odd_left(),
+                ..self.layout.mode()
+            }),
             Action::ToggleOddLeft => {
                 self.switch_mode(self.dual(), !self.odd_left(), self.continuous())
             }
@@ -298,9 +303,11 @@ impl View {
     /// stays in place.
     fn switch_mode(&mut self, dual: bool, odd_left: bool, continuous: bool) {
         let (cx, cy) = self.centre();
-        let anchor = self
-            .layout
-            .doc_point(self.offset.0 + cx, self.offset.1 + cy);
+        let (x, y) = (self.offset.0 + cx, self.offset.1 + cy);
+        let mut anchor = self.layout.doc_point(x, y);
+        if dual && self.dual() && odd_left != self.odd_left() {
+            anchor = anchor.map(|p| self.pairing_anchor(p, x, y));
+        }
         let page = anchor.map_or(0, |p| p.page);
 
         self.layout.set_mode(LayoutMode {
@@ -326,6 +333,26 @@ impl View {
             self.offset.1 = 0.0;
         }
         self.clamp_offset();
+    }
+
+    /// Where to anchor the view at content point (`x`, `y`), on `p`'s
+    /// spread, when only the pairing changes: the spread's even-numbered
+    /// page, the right page in one pairing and the left in the other, so
+    /// toggling twice returns to the same place. The point is kept on the
+    /// page.
+    fn pairing_anchor(&self, p: DocPoint, x: f32, y: f32) -> DocPoint {
+        let pages = self.layout.spread_pages(self.layout.spread_of(p.page));
+        let Some(page) = pages.clone().find(|q| q % 2 == 1) else {
+            return p;
+        };
+        match (self.layout.page_rect(page), self.layout.page_size(page)) {
+            (Some(rect), Some(size)) => DocPoint {
+                page,
+                x: ((x - rect.x) / self.scale()).clamp(0.0, size.width),
+                y: (y - rect.y) / self.scale(),
+            },
+            _ => p,
+        }
     }
 
     /// PageUp/PageDown in paged mode: a screenful within the spread, or at the
@@ -1222,27 +1249,44 @@ mod tests {
         view.go_to_page(4);
         assert_eq!(view.current_spread(), Some(2));
         view.apply(Action::ToggleOddLeft);
-        assert!(!view.layout().mode().odd_left);
-        // Pages 4|5 become 3|4 and 5|6: page 4 (index 4, page 5) is in spread 2.
+        assert!(!view.odd_left());
+        // Pages 5|6 become 4|5 and 6|7: the spread holds a page of the old.
         let spread = view.current_spread().unwrap();
-        assert!(view.layout().spread_pages(spread).contains(&4));
+        let pages = view.layout().spread_pages(spread);
+        assert!(pages.contains(&4) || pages.contains(&5), "{pages:?}");
         assert_eq!(view.offset().1, 0.0);
+        // And back to the same spread.
         view.apply(Action::ToggleOddLeft);
-        assert!(view.layout().mode().odd_left);
+        assert!(view.odd_left());
+        assert_eq!(view.current_spread(), Some(2));
     }
 
     #[test]
-    fn toggle_odd_left_in_continuous_keeps_centre_page() {
+    fn toggle_odd_left_twice_in_continuous_keeps_place() {
         let mut view = letter_view();
         view.apply(Action::ToggleDual);
         view.apply(Action::FitPage);
         view.scrolled_to(0.0, 2000.0);
+        let before = view.offset();
         let page = doc_at(&view, (318.0, 400.0)).page;
         view.apply(Action::ToggleOddLeft);
         let (ox, oy) = view.offset();
         let rect = view.layout().page_rect(page).unwrap();
-        assert!(rect.y < oy + 400.0 && rect.y + rect.height > oy + 400.0);
         assert!(rect.x - ox < 636.0 && rect.x + rect.width - ox > 0.0);
+        assert!(rect.y - oy < 800.0 && rect.y + rect.height - oy > 0.0);
+        view.apply(Action::ToggleOddLeft);
+        assert_near(view.offset(), before, 0.5);
+    }
+
+    #[test]
+    fn toggle_odd_left_in_single_mode_keeps_view() {
+        let mut view = paged_view();
+        view.apply(Action::ZoomIn);
+        view.scrolled_to(0.0, 300.0);
+        let before = view.offset();
+        view.apply(Action::ToggleOddLeft);
+        assert!(!view.odd_left());
+        assert_eq!(view.offset(), before);
     }
 
     #[test]

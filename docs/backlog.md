@@ -323,3 +323,18 @@ when it is fixed.
 - **Test gaps:** no harness test of an arrow flip in paged mode; no view
   test that ←/→ do nothing on a tall paged page that fits the width;
   `arrows_move_the_cursor_while_searching` only means something for ↓.
+
+## Odd pages left (review minors, 2026-10-26)
+
+- **An empty document with page 1 alone has one empty spread**
+  (`(0 + 1).div_ceil(2)`): a 24 pt content height instead of 0. Return 0
+  spreads for no pages.
+- **A wide lone page counts double in `widest_spread`:** a landscape cover
+  with page 1 alone (or a lone last page) lowers fit width for the whole
+  document. Count a lone page as its width + gap + a neighbour's width, or
+  leave it out.
+- **Pages of different widths don't line up at the seam** when one is alone
+  (same as the lone last page today).
+- **Test gaps:** flipping / Page Up/Down / go to page reaching the lone
+  first spread; `doc_point` in the empty left half; mixed sizes; fit-page
+  scale of the lone spread; the sidebar highlight with page 1 alone.
