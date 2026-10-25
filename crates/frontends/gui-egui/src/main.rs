@@ -1,6 +1,7 @@
 //! `noido <file.pdf>`: open a PDF in the egui frontend.
 
 mod app;
+mod desktop;
 mod frame;
 mod image;
 mod instance;
@@ -39,12 +40,25 @@ const WHEEL_SCROLL_SPEED: f32 = 125.0;
 #[command(name = "noido", version, about = "PDF reader and note taker")]
 struct Args {
     /// PDF file to open
-    path: PathBuf,
+    #[arg(required_unless_present_any = ["install", "uninstall"])]
+    path: Option<PathBuf>,
+    /// Add noido to the desktop's apps for PDFs (Linux)
+    #[arg(long, conflicts_with_all = ["path", "uninstall"])]
+    install: bool,
+    /// Remove what --install added
+    #[arg(long, conflicts_with = "path")]
+    uninstall: bool,
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    match run(&args.path) {
+    let result = match &args.path {
+        _ if args.install => desktop::install(),
+        _ if args.uninstall => desktop::uninstall(),
+        Some(path) => run(path),
+        None => unreachable!("clap requires a file without --install or --uninstall"),
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("noido: {message}");
@@ -116,6 +130,8 @@ fn run(path: &Path) -> Result<(), String> {
         viewport: own_title_bar(
             egui::ViewportBuilder::default()
                 .with_title(format!("{name} — noido"))
+                // Ties the window to noido.desktop (`noido --install`).
+                .with_app_id("noido")
                 // Used when no window was saved yet.
                 .with_inner_size([900.0, 1100.0])
                 .with_min_inner_size(MIN_WINDOW_SIZE),
@@ -178,6 +194,28 @@ fn own_title_bar(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_and_uninstall_take_no_file() {
+        let install = Args::try_parse_from(["noido", "--install"]).unwrap();
+        assert!(install.install && install.path.is_none());
+        let uninstall = Args::try_parse_from(["noido", "--uninstall"]).unwrap();
+        assert!(uninstall.uninstall && uninstall.path.is_none());
+    }
+
+    #[test]
+    fn a_file_is_required_otherwise() {
+        assert!(Args::try_parse_from(["noido"]).is_err());
+        let open = Args::try_parse_from(["noido", "a.pdf"]).unwrap();
+        assert_eq!(open.path, Some(PathBuf::from("a.pdf")));
+    }
+
+    #[test]
+    fn install_flags_conflict_with_a_file_and_each_other() {
+        assert!(Args::try_parse_from(["noido", "--install", "a.pdf"]).is_err());
+        assert!(Args::try_parse_from(["noido", "--uninstall", "a.pdf"]).is_err());
+        assert!(Args::try_parse_from(["noido", "--install", "--uninstall"]).is_err());
+    }
 
     #[test]
     fn handover_message_names_the_file() {

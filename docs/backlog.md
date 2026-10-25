@@ -5,27 +5,16 @@ when it is fixed.
 
 ## Next up
 
-- **Open from Nautilus (file manager integration).** Decided: app ID
-  `noido`. Steps:
-  1. A `noido.desktop` in `~/.local/share/applications/` (kept in the
-     repo, with an install step): `Exec=/home/<user>/.cargo/bin/noido %f`
-     (`~/.cargo/bin/noido` links to `target/release`),
-     `MimeType=application/pdf;`, `Type=Application`, `Terminal=false`,
-     `Categories=Office;Viewer;`. Then `update-desktop-database`, and
-     `xdg-mime default noido.desktop application/pdf` to make it the
-     default. Several selected PDFs open one window each; reopening a file
-     brings its window forward (already works).
-  2. Set the window's app ID to `noido` (`ViewportBuilder::with_app_id`
-     in `main.rs`), so GNOME ties the window to the `.desktop` file;
-     without it the dock shows a generic, unnamed icon.
-  3. An icon (a stock document icon until noido has its own).
-  4. Try by hand whether a window opened from Nautilus gets focus on
-     GNOME Wayland: Nautilus passes `XDG_ACTIVATION_TOKEN`, but eframe
-     doesn't hand it to the first window (winit has
-     `read_token_from_env` / `with_activation_token`). The same token is
-     what "Proper window activation on Wayland" below needs.
+(Nothing queued.)
 
 ## Known issues
+
+- **Try the desktop integration by hand (user).** Run `noido --install`
+  from the binary you want launched, then in Nautilus: "Open With" on a
+  PDF lists noido and opens it; several selected PDFs open one window
+  each; the window gets focus on GNOME Wayland (egui-winit 0.37 passes
+  `XDG_ACTIVATION_TOKEN` on); the dock shows "noido" with the document
+  icon. `noido --uninstall` removes it again.
 
 - **Try the LaTeX loop by hand (user).** Run `latexmk -pvc` (or repeated
   `pdflatex`) with noido open: it should follow each compile, keep the
