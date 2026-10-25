@@ -397,6 +397,8 @@ impl NoidoApp {
         // Set before requesting: the render thread skips pages outside this
         // range, and the tracker forgets them below, so none stays pending.
         self.renderer.set_keep(keep.clone());
+        // Pages requested earlier, while scrolling past, wait behind these.
+        self.renderer.set_priority(order.clone());
 
         let display_scale = self.view.scale() * ui.ctx().pixels_per_point();
         if display_scale > 0.0 {

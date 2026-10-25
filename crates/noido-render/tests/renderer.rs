@@ -108,7 +108,7 @@ impl PdfEngine for GateEngine {
 
 impl Document for GateDocument {
     fn page_count(&self) -> usize {
-        2
+        6
     }
 
     fn page_size(&self, _page: usize) -> Result<Size, EngineError> {
@@ -198,4 +198,40 @@ fn skips_pages_outside_keep_range() {
     std::thread::sleep(Duration::from_millis(100));
     assert!(renderer.try_recv().is_none());
     assert_eq!(*engine.rendered.lock().unwrap(), vec![(0, 1.0)]);
+}
+
+#[test]
+fn renders_in_priority_order_then_the_rest() {
+    let engine = GateEngine {
+        entered: Arc::new(AtomicBool::new(false)),
+        gate: Arc::new(Barrier::new(2)),
+        rendered: Arc::new(Mutex::new(Vec::new())),
+    };
+    let (renderer, _) = Renderer::start(Arc::new(engine.clone()), fixture(), no_waker()).unwrap();
+
+    renderer.request(RenderRequest {
+        page: 0,
+        scale: 1.0,
+    });
+    while !engine.entered.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Requested while scrolling past; then the reader stops at pages 4–5.
+    for page in 1..6 {
+        renderer.request(RenderRequest { page, scale: 1.0 });
+    }
+    renderer.set_priority(vec![4, 5, 2]);
+    engine.gate.wait();
+
+    for _ in 0..6 {
+        recv(&renderer);
+    }
+    let pages: Vec<usize> = engine
+        .rendered
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(pages, vec![0, 4, 5, 2, 1, 3]);
 }

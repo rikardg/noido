@@ -35,6 +35,7 @@ pub struct Renderer {
     jobs: Sender<RenderRequest>,
     results: Receiver<RenderedPage>,
     keep: Arc<Mutex<Range<usize>>>,
+    priority: Arc<Mutex<Vec<usize>>>,
 }
 
 impl Renderer {
@@ -50,6 +51,8 @@ impl Renderer {
         let (opened_tx, opened_rx) = mpsc::sync_channel(1);
         let keep = Arc::new(Mutex::new(0..usize::MAX));
         let thread_keep = keep.clone();
+        let priority = Arc::new(Mutex::new(Vec::new()));
+        let thread_priority = priority.clone();
 
         thread::Builder::new()
             .name("noido-render".into())
@@ -69,6 +72,7 @@ impl Renderer {
                     &job_rx,
                     &result_tx,
                     &thread_keep,
+                    &thread_priority,
                     &*waker,
                 );
             })
@@ -82,6 +86,7 @@ impl Renderer {
                 jobs,
                 results,
                 keep,
+                priority,
             },
             info,
         ))
@@ -97,6 +102,13 @@ impl Renderer {
     /// and forget pending requests outside it.
     pub fn set_keep(&self, keep: Range<usize>) {
         *self.keep.lock().unwrap() = keep;
+    }
+
+    /// The pages the reader needs most, most urgent first. Queued requests
+    /// for these pages are rendered in this order, before any others, which
+    /// follow in the order they were requested.
+    pub fn set_priority(&self, pages: Vec<usize>) {
+        *self.priority.lock().unwrap() = pages;
     }
 
     pub fn try_recv(&self) -> Option<RenderedPage> {
@@ -120,35 +132,50 @@ fn run(
     jobs: &Receiver<RenderRequest>,
     results: &Sender<RenderedPage>,
     keep: &Mutex<Range<usize>>,
+    priority: &Mutex<Vec<usize>>,
     waker: &dyn Fn(),
 ) {
-    while let Ok(first) = jobs.recv() {
-        // Keep only the latest request per page, in order of first arrival.
-        let mut batch = vec![first];
+    // The latest request per page, in order of first arrival.
+    let mut queue: Vec<RenderRequest> = Vec::new();
+    loop {
+        if queue.is_empty() {
+            match jobs.recv() {
+                Ok(req) => queue.push(req),
+                Err(_) => return,
+            }
+        }
         for req in jobs.try_iter() {
-            match batch.iter_mut().find(|r| r.page == req.page) {
+            match queue.iter_mut().find(|r| r.page == req.page) {
                 Some(existing) => existing.scale = req.scale,
-                None => batch.push(req),
+                None => queue.push(req),
             }
         }
-        for RenderRequest { page, scale } in batch {
-            if !keep.lock().unwrap().contains(&page) {
-                continue;
-            }
-            let result = document.page_size(page).and_then(|size| {
-                document.render_tile(page, scale, PixelRect::full_page(size, scale))
-            });
-            if results
-                .send(RenderedPage {
-                    page,
-                    scale,
-                    result,
-                })
-                .is_err()
-            {
-                return;
-            }
-            waker();
+        // Chosen again after every page, so a reader who has moved on is
+        // served next instead of waiting for pages they scrolled past.
+        let next = {
+            let priority = priority.lock().unwrap();
+            let rank = |page| priority.iter().position(|&p| p == page);
+            (0..queue.len())
+                .min_by_key(|&i| rank(queue[i].page).unwrap_or(usize::MAX))
+                .expect("queue is not empty")
+        };
+        let RenderRequest { page, scale } = queue.remove(next);
+        if !keep.lock().unwrap().contains(&page) {
+            continue;
         }
+        let result = document
+            .page_size(page)
+            .and_then(|size| document.render_tile(page, scale, PixelRect::full_page(size, scale)));
+        if results
+            .send(RenderedPage {
+                page,
+                scale,
+                result,
+            })
+            .is_err()
+        {
+            return;
+        }
+        waker();
     }
 }
