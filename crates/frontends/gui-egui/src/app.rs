@@ -268,7 +268,7 @@ impl NoidoApp {
         let Some(watcher) = &self.watcher else {
             return;
         };
-        if let Some(reload) = std::iter::from_fn(|| watcher.try_recv()).last() {
+        if let Some(reload) = watcher.try_recv() {
             self.reload(reload);
         }
     }
@@ -886,7 +886,7 @@ mod tests {
         /// Whether the window is reported as maximised.
         maximized: bool,
         /// Hands the app new versions of the document, like the watcher.
-        reloads: std::sync::mpsc::Sender<crate::watch::Reload>,
+        reloads: crate::watch::Newest,
     }
 
     impl Harness {
@@ -966,7 +966,7 @@ mod tests {
                 info,
                 key,
             };
-            self.reloads.send(reload).unwrap();
+            self.reloads.put(reload);
             self.frames(1, vec![]);
         }
 

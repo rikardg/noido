@@ -2,8 +2,8 @@
 //! opened in the background and handed to the app.
 
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -31,6 +31,22 @@ pub struct Reload {
     pub thumbnailer: Thumbnailer,
     pub info: DocumentInfo,
     pub key: DocKey,
+}
+
+/// The newest version not shown yet. A newer one replaces it, so versions
+/// don't pile up while the window is hidden and the app isn't taking them.
+#[derive(Clone, Default)]
+pub struct Newest(Arc<Mutex<Option<Reload>>>);
+
+impl Newest {
+    pub fn put(&self, reload: Reload) {
+        // The older version, and its threads, go.
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(reload);
+    }
+
+    pub fn take(&self) -> Option<Reload> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
 }
 
 /// Collapses a burst of file events into one read, once the file has been
@@ -101,7 +117,7 @@ fn open_new(
 pub struct Watcher {
     /// `None` for a fake.
     _watcher: Option<RecommendedWatcher>,
-    reloads: Receiver<Reload>,
+    newest: Newest,
 }
 
 impl Watcher {
@@ -124,7 +140,8 @@ impl Watcher {
         // one over it.
         notify::Watcher::watch(&mut watcher, &dir, RecursiveMode::NonRecursive)
             .map_err(|e| e.to_string())?;
-        let (reloads_tx, reloads) = mpsc::channel();
+        let newest = Newest::default();
+        let shared = Arc::downgrade(&newest.0);
         let concerns = move |event: &Event| {
             event
                 .paths
@@ -134,36 +151,28 @@ impl Watcher {
         thread::Builder::new()
             .name("noido-watch".into())
             .spawn(move || {
-                run(
-                    &path,
-                    current,
-                    &engine,
-                    &waker,
-                    &events,
-                    &reloads_tx,
-                    concerns,
-                );
+                run(&path, current, &engine, &waker, &events, &shared, concerns);
             })
             .map_err(|e| e.to_string())?;
         Ok(Watcher {
             _watcher: Some(watcher),
-            reloads,
+            newest,
         })
     }
 
     pub fn try_recv(&self) -> Option<Reload> {
-        self.reloads.try_recv().ok()
+        self.newest.take()
     }
 
     /// A watcher that hands over what is sent to it, for tests.
     #[cfg(test)]
-    pub fn fake() -> (Sender<Reload>, Watcher) {
-        let (sender, reloads) = mpsc::channel();
+    pub fn fake() -> (Newest, Watcher) {
+        let newest = Newest::default();
         let watcher = Watcher {
             _watcher: None,
-            reloads,
+            newest: newest.clone(),
         };
-        (sender, watcher)
+        (newest, watcher)
     }
 }
 
@@ -174,7 +183,7 @@ fn run(
     engine: &Arc<dyn PdfEngine>,
     waker: &Waker,
     events: &Receiver<notify::Result<Event>>,
-    reloads: &Sender<Reload>,
+    newest: &Weak<Mutex<Option<Reload>>>,
     concerns: impl Fn(&Event) -> bool,
 ) {
     let mut debounce = Debounce::new(QUIET);
@@ -193,9 +202,11 @@ fn run(
             && let Some(reload) = open_new(engine, path, &current, waker)
         {
             current = reload.key.clone();
-            if reloads.send(reload).is_err() {
+            // The app has gone.
+            let Some(slot) = newest.upgrade() else {
                 return;
-            }
+            };
+            Newest(slot).put(reload);
             waker();
         }
     }
@@ -322,6 +333,22 @@ mod tests {
         fs::write(&path, b"bad pdf").unwrap();
         let current = DocKey::new(b"four", &path);
         assert!(open_new(&engine(), &path, &current, &no_waker()).is_none());
+    }
+
+    /// While the window is hidden, versions wait unshown: only the newest
+    /// is kept, each holding render threads and an open document.
+    #[test]
+    fn newest_replaces_unshown_version() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("a.pdf");
+        let current = DocKey::new(b"one", &path);
+        let newest = Newest::default();
+        for bytes in [&b"three"[..], b"four!!"] {
+            fs::write(&path, bytes).unwrap();
+            newest.put(open_new(&engine(), &path, &current, &no_waker()).unwrap());
+        }
+        assert_eq!(newest.take().unwrap().info.page_sizes.len(), 6);
+        assert!(newest.take().is_none());
     }
 
     /// A file cut short can open with no pages at all.
