@@ -15,16 +15,29 @@ use noido_render::{RenderRequest, Renderer};
 
 use crate::image::PageImage;
 
+/// How far the current page's highlight reaches around its thumbnail, and
+/// its corner radius, in points.
+const HIGHLIGHT: f32 = 4.0;
+
 /// What the sidebar needs from the app each frame.
 pub struct Input<'a> {
     pub layout: &'a Layout,
     /// The low-res thumbnails, by page.
     pub lowres: Option<&'a HashMap<usize, PageImage>>,
+    /// The page the reader is at, which the sidebar keeps in view.
+    pub current: Option<usize>,
+    /// The pages shown as current: the current page, or its spread.
+    pub highlighted: Range<usize>,
 }
 
 /// What the reader did in the sidebar.
 #[derive(Default)]
-pub struct Output {}
+pub struct Output {
+    /// A thumbnail was clicked.
+    pub clicked: Option<usize>,
+    /// The reader scrolled the sidebar; the page at its middle.
+    pub browsing: Option<usize>,
+}
 
 /// The sidebar's thumbnails and their sharp renders.
 pub struct SidebarView {
@@ -37,6 +50,15 @@ pub struct SidebarView {
     /// Visible thumbnails' screen rects last frame.
     drawn: Vec<(usize, Rect)>,
     thumb_width: f32,
+    /// The current page the sidebar last scrolled to (or that was clicked).
+    followed: Option<usize>,
+    /// The scroll offset at the end of last frame.
+    offset: f32,
+    /// The column's width last frame.
+    width: f32,
+    /// Whether the sidebar was shown last frame.
+    shown: bool,
+    highlighted: Range<usize>,
 }
 
 impl SidebarView {
@@ -48,6 +70,11 @@ impl SidebarView {
             visible: 0..0,
             drawn: Vec::new(),
             thumb_width: 0.0,
+            followed: None,
+            offset: 0.0,
+            width: 0.0,
+            shown: false,
+            highlighted: 0..0,
         }
     }
 
@@ -85,9 +112,10 @@ impl SidebarView {
 
     /// Forgets the sharp renders while the sidebar is closed.
     pub fn closed(&mut self) {
-        if self.visible.is_empty() && self.sharp.is_empty() && self.drawn.is_empty() {
+        if !self.shown {
             return;
         }
+        self.shown = false;
         self.visible = 0..0;
         self.sharp.clear();
         self.drawn.clear();
@@ -108,31 +136,74 @@ impl SidebarView {
             .frame(frame)
             .default_size(state.clamped(window).width)
             .size_range(SIDEBAR_MIN_WIDTH..=max)
-            .show(ui, |ui| {
-                ScrollArea::vertical()
-                    .auto_shrink(false)
-                    .show_viewport(ui, |ui, viewport| self.column(ui, viewport, input));
-            });
+            .show(ui, |ui| self.scrolled(ui, input));
         state.width = response.response.rect.width();
-        Output::default()
+        self.shown = true;
+        response.inner
     }
 
-    /// The thumbnails in the scroll area's `viewport` (content coordinates).
-    fn column(&mut self, ui: &mut egui::Ui, viewport: Rect, input: &Input) {
-        let column = Column::new(input.layout.page_sizes(), ui.available_width());
+    /// The scrolling column, kept on the current page.
+    fn scrolled(&mut self, ui: &mut egui::Ui, input: &Input) -> Output {
+        let width = ui.available_width();
+        let height = ui.available_height();
+        let column = Column::new(input.layout.page_sizes(), width);
+        let resized = (width - self.width).abs() > 0.5;
+        self.width = width;
+        // The sidebar's own scroll position stands until the page changes.
+        let follow = input
+            .current
+            .filter(|&current| !self.shown || resized || self.followed != Some(current));
+        let target = follow.and_then(|current| {
+            self.followed = Some(current);
+            column.reveal(current, self.offset, height)
+        });
+        let mut area = ScrollArea::vertical().auto_shrink(false);
+        if let Some(target) = target {
+            area = area.vertical_scroll_offset(target);
+        }
+        let shown =
+            area.show_viewport(ui, |ui, viewport| self.column(ui, viewport, &column, input));
+        let offset = shown.state.clamped_offset().y;
+        let scrolled = target.is_none() && !resized && (offset - self.offset).abs() > 0.5;
+        self.offset = offset;
+        let mut output = Output {
+            clicked: shown.inner,
+            browsing: None,
+        };
+        if scrolled {
+            output.browsing = column.page_at(offset + height / 2.0);
+        }
+        if let Some(page) = output.clicked {
+            // Already in view: going there mustn't scroll the sidebar.
+            self.followed = Some(page);
+        }
+        output
+    }
+
+    /// The thumbnails in the scroll area's `viewport` (content coordinates);
+    /// returns the page clicked, if any.
+    fn column(
+        &mut self,
+        ui: &mut egui::Ui,
+        viewport: Rect,
+        column: &Column,
+        input: &Input,
+    ) -> Option<usize> {
         self.thumb_width = column.thumb_width();
+        self.highlighted = input.highlighted.clone();
         let (content, _) = ui.allocate_exact_size(
             vec2(ui.available_width(), column.content_height()),
             Sense::hover(),
         );
         let visible = column.visible(viewport.min.y, viewport.max.y);
-        self.request(&column, &visible, ui.ctx().pixels_per_point(), input.layout);
+        self.request(column, &visible, ui.ctx().pixels_per_point(), input.layout);
         self.visible = visible.clone();
 
-        let painter = ui.painter();
-        let outline = ui.visuals().widgets.noninteractive.bg_stroke;
+        let outline = ui.visuals().widgets.noninteractive.bg_stroke.color;
+        let selection = ui.visuals().selection;
         let text = ui.visuals().text_color();
         let font = egui::TextStyle::Small.resolve(ui.style());
+        let mut clicked = None;
         self.drawn.clear();
         for page in visible {
             let (Some(thumb), Some(label)) = (column.thumb(page), column.label(page)) else {
@@ -142,6 +213,16 @@ impl SidebarView {
                 content.min + vec2(thumb.x, thumb.y),
                 vec2(thumb.width, thumb.height),
             );
+            let with_label = rect.with_max_y(rect.max.y + label.height);
+            let id = ui.scope_id().with(("thumbnail", page));
+            if ui.interact(with_label, id, Sense::click()).clicked() {
+                clicked = Some(page);
+            }
+            let current = input.highlighted.contains(&page);
+            let painter = ui.painter();
+            if current {
+                painter.rect_filled(rect.expand(HIGHLIGHT), HIGHLIGHT, selection.bg_fill);
+            }
             let image = self
                 .sharp
                 .get(&page)
@@ -157,20 +238,23 @@ impl SidebarView {
             painter.rect_stroke(
                 rect,
                 0.0,
-                Stroke::new(1.0, outline.color),
+                Stroke::new(1.0, outline),
                 egui::StrokeKind::Outside,
             );
-            let label_centre =
-                content.min + vec2(label.x + label.width / 2.0, label.y + label.height / 2.0);
             painter.text(
-                label_centre,
+                content.min + vec2(label.x + label.width / 2.0, label.y + label.height / 2.0),
                 egui::Align2::CENTER_CENTER,
                 (page + 1).to_string(),
                 font.clone(),
-                text,
+                if current {
+                    selection.stroke.color
+                } else {
+                    text
+                },
             );
             self.drawn.push((page, rect));
         }
+        clicked
     }
 
     /// Asks for sharp renders of the `visible` pages and drops the rest.
@@ -208,6 +292,11 @@ impl SidebarView {
         let mut pages: Vec<usize> = self.sharp.keys().copied().collect();
         pages.sort_unstable();
         pages
+    }
+
+    #[cfg(test)]
+    pub fn highlighted(&self) -> Range<usize> {
+        self.highlighted.clone()
     }
 
     #[cfg(test)]

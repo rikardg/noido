@@ -59,6 +59,17 @@ pub struct NoidoApp {
     sidebar: SidebarState,
     /// The sidebar's thumbnails.
     sidebar_view: SidebarView,
+    /// A page clicked in the sidebar: it stays the current page until the
+    /// reader moves the page view, since the page at the centre may be
+    /// another one (short pages, the last pages).
+    chosen: Option<usize>,
+    /// The page at the middle of the sidebar after the reader scrolled it;
+    /// the low-res thumbnails follow it until the current page changes.
+    browse: Option<usize>,
+    /// The scroll offset noido gave egui last frame, and the page view's
+    /// size the frame before: a different offset at the same size means
+    /// the reader scrolled.
+    told: Option<(Vec2, Vec2)>,
     /// The document's file name, shown in the title bar.
     name: String,
     /// The search field's text.
@@ -151,6 +162,9 @@ impl NoidoApp {
             direction: Direction::Forward,
             sidebar: SidebarState::default(),
             sidebar_view: SidebarView::new(page_count),
+            chosen: None,
+            browse: None,
+            told: None,
             search_focus_requested: false,
             name: String::new(),
             search: String::new(),
@@ -186,12 +200,13 @@ impl NoidoApp {
 
     /// Follows the page at the window centre and the direction it moves in.
     fn update_focus(&mut self) {
-        let Some(page) = self.view.centre_page() else {
+        let Some(page) = self.current_page() else {
             return;
         };
         if let Some(old) = self.focus
             && old != page
         {
+            self.browse = None;
             self.direction = if page > old {
                 Direction::Forward
             } else {
@@ -207,7 +222,7 @@ impl NoidoApp {
             return;
         };
         let page_count = self.view.layout().page_count();
-        if let Some(page) = self.focus
+        if let Some(page) = self.browse.or(self.focus)
             && thumbnails.sent != Some(page)
         {
             thumbnails.sent = Some(page);
@@ -232,6 +247,31 @@ impl NoidoApp {
                 }
             }
         }
+    }
+
+    /// The page the reader is at: the one clicked in the sidebar, else the
+    /// page at the centre of the page view.
+    fn current_page(&self) -> Option<usize> {
+        self.chosen.or_else(|| self.view.centre_page())
+    }
+
+    /// The pages shown as current in the sidebar: the current page, or in
+    /// dual mode its spread.
+    fn highlighted(&self) -> std::ops::Range<usize> {
+        let Some(page) = self.current_page() else {
+            return 0..0;
+        };
+        let layout = self.view.layout();
+        if self.view.dual() {
+            layout.spread_pages(layout.spread_of(page))
+        } else {
+            page..page + 1
+        }
+    }
+
+    /// The reader moved the page view: its centre is the current page again.
+    fn reader_moved(&mut self) {
+        self.chosen = None;
     }
 
     /// The best image of `page`: its full render, else its thumbnail.
@@ -363,6 +403,12 @@ impl NoidoApp {
     /// and any scrolling by wheel, drag or scrollbar.
     fn sync_from_egui(&mut self) {
         if let Some(last) = self.last_scroll {
+            if let Some((told, size)) = self.told
+                && size == last.inner.size()
+                && (last.offset - told).abs().max_elem() > OFFSET_EPSILON
+            {
+                self.reader_moved();
+            }
             // egui's offset belongs to the old size: record it before resizing,
             // so the resize can re-anchor from it.
             self.view.scrolled_to(last.offset.x, last.offset.y);
@@ -418,10 +464,23 @@ impl NoidoApp {
                 self.apply(ctx, action);
             }
         }
-        for step in wheel {
-            self.wheel_flip(step);
+        // Not elsewhere, such as over the sidebar: there the wheel scrolls
+        // what is under it.
+        let elsewhere = self
+            .last_scroll
+            .is_some_and(|last| pointer.is_some_and(|p| !last.inner.contains(p)));
+        let over_pages = !elsewhere;
+        if over_pages {
+            let spread = self.view.current_spread();
+            for step in wheel {
+                self.wheel_flip(step);
+            }
+            if self.view.current_spread() != spread {
+                self.reader_moved();
+            }
         }
         if zoom != 1.0 {
+            self.reader_moved();
             let anchor = self.last_scroll.and_then(|last| {
                 pointer
                     .filter(|p| last.inner.contains(*p))
@@ -480,7 +539,10 @@ impl NoidoApp {
             }
             Action::FocusSearch => self.search_focus_requested = true,
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            _ => self.view.apply(action),
+            _ => {
+                self.view.apply(action);
+                self.reader_moved();
+            }
         }
     }
 
@@ -665,8 +727,17 @@ impl NoidoApp {
             let input = sidebar::Input {
                 layout: self.view.layout(),
                 lowres: self.thumbnails.as_ref().map(|t| &t.textures),
+                current: self.current_page(),
+                highlighted: self.highlighted(),
             };
-            self.sidebar_view.show(ui, &mut self.sidebar, &input);
+            let output = self.sidebar_view.show(ui, &mut self.sidebar, &input);
+            if let Some(page) = output.clicked {
+                self.view.go_to_page(page);
+                self.chosen = Some(page);
+            }
+            if output.browsing.is_some() {
+                self.browse = output.browsing;
+            }
         } else {
             self.sidebar_view.closed();
         }
@@ -701,6 +772,8 @@ impl NoidoApp {
                 scroll_area = scroll_area.scroll_offset(wanted);
             }
             let output = scroll_area.show_viewport(ui, |ui, viewport| self.pages(ui, viewport));
+            let size = self.last_scroll.map(|last| last.inner.size());
+            self.told = size.map(|size| (wanted, size));
             self.last_scroll = Some(ScrollState {
                 inner: output.inner_rect,
                 offset: output.state.clamped_offset(),
@@ -2143,11 +2216,28 @@ mod tests {
     #[test]
     fn sidebar_shows_pages_not_spreads_in_dual_mode() {
         let mut h = with_sidebar(RecordingEngine::default());
-        let before = h.app.sidebar_view.drawn().to_vec();
+        let sizes = |h: &Harness| -> Vec<Vec2> {
+            h.app
+                .sidebar_view
+                .drawn()
+                .iter()
+                .map(|(_, r)| r.size())
+                .collect()
+        };
+        let before = sizes(&h);
         h.press(egui::Key::D, Modifiers::NONE);
         h.frames(2, vec![]);
         assert!(h.app.view.dual());
-        assert_eq!(h.app.sidebar_view.drawn(), &before[..]);
+        // The sidebar may have scrolled to the new centre page.
+        let pages = drawn_pages(&h);
+        assert!(pages.windows(2).all(|w| w[1] == w[0] + 1), "{pages:?}");
+        assert!(
+            sizes(&h)
+                .iter()
+                .all(|size| (*size - before[0]).length() < 0.01),
+            "{:?} vs {before:?}",
+            sizes(&h)
+        );
     }
 
     #[test]
@@ -2262,5 +2352,200 @@ mod tests {
         fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
             Err(EngineError::Open("stub".into()))
         }
+    }
+
+    /// A harness on `engine`'s pages with the sidebar open, no sharp renders.
+    fn sidebar_on(engine: Arc<dyn PdfEngine>) -> Harness {
+        let mut h = Harness::build_with(engine, |app| app);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        h
+    }
+
+    /// Clicks the thumbnail of `page`, which must be in view.
+    fn click_thumbnail(h: &mut Harness, page: usize) {
+        let (_, rect) = *h
+            .app
+            .sidebar_view
+            .drawn()
+            .iter()
+            .find(|(p, _)| *p == page)
+            .unwrap_or_else(|| panic!("page {page} not in view: {:?}", drawn_pages(h)));
+        h.click(rect.center());
+        h.frames(2, vec![]);
+    }
+
+    /// Zooms out until pages are much shorter than the window.
+    fn zoomed_out(h: &mut Harness) {
+        for _ in 0..4 {
+            h.press(egui::Key::Minus, Modifiers::COMMAND);
+        }
+        h.frames(2, vec![]);
+    }
+
+    #[test]
+    fn click_on_thumbnail_goes_to_page() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        click_thumbnail(&mut h, 2);
+        let rect = h.app.view.layout().page_rect(2).unwrap();
+        assert!((h.app.view.offset().1 - (rect.y - noido_core::MARGIN)).abs() < 1.0);
+        assert_eq!(h.app.view.mode(), noido_core::ZoomMode::FitWidth);
+        assert_eq!(h.app.current_page(), Some(2));
+    }
+
+    #[test]
+    fn click_keeps_paged_and_dual() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        h.press(egui::Key::C, Modifiers::NONE);
+        h.press(egui::Key::D, Modifiers::NONE);
+        h.frames(2, vec![]);
+        click_thumbnail(&mut h, 2);
+        let view = &h.app.view;
+        assert!(!view.continuous() && view.dual());
+        assert_eq!(view.current_spread(), Some(view.layout().spread_of(2)));
+    }
+
+    #[test]
+    fn click_on_short_page_highlights_it() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        zoomed_out(&mut h);
+        click_thumbnail(&mut h, 2);
+        assert_ne!(h.app.view.centre_page(), Some(2));
+        assert_eq!(h.app.current_page(), Some(2));
+        assert_eq!(h.app.sidebar_view.highlighted(), 2..3);
+    }
+
+    #[test]
+    fn click_on_last_page_highlights_it() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        wheel_sidebar(&mut h, -10_000.0);
+        click_thumbnail(&mut h, 9);
+        assert_eq!(h.app.current_page(), Some(9));
+        assert_eq!(h.app.sidebar_view.highlighted(), 9..10);
+    }
+
+    #[test]
+    fn scrolling_page_view_clears_chosen_page() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        zoomed_out(&mut h);
+        click_thumbnail(&mut h, 2);
+        assert_eq!(h.app.chosen, Some(2));
+        h.frames(1, vec![Event::PointerMoved(pos2(600.0, 500.0))]);
+        let step = wheel(
+            egui::MouseWheelUnit::Point,
+            -50.0,
+            egui::MouseWheelSource::Wheel,
+        );
+        h.frames(1, vec![step]);
+        h.frames(10, vec![]);
+        assert_eq!(h.app.chosen, None);
+        assert_eq!(h.app.current_page(), h.app.view.centre_page());
+    }
+
+    #[test]
+    fn page_key_clears_chosen_page() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        zoomed_out(&mut h);
+        click_thumbnail(&mut h, 2);
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        assert_eq!(h.app.chosen, None);
+    }
+
+    #[test]
+    fn resize_keeps_chosen_page() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        zoomed_out(&mut h);
+        click_thumbnail(&mut h, 2);
+        h.size += vec2(100.0, 100.0);
+        h.frames(5, vec![]);
+        h.size -= vec2(200.0, 200.0);
+        h.frames(5, vec![]);
+        assert_eq!(h.app.chosen, Some(2));
+    }
+
+    #[test]
+    fn dual_mode_highlights_both_pages_of_spread() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        h.press(egui::Key::D, Modifiers::NONE);
+        h.frames(2, vec![]);
+        click_thumbnail(&mut h, 2);
+        let layout = h.app.view.layout();
+        let spread = layout.spread_pages(layout.spread_of(2));
+        assert_eq!(spread.len(), 2);
+        assert_eq!(h.app.sidebar_view.highlighted(), spread);
+    }
+
+    #[test]
+    fn sidebar_follows_current_page() {
+        let mut h = sidebar_on(Arc::new(BlankEngine30));
+        go_to(&mut h, 20);
+        h.frames(10, vec![]);
+        let page = h.app.current_page().unwrap();
+        let (_, rect) = *h
+            .app
+            .sidebar_view
+            .drawn()
+            .iter()
+            .find(|(p, _)| *p == page)
+            .expect("current page in view");
+        assert!(rect.min.y >= TITLE_BAR_HEIGHT, "{rect:?}");
+        assert!(
+            rect.max.y + noido_core::LABEL_HEIGHT <= h.size.y,
+            "{rect:?}"
+        );
+    }
+
+    #[test]
+    fn hand_scrolled_sidebar_stays_until_page_changes() {
+        let mut h = sidebar_on(Arc::new(BlankEngine30));
+        wheel_sidebar(&mut h, -100_000.0);
+        assert!(drawn_pages(&h).contains(&29));
+        h.frames(10, vec![]);
+        assert!(drawn_pages(&h).contains(&29));
+        h.frames(1, vec![Event::PointerMoved(pos2(600.0, 500.0))]);
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        h.frames(10, vec![]);
+        let page = h.app.current_page().unwrap();
+        assert!(
+            drawn_pages(&h).contains(&page),
+            "{page} {:?}",
+            drawn_pages(&h)
+        );
+    }
+
+    #[test]
+    fn browsing_sidebar_moves_thumbnailer_focus() {
+        let engine = Arc::new(SizedEngine::letter(200));
+        let mut h = Harness::build_with(engine.clone(), |app| {
+            app.with_thumbnails(Thumbnailer::start(
+                engine,
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+        });
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        wheel_sidebar(&mut h, -1_000_000.0);
+        let sent = h.app.thumbnails.as_ref().unwrap().sent;
+        assert!(sent.is_some_and(|page| page >= 100), "{sent:?}");
+        // The reader's page is untouched.
+        assert_eq!(h.app.current_page(), Some(0));
+    }
+
+    #[test]
+    fn wheel_over_sidebar_does_not_flip() {
+        let mut h = fitted_paged();
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        let spread = h.app.view.current_spread();
+        h.frames(1, vec![Event::PointerMoved(pos2(100.0, 500.0))]);
+        let step = wheel(
+            egui::MouseWheelUnit::Line,
+            -1.0,
+            egui::MouseWheelSource::Wheel,
+        );
+        h.frames(1, vec![step]);
+        h.frames(5, vec![]);
+        assert_eq!(h.app.view.current_spread(), spread);
     }
 }
