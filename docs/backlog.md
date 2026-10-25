@@ -196,6 +196,12 @@ when it is fixed.
 - **GNOME's button layout:** GNOME can put the window buttons on the left
   (`org.gnome.desktop.wm.preferences button-layout`); we always put them on
   the right.
+- **The system's accent colour.** Selection highlights (the sidebar's
+  current-page frame and number pill) use egui's built-in colours (dark:
+  RGB 0, 92, 128; light: 144, 209, 255). Follow the system accent instead,
+  with a fixed noido colour as the fallback: on Linux the desktop portal's
+  `org.freedesktop.appearance` `accent-color` (GNOME 47+, KDE; e.g. via
+  `ashpd`); macOS and Windows have their own APIs.
 - **Reload notices and a status area.** Show "Reloaded" briefly after a
   reload, and "Reload failed — showing the previous version" in a warning
   colour when the new file doesn't open. noido has no status bar yet;
