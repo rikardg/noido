@@ -235,3 +235,31 @@ fn renders_in_priority_order_then_the_rest() {
         .collect();
     assert_eq!(pages, vec![0, 4, 5, 2, 1, 3]);
 }
+
+#[test]
+fn background_start_renders_requested_page() {
+    let renderer = Renderer::start_background(Arc::new(HayroEngine), fixture(), no_waker());
+    renderer.request(RenderRequest {
+        page: 1,
+        scale: 0.5,
+    });
+    let rendered = recv(&renderer);
+    assert_eq!((rendered.page, rendered.scale), (1, 0.5));
+    let image = rendered.result.unwrap();
+    assert_eq!((image.width(), image.height()), (421, 298));
+}
+
+#[test]
+fn background_start_on_garbage_delivers_nothing() {
+    let renderer = Renderer::start_background(
+        Arc::new(HayroEngine),
+        Arc::new(b"nope".to_vec()),
+        no_waker(),
+    );
+    renderer.request(RenderRequest {
+        page: 0,
+        scale: 1.0,
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(renderer.try_recv().is_none());
+}

@@ -46,9 +46,48 @@ impl Renderer {
         bytes: PdfBytes,
         waker: Box<dyn Fn() + Send>,
     ) -> Result<(Renderer, DocumentInfo), EngineError> {
+        let (opened_tx, opened_rx) = mpsc::sync_channel(1);
+        let renderer = Self::spawn(engine, bytes, waker, Some(opened_tx))
+            .map_err(|e| EngineError::Open(format!("cannot start render thread: {e}")))?;
+        let info = opened_rx
+            .recv()
+            .map_err(|_| EngineError::Open("render thread stopped while opening".into()))??;
+        Ok((renderer, info))
+    }
+
+    /// Starts the render thread, which opens the document itself; returns at
+    /// once. Requests wait until the document is open. If it fails to open,
+    /// the thread stops and nothing arrives.
+    pub fn start_background(
+        engine: Arc<dyn PdfEngine>,
+        bytes: PdfBytes,
+        waker: Box<dyn Fn() + Send>,
+    ) -> Renderer {
+        match Self::spawn(engine, bytes, waker, None) {
+            Ok(renderer) => renderer,
+            // Without a thread nothing is rendered, as when opening fails.
+            Err(_) => {
+                let (jobs, _) = mpsc::channel();
+                let (_, results) = mpsc::channel();
+                Renderer {
+                    jobs,
+                    results,
+                    keep: Arc::new(Mutex::new(0..usize::MAX)),
+                    priority: Arc::new(Mutex::new(Vec::new())),
+                }
+            }
+        }
+    }
+
+    /// Spawns the thread; it reports the result of opening to `opened`.
+    fn spawn(
+        engine: Arc<dyn PdfEngine>,
+        bytes: PdfBytes,
+        waker: Box<dyn Fn() + Send>,
+        opened: Option<mpsc::SyncSender<Result<DocumentInfo, EngineError>>>,
+    ) -> std::io::Result<Renderer> {
         let (jobs, job_rx) = mpsc::channel();
         let (result_tx, results) = mpsc::channel();
-        let (opened_tx, opened_rx) = mpsc::sync_channel(1);
         let keep = Arc::new(Mutex::new(0..usize::MAX));
         let thread_keep = keep.clone();
         let priority = Arc::new(Mutex::new(Vec::new()));
@@ -59,11 +98,15 @@ impl Renderer {
             .spawn(move || {
                 let document = match open(engine.as_ref(), bytes) {
                     Ok((document, info)) => {
-                        let _ = opened_tx.send(Ok(info));
+                        if let Some(opened) = opened {
+                            let _ = opened.send(Ok(info));
+                        }
                         document
                     }
                     Err(e) => {
-                        let _ = opened_tx.send(Err(e));
+                        if let Some(opened) = opened {
+                            let _ = opened.send(Err(e));
+                        }
                         return;
                     }
                 };
@@ -75,21 +118,13 @@ impl Renderer {
                     &thread_priority,
                     &*waker,
                 );
-            })
-            .map_err(|e| EngineError::Open(format!("cannot start render thread: {e}")))?;
-
-        let info = opened_rx
-            .recv()
-            .map_err(|_| EngineError::Open("render thread stopped while opening".into()))??;
-        Ok((
-            Renderer {
-                jobs,
-                results,
-                keep,
-                priority,
-            },
-            info,
-        ))
+            })?;
+        Ok(Renderer {
+            jobs,
+            results,
+            keep,
+            priority,
+        })
     }
 
     pub fn request(&self, req: RenderRequest) {
