@@ -13,6 +13,7 @@ fn state(page: usize) -> DocState {
             scale: 1.5,
             continuous: false,
             dual: true,
+            odd_left: true,
             centre: DocPoint {
                 page,
                 x: 10.0,
@@ -192,6 +193,17 @@ fn sidebar_round_trips() {
         },
         ..state(3)
     };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    assert_eq!(loaded(&store, &key), Some(saved));
+}
+
+#[test]
+fn odd_pages_right_round_trips() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let mut saved = state(3);
+    saved.view.odd_left = false;
     store.save(&slot(&store, &key), &saved).unwrap();
     assert_eq!(loaded(&store, &key), Some(saved));
 }

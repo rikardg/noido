@@ -30,10 +30,23 @@ pub struct DocPoint {
 
 /// How pages are arranged: one per row or two-page spreads, and in paged
 /// mode which spread is shown (`None` shows all, stacked).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayoutMode {
     pub dual: bool,
+    /// In dual mode, spreads are 1|2, 3|4, …; else page 1 is alone on the
+    /// right, as in a book, then 2|3, 4|5, …
+    pub odd_left: bool,
     pub paged: Option<usize>,
+}
+
+impl Default for LayoutMode {
+    fn default() -> Self {
+        Self {
+            dual: false,
+            odd_left: true,
+            paged: None,
+        }
+    }
 }
 
 /// One laid-out row: a page or a spread.
@@ -113,6 +126,10 @@ impl Layout {
             for page in pages.clone() {
                 let size = self.page_sizes[page];
                 let (w, h) = (size.width * scale, size.height * scale);
+                // Alone in its spread, a right-hand page keeps its side.
+                if self.mode.dual && pages.len() == 1 && self.on_right(page) {
+                    x += w + self.spread_gap(spread);
+                }
                 self.rects[page] = Some(PageRect {
                     x,
                     y: y + (height - h) / 2.0,
@@ -153,20 +170,40 @@ impl Layout {
 
     pub fn spread_count(&self) -> usize {
         if self.mode.dual {
-            self.page_sizes.len().div_ceil(2)
+            (self.page_sizes.len() + self.shift()).div_ceil(2)
         } else {
             self.page_sizes.len()
         }
     }
 
     pub fn spread_of(&self, page: usize) -> usize {
-        if self.mode.dual { page / 2 } else { page }
+        if self.mode.dual {
+            (page + self.shift()) / 2
+        } else {
+            page
+        }
     }
 
     pub fn spread_pages(&self, spread: usize) -> Range<usize> {
-        let per = if self.mode.dual { 2 } else { 1 };
         let n = self.page_sizes.len();
-        (spread * per).min(n)..(spread * per + per).min(n)
+        if self.mode.dual {
+            let start = (spread * 2).saturating_sub(self.shift());
+            let end = (spread * 2 + 2 - self.shift()).max(start);
+            start.min(n)..end.min(n)
+        } else {
+            spread.min(n)..(spread + 1).min(n)
+        }
+    }
+
+    /// Pages before page 1 in dual mode's pairing: the missing left page
+    /// beside a page 1 shown alone.
+    fn shift(&self) -> usize {
+        usize::from(!self.mode.odd_left)
+    }
+
+    /// Whether `page` is a right-hand page of its spread in dual mode.
+    fn on_right(&self, page: usize) -> bool {
+        (page + self.shift()) % 2 == 1
     }
 
     /// The spread's size in PDF points without the gap between its pages. An
@@ -375,8 +412,73 @@ mod tests {
 
     const DUAL: LayoutMode = LayoutMode {
         dual: true,
+        odd_left: true,
         paged: None,
     };
+
+    /// Dual with page 1 alone, as in a book.
+    const BOOK: LayoutMode = LayoutMode {
+        odd_left: false,
+        ..DUAL
+    };
+
+    #[test]
+    fn odd_left_is_the_default() {
+        assert!(LayoutMode::default().odd_left);
+    }
+
+    #[test]
+    fn book_spreads_start_with_page_one_alone() {
+        let layout = arranged(letters(4), BOOK, 1260.0);
+        assert_eq!(layout.spread_count(), 3);
+        assert_eq!(layout.spread_pages(0), 0..1);
+        assert_eq!(layout.spread_pages(1), 1..3);
+        assert_eq!(layout.spread_pages(2), 3..4);
+        assert_eq!(
+            (0..4).map(|p| layout.spread_of(p)).collect::<Vec<_>>(),
+            [0, 1, 1, 2]
+        );
+    }
+
+    #[test]
+    fn book_first_page_takes_right_slot() {
+        let layout = arranged(letters(4), BOOK, 1260.0);
+        // Left page of the next spread, and its right page.
+        let left = layout.page_rect(1).unwrap().x;
+        let right = layout.page_rect(2).unwrap().x;
+        assert_eq!(layout.page_rect(0).unwrap().x, right);
+        // An even count leaves the last page alone, on the left.
+        assert_eq!(layout.page_rect(3).unwrap().x, left);
+        let p = layout.doc_point(right + 100.0, 50.0).unwrap();
+        assert_eq!((p.page, (p.x - 100.0).abs() < 1e-3), (0, true));
+    }
+
+    #[test]
+    fn book_with_odd_count_ends_on_a_full_spread() {
+        let layout = arranged(letters(5), BOOK, 1260.0);
+        assert_eq!(layout.spread_count(), 3);
+        assert_eq!(layout.spread_pages(2), 3..5);
+    }
+
+    #[test]
+    fn book_with_one_page() {
+        let layout = arranged(letters(1), BOOK, 1260.0);
+        assert_eq!(layout.spread_count(), 1);
+        assert_eq!(layout.spread_pages(0), 0..1);
+        assert!(layout.page_rect(0).unwrap().x > 630.0);
+    }
+
+    #[test]
+    fn book_setting_ignored_in_single_mode() {
+        let single = LayoutMode {
+            dual: false,
+            ..BOOK
+        };
+        let layout = arranged(letters(4), single, 636.0);
+        assert_eq!(layout.spread_count(), 4);
+        assert_eq!(layout.spread_pages(0), 0..1);
+        assert_eq!(layout.spread_of(3), 3);
+    }
 
     #[test]
     fn dual_rows_side_by_side() {
@@ -411,6 +513,7 @@ mod tests {
         let paged = LayoutMode {
             dual: false,
             paged: Some(2),
+            ..LayoutMode::default()
         };
         let layout = arranged(letters(4), paged, 636.0);
         assert_eq!(layout.page_rect(1), None);
@@ -442,6 +545,7 @@ mod tests {
         let paged = LayoutMode {
             dual: true,
             paged: Some(0),
+            ..LayoutMode::default()
         };
         let mut layout = Layout::new(letters(2));
         layout.set_mode(paged);

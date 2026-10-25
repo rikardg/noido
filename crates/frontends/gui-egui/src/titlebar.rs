@@ -34,6 +34,7 @@ pub struct Bar<'a> {
     pub sidebar: SidebarState,
     pub continuous: bool,
     pub dual: bool,
+    pub odd_left: bool,
     pub keymap: &'a Keymap,
     /// The match counter, shown beside the search field; empty for none.
     pub counter: String,
@@ -200,6 +201,7 @@ fn menu_entries(ui: &mut egui::Ui, bar: &Bar, actions: &mut Vec<Action>) {
             let checked = match entry.check {
                 Some(Check::Continuous) => bar.continuous,
                 Some(Check::Dual) => bar.dual,
+                Some(Check::OddLeft) => bar.odd_left,
                 Some(Check::Sidebar) => bar.sidebar.open,
                 None => false,
             };

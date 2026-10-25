@@ -30,6 +30,8 @@ pub struct ViewState {
     pub scale: f32,
     pub continuous: bool,
     pub dual: bool,
+    /// Dual mode's pairing: see [`LayoutMode::odd_left`].
+    pub odd_left: bool,
     pub centre: DocPoint,
 }
 
@@ -78,6 +80,11 @@ impl View {
     /// Two-page spreads.
     pub fn dual(&self) -> bool {
         self.layout.mode().dual
+    }
+
+    /// Dual mode's pairing: see [`LayoutMode::odd_left`].
+    pub fn odd_left(&self) -> bool {
+        self.layout.mode().odd_left
     }
 
     /// The spread shown in paged mode.
@@ -146,6 +153,7 @@ impl View {
             scale: self.scale(),
             continuous: self.continuous(),
             dual: self.dual(),
+            odd_left: self.layout.mode().odd_left,
             centre,
         })
     }
@@ -175,10 +183,18 @@ impl View {
             x: on_page(state.centre.x, size.width),
             y: on_page(state.centre.y, size.height),
         };
-        let dual = state.dual;
-        self.layout.set_mode(LayoutMode { dual, paged: None });
+        let (dual, odd_left) = (state.dual, state.odd_left);
+        self.layout.set_mode(LayoutMode {
+            dual,
+            odd_left,
+            paged: None,
+        });
         let paged = (!state.continuous).then(|| self.layout.spread_of(centre.page));
-        self.layout.set_mode(LayoutMode { dual, paged });
+        self.layout.set_mode(LayoutMode {
+            dual,
+            odd_left,
+            paged,
+        });
         self.mode = state.zoom;
         if state.zoom == ZoomMode::Custom {
             let scale = if state.scale.is_finite() {
@@ -228,8 +244,15 @@ impl View {
                 let scale = self.fit_scale(self.mode);
                 self.rescale(scale, centre, centre);
             }
-            Action::ToggleContinuous => self.switch_mode(self.dual(), !self.continuous()),
-            Action::ToggleDual => self.switch_mode(!self.dual(), self.continuous()),
+            Action::ToggleContinuous => {
+                self.switch_mode(self.dual(), self.odd_left(), !self.continuous())
+            }
+            Action::ToggleDual => {
+                self.switch_mode(!self.dual(), self.odd_left(), self.continuous())
+            }
+            Action::ToggleOddLeft => {
+                self.switch_mode(self.dual(), !self.odd_left(), self.continuous())
+            }
             Action::ScrollScreenUp | Action::ScrollScreenDown if !self.continuous() => {
                 self.page_in_paged_mode(action);
             }
@@ -273,16 +296,24 @@ impl View {
     /// Changes the arrangement, keeping the page at the centre: in paged mode
     /// its spread is shown from the top; in continuous mode the centre point
     /// stays in place.
-    fn switch_mode(&mut self, dual: bool, continuous: bool) {
+    fn switch_mode(&mut self, dual: bool, odd_left: bool, continuous: bool) {
         let (cx, cy) = self.centre();
         let anchor = self
             .layout
             .doc_point(self.offset.0 + cx, self.offset.1 + cy);
         let page = anchor.map_or(0, |p| p.page);
 
-        self.layout.set_mode(LayoutMode { dual, paged: None });
+        self.layout.set_mode(LayoutMode {
+            dual,
+            odd_left,
+            paged: None,
+        });
         let paged = (!continuous).then(|| self.layout.spread_of(page));
-        self.layout.set_mode(LayoutMode { dual, paged });
+        self.layout.set_mode(LayoutMode {
+            dual,
+            odd_left,
+            paged,
+        });
         let spread = paged.unwrap_or_else(|| self.layout.spread_of(page));
         let scale = self.fit_scale_for(self.mode, spread);
         self.layout.arrange(scale, self.viewport.0, self.viewport.1);
@@ -1117,6 +1148,7 @@ mod tests {
             scale,
             continuous,
             dual,
+            odd_left: true,
             centre: DocPoint {
                 page,
                 // The horizontal centre of a fit-width page: reachable.
@@ -1128,8 +1160,8 @@ mod tests {
 
     fn assert_same_state(a: ViewState, b: ViewState) {
         assert_eq!(
-            (a.zoom, a.continuous, a.dual, a.centre.page),
-            (b.zoom, b.continuous, b.dual, b.centre.page)
+            (a.zoom, a.continuous, a.dual, a.odd_left, a.centre.page),
+            (b.zoom, b.continuous, b.dual, b.odd_left, b.centre.page)
         );
         assert!((a.scale - b.scale).abs() < 1e-4, "{a:?} vs {b:?}");
         assert_near((a.centre.x, a.centre.y), (b.centre.x, b.centre.y), 0.5);
@@ -1163,6 +1195,54 @@ mod tests {
             restored.restore(&state);
             assert_same_state(restored.state().unwrap(), state);
         }
+    }
+
+    #[test]
+    fn state_round_trips_odd_pages_right() {
+        for continuous in [true, false] {
+            let mut view = letter_view();
+            view.apply(Action::ToggleDual);
+            view.apply(Action::ToggleOddLeft);
+            if !continuous {
+                view.apply(Action::ToggleContinuous);
+            }
+            let state = view.state().unwrap();
+            assert!(!state.odd_left);
+            let mut restored = letter_view();
+            restored.restore(&state);
+            assert!(!restored.layout().mode().odd_left);
+            assert_same_state(restored.state().unwrap(), state);
+        }
+    }
+
+    #[test]
+    fn toggle_odd_left_in_paged_dual_shows_new_spread_of_page() {
+        let mut view = paged_view();
+        view.apply(Action::ToggleDual);
+        view.go_to_page(4);
+        assert_eq!(view.current_spread(), Some(2));
+        view.apply(Action::ToggleOddLeft);
+        assert!(!view.layout().mode().odd_left);
+        // Pages 4|5 become 3|4 and 5|6: page 4 (index 4, page 5) is in spread 2.
+        let spread = view.current_spread().unwrap();
+        assert!(view.layout().spread_pages(spread).contains(&4));
+        assert_eq!(view.offset().1, 0.0);
+        view.apply(Action::ToggleOddLeft);
+        assert!(view.layout().mode().odd_left);
+    }
+
+    #[test]
+    fn toggle_odd_left_in_continuous_keeps_centre_page() {
+        let mut view = letter_view();
+        view.apply(Action::ToggleDual);
+        view.apply(Action::FitPage);
+        view.scrolled_to(0.0, 2000.0);
+        let page = doc_at(&view, (318.0, 400.0)).page;
+        view.apply(Action::ToggleOddLeft);
+        let (ox, oy) = view.offset();
+        let rect = view.layout().page_rect(page).unwrap();
+        assert!(rect.y < oy + 400.0 && rect.y + rect.height > oy + 400.0);
+        assert!(rect.x - ox < 636.0 && rect.x + rect.width - ox > 0.0);
     }
 
     #[test]

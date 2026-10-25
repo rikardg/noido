@@ -605,6 +605,7 @@ impl NoidoApp {
             sidebar: self.sidebar,
             continuous: self.view.continuous(),
             dual: self.view.dual(),
+            odd_left: self.view.odd_left(),
             keymap: &self.keymap,
             counter: self.search_state.counter(),
         };
@@ -966,6 +967,7 @@ fn same_place(a: &ViewState, b: &ViewState) -> bool {
         && a.scale == b.scale
         && a.continuous == b.continuous
         && a.dual == b.dual
+        && a.odd_left == b.odd_left
 }
 
 /// The parts of a mouse wheel event that decide whether it flips a page.
@@ -990,6 +992,7 @@ fn core_key(key: egui::Key) -> Option<Key> {
         egui::Key::F => Some(Key::F),
         egui::Key::C => Some(Key::C),
         egui::Key::D => Some(Key::D),
+        egui::Key::O => Some(Key::O),
         egui::Key::Q => Some(Key::Q),
         egui::Key::G => Some(Key::G),
         egui::Key::F3 => Some(Key::F3),
@@ -1437,6 +1440,23 @@ mod tests {
         assert!(layout.page_rect(1).unwrap().x > layout.page_rect(0).unwrap().x);
     }
 
+    #[test]
+    fn o_puts_page_one_alone_on_the_right() {
+        let mut h = Harness::new();
+        h.press(egui::Key::D, Modifiers::NONE);
+        h.press(egui::Key::O, Modifiers::NONE);
+        assert!(!h.app.view.odd_left());
+        let layout = h.app.view.layout();
+        assert_eq!(layout.spread_pages(0), 0..1);
+        assert_eq!(
+            layout.page_rect(0).unwrap().x,
+            layout.page_rect(2).unwrap().x
+        );
+        assert!(!h.app.view.state().unwrap().odd_left);
+        h.press(egui::Key::O, Modifiers::NONE);
+        assert_eq!(h.app.view.layout().spread_pages(0), 0..2);
+    }
+
     fn wheel(unit: egui::MouseWheelUnit, dy: f32, source: egui::MouseWheelSource) -> Event {
         Event::MouseWheel {
             unit,
@@ -1576,6 +1596,7 @@ mod tests {
             scale: 1.0,
             continuous: true,
             dual: false,
+            odd_left: true,
             centre: noido_core::DocPoint {
                 page: 6,
                 x: 306.0,
@@ -1713,6 +1734,7 @@ mod tests {
                 scale: 1.0,
                 continuous: true,
                 dual: false,
+                odd_left: true,
                 centre: noido_core::DocPoint {
                     page: 0,
                     x: 306.0,

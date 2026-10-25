@@ -7,6 +7,7 @@ use crate::Action;
 pub enum Check {
     Continuous,
     Dual,
+    OddLeft,
     Sidebar,
 }
 
@@ -39,6 +40,7 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
         vec![
             check(Action::ToggleContinuous, "Continuous", Check::Continuous),
             check(Action::ToggleDual, "Dual page", Check::Dual),
+            check(Action::ToggleOddLeft, "Odd pages left", Check::OddLeft),
         ],
         vec![check(Action::ToggleSidebar, "Show sidebar", Check::Sidebar)],
         vec![
@@ -65,7 +67,7 @@ mod tests {
             labels,
             vec![
                 vec!["Fit width", "Fit page", "Zoom in", "Zoom out"],
-                vec!["Continuous", "Dual page"],
+                vec!["Continuous", "Dual page", "Odd pages left"],
                 vec!["Show sidebar"],
                 vec!["Next match", "Previous match"],
                 vec!["Quit"],
@@ -77,7 +79,10 @@ mod tests {
             .filter(|e| e.check.is_some())
             .map(|e| e.label)
             .collect();
-        assert_eq!(checked, vec!["Continuous", "Dual page", "Show sidebar"]);
+        assert_eq!(
+            checked,
+            vec!["Continuous", "Dual page", "Odd pages left", "Show sidebar"]
+        );
     }
 
     #[test]

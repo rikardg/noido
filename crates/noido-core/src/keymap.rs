@@ -10,6 +10,7 @@ pub enum Key {
     F,
     C,
     D,
+    O,
     Q,
     G,
     F3,
@@ -54,6 +55,7 @@ pub enum Action {
     FitPage,
     ToggleContinuous,
     ToggleDual,
+    ToggleOddLeft,
     ToggleSidebar,
     FocusSearch,
     NextHit,
@@ -97,6 +99,7 @@ impl Keymap {
             (plain(Key::F), Action::FitPage),
             (plain(Key::C), Action::ToggleContinuous),
             (plain(Key::D), Action::ToggleDual),
+            (plain(Key::O), Action::ToggleOddLeft),
             (plain(Key::F9), Action::ToggleSidebar),
             (command(Key::F), Action::FocusSearch),
             (command(Key::G), Action::NextHit),
@@ -152,6 +155,7 @@ pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
         Key::F => "F",
         Key::C => "C",
         Key::D => "D",
+        Key::O => "O",
         Key::Q => "Q",
         Key::G => "G",
         Key::F3 => "F3",
@@ -225,6 +229,17 @@ mod tests {
             shortcut_label(press(Key::ArrowDown, false), Platform::Other),
             "↓"
         );
+    }
+
+    #[test]
+    fn o_toggles_odd_pages_left() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::O, false), false),
+            Some(Action::ToggleOddLeft)
+        );
+        assert_eq!(keymap.action(press(Key::O, false), true), None);
+        assert_eq!(shortcut_label(press(Key::O, false), Platform::Other), "O");
     }
 
     #[test]

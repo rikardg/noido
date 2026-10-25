@@ -218,6 +218,9 @@ struct Entry {
     scale: f32,
     continuous: bool,
     dual: bool,
+    // Absent from files written before the setting existed.
+    #[serde(default = "yes")]
+    odd_left: bool,
     page: usize,
     x: f32,
     y: f32,
@@ -230,6 +233,10 @@ struct Entry {
     /// before entries named it, which use their own hash.
     #[serde(default)]
     window: Option<String>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn default_sidebar_width() -> f32 {
@@ -261,6 +268,7 @@ impl Entry {
             scale: state.scale,
             continuous: state.continuous,
             dual: state.dual,
+            odd_left: state.odd_left,
             page: state.centre.page,
             x: state.centre.x,
             y: state.centre.y,
@@ -280,6 +288,7 @@ impl Entry {
             scale: self.scale,
             continuous: self.continuous,
             dual: self.dual,
+            odd_left: self.odd_left,
             centre: DocPoint {
                 page: self.page,
                 x: self.x,
