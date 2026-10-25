@@ -6,6 +6,7 @@ members = [
     "crates/noido-core",
     "crates/noido-render",
     "crates/noido-state",
+    "crates/noido-text",
     "crates/frontends/gui-egui",
 ]
 
@@ -21,6 +22,7 @@ engine-hayro = { path = "crates/engine-hayro" }
 noido-render = { path = "crates/noido-render" }
 noido-core = { path = "crates/noido-core" }
 noido-state = { path = "crates/noido-state" }
+noido-text = { path = "crates/noido-text" }
 hayro = "0.8"
 eframe = { version = "0.37", features = ["persistence"] }
 clap = { version = "4", features = ["derive"] }
@@ -33,6 +35,7 @@ tempfile = "3"
 ctrlc = { version = "3", features = ["termination"] }
 notify = "8"
 interprocess = "2"
+unicode-normalization = "0.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
