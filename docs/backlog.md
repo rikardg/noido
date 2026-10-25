@@ -41,6 +41,16 @@ when it is fixed.
 - **Kinetic scroll velocity survives a zoom.** A coasting touch drag keeps
   going in the new content coordinates after a zoom. Low impact.
 
+- **More egui-level tests for view modes.** The headless harness doesn't yet
+  cover PageUp flipping into a page of a different height, or a mode toggle in
+  fit-page mode. Needs a `BlankDocument` with configurable page sizes (use a
+  static `Mutex`, not `thread_local`: the render thread opens the document).
+- **Prefetched pages in paged fit-page mode render twice** when the next
+  spread fits at a different scale: they are rendered at the current spread's
+  scale, then again after the flip. Wasted work only.
+- **Shift+C / Shift+D also toggle view modes** (only `command` is checked;
+  same root as the Alt+W/F item above).
+
 ## Deferred features
 
 - **Automated interactive testing** of the egui frontend: drive key presses,

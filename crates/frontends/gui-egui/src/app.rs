@@ -8,9 +8,10 @@ use eframe::egui::{
 use noido_core::{Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, View, render_scale};
 use noido_render::{DocumentInfo, RenderRequest, Renderer};
 
-/// Pages beyond the visible ones that are rendered ahead, on each side.
+/// Spreads (pages in single mode) beyond the visible ones that are rendered
+/// ahead, on each side.
 const PREFETCH: usize = 1;
-/// Pages beyond the visible ones whose images are kept, on each side.
+/// Spreads beyond the visible ones whose images are kept, on each side.
 const KEEP: usize = 2;
 /// Trackpad scroll distance, in UI points, that flips one page in paged mode
 /// (about one mouse wheel step).
@@ -191,8 +192,14 @@ impl NoidoApp {
 
         let page_count = layout.page_count();
         let visible = layout.visible_pages(viewport.min.y, viewport.max.y);
+        // The visible pages widened by whole spreads, so a spread is never half rendered.
         let around = |extra: usize| {
-            visible.start.saturating_sub(extra)..(visible.end + extra).min(page_count)
+            if visible.is_empty() || layout.spread_count() == 0 {
+                return visible.clone();
+            }
+            let first = layout.spread_of(visible.start).saturating_sub(extra);
+            let last = (layout.spread_of(visible.end - 1) + extra).min(layout.spread_count() - 1);
+            layout.spread_pages(first).start..layout.spread_pages(last).end.min(page_count)
         };
 
         // Set before requesting: the render thread skips pages outside this
@@ -463,6 +470,24 @@ mod tests {
             h.frames(2, vec![]);
         }
         assert_eq!(h.app.view.current_spread(), Some(1));
+    }
+
+    #[test]
+    fn dual_paged_prefetches_whole_next_spread() {
+        let mut h = Harness::new();
+        // Paged first, so continuous mode never rendered the later pages.
+        h.press(egui::Key::C, Modifiers::NONE);
+        h.press(egui::Key::D, Modifiers::NONE);
+        assert_eq!(h.app.view.current_spread(), Some(0));
+        let ready = |h: &Harness| (0..4).all(|page| h.app.textures.contains_key(&page));
+        for _ in 0..200 {
+            if ready(&h) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            h.frames(1, vec![]);
+        }
+        assert!(ready(&h), "textures: {:?}", h.app.textures.keys());
     }
 
     #[test]
