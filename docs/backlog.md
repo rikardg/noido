@@ -240,3 +240,12 @@ when it is fixed.
   in testfiles is 600 dpi page scans; only the cover has an (invisible, poor)
   OCR layer. Options: run an OCR engine (e.g. Tesseract) in the background and
   keep the result in a sidecar, or suggest `ocrmypdf` to the user.
+
+## Ideas and thoughts
+
+- **Rendered previews of search hits.** Instead of (or next to) a line of
+  text, each result in the sidebar shows a small rendering of the page region
+  around the match, with the match highlighted, as macOS Preview can. Helps
+  where extracted text reads poorly: formulas, figures, OCR'd scans. Would need
+  a low-priority render queue for the regions and a cache, so a long result
+  list doesn't hold up the page view or the thumbnails.
