@@ -226,6 +226,8 @@ fn core_key(key: egui::Key) -> Option<Key> {
         egui::Key::Minus => Some(Key::Minus),
         egui::Key::W => Some(Key::W),
         egui::Key::F => Some(Key::F),
+        egui::Key::C => Some(Key::C),
+        egui::Key::D => Some(Key::D),
         _ => None,
     }
 }
@@ -378,6 +380,27 @@ mod tests {
         let (x1, y1) = h.app.view.offset();
         assert!(x1 > x0 + 50.0, "x {x0} -> {x1}");
         assert!(y1 > y0 + 150.0, "y {y0} -> {y1}");
+    }
+
+    #[test]
+    fn c_switches_to_paged_and_page_down_flips() {
+        let mut h = Harness::new();
+        h.press(egui::Key::C, Modifiers::NONE);
+        assert_eq!(h.app.view.current_spread(), Some(0));
+        for _ in 0..3 {
+            h.press(egui::Key::PageDown, Modifiers::NONE);
+            h.frames(2, vec![]);
+        }
+        assert_eq!(h.app.view.current_spread(), Some(1));
+    }
+
+    #[test]
+    fn d_switches_to_dual() {
+        let mut h = Harness::new();
+        h.press(egui::Key::D, Modifiers::NONE);
+        assert!(h.app.view.dual());
+        let layout = h.app.view.layout();
+        assert!(layout.page_rect(1).unwrap().x > layout.page_rect(0).unwrap().x);
     }
 
     #[test]
