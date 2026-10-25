@@ -116,6 +116,11 @@ impl View {
         }
     }
 
+    /// The page at the viewport centre; `None` with zero pages.
+    pub fn centre_page(&self) -> Option<usize> {
+        self.state().map(|state| state.centre.page)
+    }
+
     /// A snapshot to restore in a later run; `None` with zero pages.
     pub fn state(&self) -> Option<ViewState> {
         if self.layout.page_count() == 0 {
@@ -859,6 +864,15 @@ mod tests {
         let mut view = letter_view();
         view.restore(&state);
         assert_eq!(doc_at(&view, (318.0, 400.0)).page, 4);
+    }
+
+    #[test]
+    fn centre_page_follows_scroll() {
+        let mut view = letter_view();
+        view.scrolled_to(0.0, 3000.0);
+        assert_eq!(view.centre_page(), Some(doc_at(&view, (318.0, 400.0)).page));
+        assert_eq!(view.centre_page(), Some(4));
+        assert_eq!(View::new(vec![]).centre_page(), None);
     }
 
     #[test]
