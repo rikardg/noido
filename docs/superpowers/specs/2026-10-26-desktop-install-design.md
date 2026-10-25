@@ -49,9 +49,9 @@ them. A real noido icon. macOS and Windows.
 - **Uninstall:**
   - Removes the `noido.desktop` above if present, then refreshes the
     database the same way. No file: "not installed", nothing to do.
-  - Afterwards, if `xdg-mime query default application/pdf` still names
-    `noido.desktop`, says so: PDFs have no working default until the user
-    picks another app. Read-only; xdg-mime missing means no check.
+  - A default that still names `noido.desktop` needs no warning: GLib and
+    xdg-mime skip a default whose file is gone and fall back to the next
+    app (checked: Evince). An earlier draft warned here.
 - On other systems both print that they are for Linux desktops only, and
   exit 1.
 - **Window app ID** `noido` (`ViewportBuilder::with_app_id`), so GNOME ties

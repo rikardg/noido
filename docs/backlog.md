@@ -327,3 +327,24 @@ when it is fixed.
 - **Test gaps:** flipping / Page Up/Down / go to page reaching the lone
   first spread; `doc_point` in the empty left half; mixed sizes; fit-page
   scale of the lone spread; the sidebar highlight with page 1 alone.
+
+## Desktop install (review minors, 2026-10-26)
+
+- **`TryExec=`**: the entry names the resolved binary (e.g.
+  `target/release/noido`); after a `cargo clean` it stays in "Open With"
+  but fails. A `TryExec=` with the same path makes desktops hide it.
+- `--uninstall` removes any `noido.desktop`, also one noido didn't write;
+  a marker key (`X-Noido-Installed=true`) could tell them apart.
+- Symlinks: a dangling `noido.desktop` link counts as "not installed";
+  writing follows a link into its target (dotfiles managers).
+- An existing file that isn't UTF-8 or can't be read is planned as "Write"
+  rather than "Replace".
+- Control characters (newline, tab) in the binary's path aren't escaped,
+  making an invalid file; escape or refuse them.
+- The file is written in place, not via a temp file and rename.
+- A plan that goes stale while the prompt waits: a file removed meanwhile
+  makes `Remove` fail; treat not-found as done.
+- Non-UTF-8 input at the prompt is an error rather than a no.
+- Tests: the glue (`proceed`, `Places::here`, the `XDG_DATA_HOME` rules)
+  is untested; quoting tests check substrings rather than parsing back;
+  temp dirs aren't cleaned up.

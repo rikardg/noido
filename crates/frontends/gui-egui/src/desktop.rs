@@ -171,16 +171,6 @@ pub fn carry_out(steps: &[Step], refresh_tool: &str) -> Result<Vec<String>, Stri
     Ok(notes)
 }
 
-/// The warning for after an uninstall, given what
-/// `xdg-mime query default application/pdf` printed.
-pub fn default_warning(query_output: &str) -> Option<String> {
-    (query_output.trim() == FILE_NAME).then(|| {
-        "noido is still your default app for PDFs, so PDFs have no working \
-         default now. Choose another app in your file manager's \"Open With\"."
-            .to_owned()
-    })
-}
-
 impl Places {
     /// This system's applications directory and the running binary.
     fn here() -> Result<Self, String> {
@@ -217,15 +207,7 @@ pub fn install() -> Result<(), String> {
 pub fn uninstall() -> Result<(), String> {
     let places = Places::here()?;
     println!("This removes noido from your desktop's apps.");
-    proceed(plan_uninstall(&places))?;
-    if let Ok(output) = std::process::Command::new("xdg-mime")
-        .args(["query", "default", "application/pdf"])
-        .output()
-        && let Some(warning) = default_warning(&String::from_utf8_lossy(&output.stdout))
-    {
-        println!("{warning}");
-    }
-    Ok(())
+    proceed(plan_uninstall(&places))
 }
 
 /// Shows the steps, asks, and carries them out on a yes.
@@ -446,12 +428,5 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let notes = carry_out(&[Step::Refresh(dir)], "false").unwrap();
         assert_eq!(notes.len(), 1, "{notes:?}");
-    }
-
-    #[test]
-    fn warns_while_noido_is_still_the_default() {
-        assert!(default_warning("noido.desktop\n").is_some());
-        assert_eq!(default_warning("org.gnome.Evince.desktop\n"), None);
-        assert_eq!(default_warning(""), None);
     }
 }
