@@ -1,5 +1,7 @@
 //! noido PDF engine backed by hayro, a pure-Rust PDF rasterizer.
 
+mod text;
+
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_interpret::util::TransformExt;
 use hayro::hayro_syntax::Pdf;
@@ -8,7 +10,9 @@ use hayro::kurbo::Affine;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit};
 use hayro::{RenderCache, RenderSettings};
-use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
+use noido_engine::{
+    Document, EngineError, Glyph, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size,
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HayroEngine;
@@ -94,5 +98,9 @@ impl Document for HayroDocument {
             .collect();
         Rgba8Image::from_premultiplied(rect.width, rect.height, pixels)
             .ok_or_else(|| EngineError::Render("pixmap size mismatch".into()))
+    }
+
+    fn text(&self, page: usize) -> Result<Vec<Glyph>, EngineError> {
+        Ok(text::page_glyphs(self.page(page)?))
     }
 }

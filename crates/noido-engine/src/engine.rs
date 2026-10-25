@@ -4,7 +4,7 @@ use std::sync::Arc;
 /// thread and engine.
 pub type PdfBytes = Arc<Vec<u8>>;
 
-use crate::{PixelRect, Rgba8Image, Size};
+use crate::{Glyph, PixelRect, Rgba8Image, Size};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -38,4 +38,11 @@ pub trait Document {
         scale: f32,
         rect: PixelRect,
     ) -> Result<Rgba8Image, EngineError>;
+
+    /// The glyphs drawn on `page`, in content-stream order. Engines that
+    /// can't read text give none.
+    fn text(&self, page: usize) -> Result<Vec<Glyph>, EngineError> {
+        let _ = page;
+        Ok(Vec::new())
+    }
 }

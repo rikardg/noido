@@ -4,6 +4,12 @@
 two-pages.pdf:
   page 0: 612x792 pt (Letter) with a black filled square at x 100-200, y 100-200
   page 1: 595x842 pt (A4) with /Rotate 90, blank
+
+text.pdf:
+  page 0: 612x792 pt (Letter), Helvetica 12 pt (not embedded): "Hello World"
+          with its baseline starting at (72, 700) in PDF space, then "noido"
+          20 pt lower
+  page 1: the same page with /Rotate 90
 """
 
 from pathlib import Path
@@ -38,6 +44,26 @@ def two_pages() -> bytes:
     )
 
 
+def text() -> bytes:
+    content = b"BT /F1 12 Tf 72 700 Td (Hello World) Tj 0 -20 Td (noido) Tj ET"
+    page = (
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R"
+        b" /Resources << /Font << /F1 4 0 R >> >>%s >>"
+    )
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
+            page % b"",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica"
+            b" /Encoding /WinAnsiEncoding >>",
+            b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+            page % b" /Rotate 90",
+        ]
+    )
+
+
 if __name__ == "__main__":
     here = Path(__file__).resolve().parent
     (here / "two-pages.pdf").write_bytes(two_pages())
+    (here / "text.pdf").write_bytes(text())

@@ -64,9 +64,64 @@ impl Rgba8Image {
     }
 }
 
+/// A point on a page in PDF points, origin top-left, y down.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// A glyph's outline on the page. Corners in order: start-bottom, end-bottom,
+/// end-top, start-top, along the writing direction; bottom is the descent
+/// side. A quad rather than a rectangle, so rotated text keeps its shape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Quad {
+    pub corners: [Point; 4],
+}
+
+impl Quad {
+    /// The top-left and bottom-right corners of the smallest upright
+    /// rectangle holding the quad.
+    pub fn bounds(&self) -> (Point, Point) {
+        let mut min = self.corners[0];
+        let mut max = self.corners[0];
+        for c in &self.corners[1..] {
+            min.x = min.x.min(c.x);
+            min.y = min.y.min(c.y);
+            max.x = max.x.max(c.x);
+            max.y = max.y.max(c.y);
+        }
+        (min, max)
+    }
+}
+
+/// One glyph drawn on a page, in content-stream order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Glyph {
+    /// Its Unicode text: possibly several characters (a ligature), empty
+    /// when the font doesn't say.
+    pub text: String,
+    /// Where its baseline starts.
+    pub origin: Point,
+    /// The font size: the em, in points.
+    pub size: f32,
+    pub quad: Quad,
+    /// Drawn invisibly, as OCR text layers are.
+    pub invisible: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quad_bounds_hold_every_corner() {
+        let p = |x, y| Point { x, y };
+        let quad = Quad {
+            corners: [p(2.0, 5.0), p(4.0, 1.0), p(3.0, 0.0), p(1.0, 4.0)],
+        };
+        assert_eq!(quad.bounds(), (p(1.0, 0.0), p(4.0, 5.0)));
+    }
 
     #[test]
     fn rgba_rejects_wrong_length() {
