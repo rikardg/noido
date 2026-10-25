@@ -11,7 +11,14 @@ notes, which are the user's data and will live next to the PDF.
 ## Behaviour (agreed)
 
 - Stored per document: position, zoom mode and scale, continuous/paged,
-  single/dual.
+  single/dual, and the window: size, position (its screen), maximized and
+  fullscreen.
+- A document opened for the first time gets the window of the most recently
+  saved document, so noido opens where it was last.
+- On Wayland the compositor places windows: size, maximized and fullscreen
+  are restored, position and screen are not (accepted; no XWayland fallback).
+  X11, Windows and macOS restore all of it, moved back onto a connected screen
+  if its screen is gone.
 - Stored in the platform's place for application state:
   - Linux: `$XDG_STATE_HOME/noido` (default `~/.local/state/noido`).
   - macOS: `~/Library/Application Support/<bundle id>` (not `Caches`, which
@@ -34,7 +41,10 @@ notes, which are the user's data and will live next to the PDF.
   changed). Values are clamped: page to the page count, scale to the zoom
   limits. If the state directory can't be written, noido prints one warning
   to stderr and carries on.
-- **One small file per document** (`docs/<hash>.toml`). It is written to a
+- **Two small files per document**: `docs/<hash>.toml` (view state) and
+  `docs/<hash>.window.ron` (window, written by eframe; see below). Pruning,
+  re-filing and copying treat them as a pair.
+- **View state file** (`docs/<hash>.toml`). It is written to a
   temporary file and renamed into place. Two noido windows never write the
   same shared file; for the same document the last write wins.
 - **Pruning:** at startup, beyond 1000 entries the least recently written
@@ -83,6 +93,20 @@ notes, which are the user's data and will live next to the PDF.
 - File format: TOML with `version = 1`, `path`, `saved` (Unix time), and the
   `ViewState` fields. A version other than 1 means the entry is ignored.
 
+- `Store::window_file(&DocKey) -> PathBuf`: the document's window file. If it
+  doesn't exist yet, the newest `*.window.ron` in `docs/` is copied to it
+  first (best effort).
+
+### Window: eframe persistence
+
+eframe's `persistence` feature already saves and restores window size,
+position, maximized and fullscreen, with clamping onto connected monitors and
+mixed scale factors handled. `NativeOptions::persistence_path` points it at
+the document's window file and `persist_window` stays on. Because noido passes
+its own `egui::Context`, eframe does not load egui memory from the file;
+`App::persist_egui_memory` returns false so it doesn't write it either. The
+900×1100 default applies only when there is no window file.
+
 ### Frontend (egui)
 
 - In `main`: build the `DocKey`, open the store, load the state, and pass
@@ -97,7 +121,6 @@ notes, which are the user's data and will live next to the PDF.
 - Command-line options.
 - A recent-files list.
 - Syncing state between machines.
-- Remembering the window size or position.
 - Notes and annotations.
 
 ## Testing
@@ -114,6 +137,8 @@ notes, which are the user's data and will live next to the PDF.
   - unknown version and garbage files are ignored
   - pruning keeps the newest
   - atomic write leaves no temporary file behind
+- Window restore is eframe's code and is checked by hand (open, move, resize,
+  close, reopen), on Wayland for size and maximized only.
 - A headless app test checks that a restored state shows the saved page on
   the first frame, and that a change is saved after the idle delay. Time is
   injected, not slept.
