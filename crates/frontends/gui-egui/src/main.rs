@@ -38,6 +38,8 @@ fn run(path: &Path) -> Result<(), String> {
 
     // Created up front so the render thread can wake the UI when a page is ready.
     let ctx = egui::Context::default();
+    // Mod +/-/0 zoom the document, not egui's interface.
+    ctx.options_mut(|o| o.zoom_with_keyboard = false);
     let waker_ctx = ctx.clone();
     let waker = Box::new(move || waker_ctx.request_repaint());
     let (renderer, info) = Renderer::start(Arc::new(HayroEngine), bytes, waker)

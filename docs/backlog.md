@@ -27,14 +27,14 @@ when it is fixed.
   and shown smaller use linear filtering without mipmaps. Rare; revisit with
   tiled rendering.
 
-- **Position lost on window resize.** Resizing refits the pages but keeps the
-  scroll offset in UI points, so the visible part of the document drifts. The
-  document should keep its position. Open question: which document
-  coordinate to hold fixed (e.g. the point at the top of the window, the
-  centre of the window, or the start of the top visible page). Needs the
-  scroll position expressed in document terms in `noido-core`.
 
 ## Deferred features
+
+- **Automated interactive testing** of the egui frontend: drive key presses,
+  wheel/pinch zoom, scrolling and resizing headlessly and check the result
+  (scroll offset, zoom, rendered output). Candidate: `egui_kittest`, which runs
+  the app without a desktop session. Do not fake input on the real desktop —
+  on GNOME that triggers a remote-desktop permission prompt.
 
 - Vim key layer (zathura-style), with key sequences and counts.
 - hayro render cache reused across renders (needs a self-referential holder
