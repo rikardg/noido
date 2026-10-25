@@ -8,7 +8,7 @@ use eframe::egui::{
 };
 use noido_core::{
     Action, Direction, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, SidebarState,
-    THUMBNAIL_BUDGET, View, render_scale, window_keep, window_order,
+    THUMBNAIL_BUDGET, View, ViewState, render_scale, window_keep, window_order,
 };
 use noido_engine::{Rgba8Image, Size};
 use noido_render::{DocumentInfo, RenderRequest, Renderer, Thumbnailer};
@@ -73,6 +73,10 @@ pub struct NoidoApp {
     watcher: Option<Watcher>,
     /// Set when a later launch on the same file asks the window forward.
     activation: Option<Activation>,
+    /// Where the reader was before a reload to fewer pages moved them, and
+    /// where that left them: a version cut short mid-write mustn't cost
+    /// them their place, so the next reload returns there unless they moved.
+    clamped: Option<(ViewState, ViewState)>,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -153,6 +157,7 @@ impl NoidoApp {
             bar: titlebar::Rects::default(),
             watcher: None,
             activation: None,
+            clamped: None,
         }
     }
 
@@ -265,7 +270,11 @@ impl NoidoApp {
 
     /// Shows `reload`, a new version of the document, at the same place.
     fn reload(&mut self, reload: Reload) {
-        let state = self.view.state();
+        let current = self.view.state();
+        let state = match (self.clamped, current) {
+            (Some((wanted, left)), Some(current)) if same_place(&current, &left) => Some(wanted),
+            _ => current,
+        };
         let (width, height) = self.view.viewport_size();
         let mut view = View::new(reload.info.page_sizes);
         view.set_viewport_size(width, height);
@@ -274,6 +283,12 @@ impl NoidoApp {
             view.restore(state);
         }
         let page_count = view.layout().page_count();
+        self.clamped = match (state, view.state()) {
+            (Some(wanted), Some(left)) if left.centre.page != wanted.centre.page => {
+                Some((wanted, left))
+            }
+            _ => None,
+        };
         self.view = view;
         self.tracker = RenderTracker::new(page_count);
         // Dropping the old renderer drops renders still on their way.
@@ -675,6 +690,16 @@ impl NoidoApp {
         }
         self.persist(&ctx);
     }
+}
+
+/// Whether the reader is still where `b` left them: same page and modes.
+/// The spot on the page may differ by egui's rounding.
+fn same_place(a: &ViewState, b: &ViewState) -> bool {
+    a.centre.page == b.centre.page
+        && a.zoom == b.zoom
+        && a.scale == b.scale
+        && a.continuous == b.continuous
+        && a.dual == b.dual
 }
 
 /// A rendered page on the GPU, full resolution or thumbnail.
@@ -1967,5 +1992,35 @@ mod tests {
                 ))
         );
         assert!(!activation.take(), "left set");
+    }
+
+    /// A version cut short mid-write must not cost the reader their place.
+    #[test]
+    fn reload_after_short_version_returns_to_place() {
+        let mut h = Harness::new();
+        go_to(&mut h, 8);
+        let centre = h.centre();
+        h.reload(Arc::new(SizedEngine::letter(4)), recompiled_key());
+        h.frames(3, vec![]);
+        assert_eq!(h.centre().page, 3);
+        h.reload(Arc::new(SizedEngine::letter(10)), test_key());
+        h.frames(3, vec![]);
+        assert_eq!(h.centre().page, centre.page);
+        assert!((h.centre().y - centre.y).abs() < 0.5, "{:?}", h.centre());
+    }
+
+    #[test]
+    fn moving_after_short_version_keeps_new_place() {
+        let mut h = Harness::new();
+        go_to(&mut h, 8);
+        h.reload(Arc::new(SizedEngine::letter(4)), recompiled_key());
+        h.press(egui::Key::PageUp, Modifiers::NONE);
+        h.press(egui::Key::PageUp, Modifiers::NONE);
+        h.frames(3, vec![]);
+        let moved = h.centre().page;
+        assert!(moved < 3);
+        h.reload(Arc::new(SizedEngine::letter(10)), test_key());
+        h.frames(3, vec![]);
+        assert_eq!(h.centre().page, moved);
     }
 }

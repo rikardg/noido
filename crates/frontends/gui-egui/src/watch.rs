@@ -67,7 +67,8 @@ impl Debounce {
 }
 
 /// Opens the file at `path` if its content differs from `current`. A missing,
-/// empty or unreadable file is no reload: the shown version stays.
+/// empty or unreadable file is no reload: the shown version stays. Nor is a
+/// document without pages, which a file cut short mid-write can open as.
 fn open_new(
     engine: &Arc<dyn PdfEngine>,
     path: &Path,
@@ -84,6 +85,9 @@ fn open_new(
         Box::new(move || waker())
     };
     let (renderer, info) = Renderer::start(engine.clone(), bytes.clone(), boxed(waker)).ok()?;
+    if info.page_sizes.is_empty() {
+        return None;
+    }
     let thumbnailer = Thumbnailer::start(engine.clone(), bytes, boxed(waker));
     Some(Reload {
         renderer,
@@ -220,7 +224,7 @@ mod tests {
     const MS: Duration = Duration::from_millis(1);
 
     /// A document with as many pages as its file has bytes; files starting
-    /// with "bad" don't open.
+    /// with "bad" don't open, and files starting with "none" have no pages.
     struct ByteEngine;
 
     struct ByteDocument(usize);
@@ -229,6 +233,9 @@ mod tests {
         fn open(&self, bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
             if bytes.starts_with(b"bad") {
                 return Err(EngineError::Open("bad".into()));
+            }
+            if bytes.starts_with(b"none") {
+                return Ok(Box::new(ByteDocument(0)));
             }
             Ok(Box::new(ByteDocument(bytes.len())))
         }
@@ -313,6 +320,16 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("a.pdf");
         fs::write(&path, b"bad pdf").unwrap();
+        let current = DocKey::new(b"four", &path);
+        assert!(open_new(&engine(), &path, &current, &no_waker()).is_none());
+    }
+
+    /// A file cut short can open with no pages at all.
+    #[test]
+    fn document_without_pages_is_not_a_reload() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("a.pdf");
+        fs::write(&path, b"none yet").unwrap();
         let current = DocKey::new(b"four", &path);
         assert!(open_new(&engine(), &path, &current, &no_waker()).is_none());
     }
