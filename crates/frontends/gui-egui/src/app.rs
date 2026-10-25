@@ -4,7 +4,8 @@ use eframe::egui::{
     self, Color32, ColorImage, Rect, ScrollArea, Sense, TextureHandle, TextureOptions, pos2, vec2,
 };
 use noido_core::{
-    Key, Keymap, Layout, MARGIN, MAX_RENDER_SIDE, RenderTracker, render_scale, scroll_target,
+    Key, KeyPress, Keymap, Layout, MARGIN, MAX_RENDER_SIDE, RenderTracker, render_scale,
+    scroll_target,
 };
 use noido_engine::Size;
 use noido_render::{DocumentInfo, RenderRequest, Renderer};
@@ -54,7 +55,12 @@ impl NoidoApp {
                     } => core_key(*key),
                     _ => None,
                 })
-                .filter_map(|key| self.keymap.action(key))
+                .filter_map(|key| {
+                    self.keymap.action(KeyPress {
+                        key,
+                        command: false,
+                    })
+                })
                 .fold(start, |offset, action| {
                     scroll_target(
                         action,

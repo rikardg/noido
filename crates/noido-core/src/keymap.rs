@@ -5,6 +5,19 @@ use std::collections::HashMap;
 pub enum Key {
     PageUp,
     PageDown,
+    Plus,
+    Equals,
+    Minus,
+    W,
+    F,
+}
+
+/// A key with the state of the platform's primary modifier (`command`: Ctrl,
+/// or Cmd on macOS).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct KeyPress {
+    pub key: Key,
+    pub command: bool,
 }
 
 /// Viewer actions that keys (and later menus) trigger.
@@ -12,25 +25,39 @@ pub enum Key {
 pub enum Action {
     ScrollScreenUp,
     ScrollScreenDown,
+    ZoomIn,
+    ZoomOut,
+    FitWidth,
+    FitPage,
 }
 
-/// Maps keys to actions.
+/// Maps key presses to actions.
 pub struct Keymap {
-    bindings: HashMap<Key, Action>,
+    bindings: HashMap<KeyPress, Action>,
 }
 
 impl Keymap {
     /// The platform-conventional bindings, always active.
     pub fn native() -> Self {
+        let plain = |key| KeyPress {
+            key,
+            command: false,
+        };
+        let command = |key| KeyPress { key, command: true };
         let bindings = HashMap::from([
-            (Key::PageUp, Action::ScrollScreenUp),
-            (Key::PageDown, Action::ScrollScreenDown),
+            (plain(Key::PageUp), Action::ScrollScreenUp),
+            (plain(Key::PageDown), Action::ScrollScreenDown),
+            (command(Key::Plus), Action::ZoomIn),
+            (command(Key::Equals), Action::ZoomIn),
+            (command(Key::Minus), Action::ZoomOut),
+            (plain(Key::W), Action::FitWidth),
+            (plain(Key::F), Action::FitPage),
         ]);
         Self { bindings }
     }
 
-    pub fn action(&self, key: Key) -> Option<Action> {
-        self.bindings.get(&key).copied()
+    pub fn action(&self, press: KeyPress) -> Option<Action> {
+        self.bindings.get(&press).copied()
     }
 }
 
@@ -48,6 +75,7 @@ pub fn scroll_target(
     let target = match action {
         Action::ScrollScreenUp => offset - step,
         Action::ScrollScreenDown => offset + step,
+        _ => offset,
     };
     target.clamp(0.0, (content_height - viewport_height).max(0.0))
 }
@@ -56,11 +84,56 @@ pub fn scroll_target(
 mod tests {
     use super::*;
 
+    fn press(key: Key, command: bool) -> KeyPress {
+        KeyPress { key, command }
+    }
+
     #[test]
     fn native_maps_page_keys() {
         let keymap = Keymap::native();
-        assert_eq!(keymap.action(Key::PageDown), Some(Action::ScrollScreenDown));
-        assert_eq!(keymap.action(Key::PageUp), Some(Action::ScrollScreenUp));
+        assert_eq!(
+            keymap.action(press(Key::PageDown, false)),
+            Some(Action::ScrollScreenDown)
+        );
+        assert_eq!(
+            keymap.action(press(Key::PageUp, false)),
+            Some(Action::ScrollScreenUp)
+        );
+    }
+
+    #[test]
+    fn mod_plus_and_equals_zoom_in() {
+        let keymap = Keymap::native();
+        assert_eq!(keymap.action(press(Key::Plus, true)), Some(Action::ZoomIn));
+        assert_eq!(
+            keymap.action(press(Key::Equals, true)),
+            Some(Action::ZoomIn)
+        );
+    }
+
+    #[test]
+    fn mod_minus_zooms_out() {
+        assert_eq!(
+            Keymap::native().action(press(Key::Minus, true)),
+            Some(Action::ZoomOut)
+        );
+    }
+
+    #[test]
+    fn plain_w_and_f_fit() {
+        let keymap = Keymap::native();
+        assert_eq!(keymap.action(press(Key::W, false)), Some(Action::FitWidth));
+        assert_eq!(keymap.action(press(Key::F, false)), Some(Action::FitPage));
+    }
+
+    #[test]
+    fn plus_without_mod_does_nothing() {
+        assert_eq!(Keymap::native().action(press(Key::Plus, false)), None);
+    }
+
+    #[test]
+    fn w_with_mod_does_nothing() {
+        assert_eq!(Keymap::native().action(press(Key::W, true)), None);
     }
 
     #[test]
