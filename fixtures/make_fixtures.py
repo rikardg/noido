@@ -10,6 +10,26 @@ text.pdf:
           with its baseline starting at (72, 700) in PDF space, then "noido"
           20 pt lower
   page 1: the same page with /Rotate 90
+
+links.pdf (no text):
+  page 0: 612x792 pt with link annotations, in order:
+    A  /Dest [page 1 /XYZ 72 600 null]              Rect 72 690 172 710
+    B  GoTo (tree.name): /Names /Dests tree, under /Kids, [page 1 /FitH 500]
+                                                    Rect 72 660 172 680
+    C  /Dest /OldName: catalog /Dests, << /D [page 1 /Fit] >>
+                                                    Rect 72 630 172 650
+    D  URI https://example.org/ with two /QuadPoints (y 610-620 x 72-300,
+       y 580-590 x 72-150)                          Rect 72 580 300 620
+    E  GoTo (missing), unresolvable                 Rect 72 550 172 570
+    F  GoToR to other.pdf                           Rect 72 520 172 540
+    G  /Dest [page 2 /XYZ 100 null 0]               Rect 72 490 172 510
+    H  /Dest [page 1 /FitR 100 200 300 400], half off the page
+                                                    Rect 500 760 700 800
+    I  /Dest [the catalog, not a page /Fit]         Rect 72 460 172 480
+    J  a /Text annotation, not a link
+    K  /Dest [7 /Fit], a page number past the end   Rect 72 400 172 420
+  page 1: 612x792 pt, no annotations
+  page 2: 595x842 pt with /Rotate 90, no annotations
 """
 
 from pathlib import Path
@@ -63,7 +83,40 @@ def text() -> bytes:
     )
 
 
+def links() -> bytes:
+    annots = [
+        b"<< /Type /Annot /Subtype /Link /Rect [72 690 172 710] /Dest [4 0 R /XYZ 72 600 null] >>",
+        b"<< /Type /Annot /Subtype /Link /Rect [72 660 172 680] /A << /S /GoTo /D (tree.name) >> >>",
+        b"<< /Type /Annot /Subtype /Link /Rect [72 630 172 650] /Dest /OldName >>",
+        b"<< /Type /Annot /Subtype /Link /Rect [72 580 300 620]"
+        b" /QuadPoints [72 620 300 620 72 610 300 610 72 590 150 590 72 580 150 580]"
+        b" /A << /S /URI /URI (https://example.org/) >> >>",
+        b"<< /Type /Annot /Subtype /Link /Rect [72 550 172 570] /A << /S /GoTo /D (missing) >> >>",
+        b"<< /Type /Annot /Subtype /Link /Rect [72 520 172 540]"
+        b" /A << /S /GoToR /F (other.pdf) /D [0 /Fit] >> >>",
+        b"<< /Type /Annot /Subtype /Link /Rect [72 490 172 510] /Dest [5 0 R /XYZ 100 null 0] >>",
+        b"<< /Type /Annot /Subtype /Link /Rect [500 760 700 800] /Dest [4 0 R /FitR 100 200 300 400] >>",
+        b"<< /Type /Annot /Subtype /Link /Rect [72 460 172 480] /Dest [1 0 R /Fit] >>",
+        b"<< /Type /Annot /Subtype /Text /Rect [72 430 92 450] /Contents (a note) >>",
+        b"<< /Type /Annot /Subtype /Link /Rect [72 400 172 420] /Dest [7 /Fit] >>",
+    ]
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R /Names << /Dests 6 0 R >>"
+            b" /Dests << /OldName << /D [4 0 R /Fit] >> >> >>",
+            b"<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [%s] >>"
+            % b" ".join(annots),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Rotate 90 >>",
+            b"<< /Kids [7 0 R] >>",
+            b"<< /Limits [(a) (z)] /Names [(tree.name) [4 0 R /FitH 500]] >>",
+        ]
+    )
+
+
 if __name__ == "__main__":
     here = Path(__file__).resolve().parent
     (here / "two-pages.pdf").write_bytes(two_pages())
     (here / "text.pdf").write_bytes(text())
+    (here / "links.pdf").write_bytes(links())

@@ -1,5 +1,6 @@
 //! noido PDF engine backed by hayro, a pure-Rust PDF rasterizer.
 
+mod links;
 mod text;
 
 use hayro::hayro_interpret::InterpreterSettings;
@@ -10,8 +11,10 @@ use hayro::kurbo::Affine;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit};
 use hayro::{RenderCache, RenderSettings};
+use std::cell::OnceCell;
+
 use noido_engine::{
-    Document, EngineError, Glyph, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size,
+    Document, EngineError, Glyph, Link, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -20,12 +23,17 @@ pub struct HayroEngine;
 impl PdfEngine for HayroEngine {
     fn open(&self, bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
         let pdf = Pdf::new(bytes).map_err(|e| EngineError::Open(format!("{e:?}")))?;
-        Ok(Box::new(HayroDocument { pdf }))
+        Ok(Box::new(HayroDocument {
+            pdf,
+            pages: OnceCell::new(),
+        }))
     }
 }
 
 struct HayroDocument {
     pdf: Pdf,
+    /// Page indices by object, built on the first request for links.
+    pages: OnceCell<links::PageIndex>,
 }
 
 impl HayroDocument {
@@ -102,5 +110,11 @@ impl Document for HayroDocument {
 
     fn text(&self, page: usize) -> Result<Vec<Glyph>, EngineError> {
         Ok(text::page_glyphs(self.page(page)?))
+    }
+
+    fn links(&self, page: usize) -> Result<Vec<Link>, EngineError> {
+        self.page(page)?;
+        let index = self.pages.get_or_init(|| links::page_index(&self.pdf));
+        Ok(links::page_links(&self.pdf, index, page))
     }
 }
