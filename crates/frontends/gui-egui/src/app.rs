@@ -14,6 +14,7 @@ use noido_state::{DocState, Slot, Store};
 use crate::frame;
 use crate::image::PageImage;
 use crate::instance::Activation;
+use crate::links::Links;
 use crate::search::{self, Search};
 use crate::settings;
 use crate::sidebar::{self, SidebarView};
@@ -35,6 +36,8 @@ const OFFSET_EPSILON: f32 = 0.5;
 
 /// Seconds the view must stay unchanged before its state is saved.
 const SAVE_DELAY: f64 = 2.0;
+/// The outline around the link under the pointer, in points.
+const LINK_OUTLINE_WIDTH: f32 = 1.5;
 
 /// What egui's scroll area reported at the end of the last frame.
 #[derive(Clone, Copy)]
@@ -98,6 +101,10 @@ pub struct NoidoApp {
     settings_file: Option<SettingsFile>,
     /// The settings page, while it is open.
     settings_page: Option<settings::Page>,
+    /// The pages' links.
+    links: Links,
+    /// The link under the pointer this frame.
+    hovered_link: Option<noido_engine::Link>,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -187,6 +194,8 @@ impl NoidoApp {
             settings: Settings::default(),
             settings_file: None,
             settings_page: None,
+            links: Links::new(page_count),
+            hovered_link: None,
         }
     }
 
@@ -205,6 +214,13 @@ impl NoidoApp {
     /// Searches the document's text with `searcher`.
     pub fn with_searcher(mut self, searcher: TextSearcher) -> Self {
         self.search_state.set_searcher(searcher);
+        self
+    }
+
+    /// Reads the pages' links with `linker`.
+    pub fn with_linker(mut self, linker: noido_render::Linker) -> Self {
+        let page_count = self.view.layout().page_count();
+        self.links.set_linker(linker, page_count);
         self
     }
 
@@ -453,6 +469,7 @@ impl NoidoApp {
         }
         self.sidebar_view.replace(reload.sidebar, page_count);
         self.search_state.set_searcher(reload.searcher);
+        self.links.set_linker(reload.linker, page_count);
         let from = self.view.centre_page().unwrap_or(0);
         self.search_state.rerun(from);
         self.focus = None;
@@ -766,10 +783,12 @@ impl NoidoApp {
             .filter_map(|forward| self.hit_target(forward))
             .filter_map(|index| self.search_state.hits.get(index).map(|hit| hit.page))
             .collect();
+        self.hovered_link = None;
         let layout = self.view.layout();
-        let (content, _) = ui.allocate_exact_size(
+        // Clicks follow links; drags still pan, as they don't click.
+        let (content, response) = ui.allocate_exact_size(
             vec2(layout.content_width(), layout.content_height()),
-            Sense::hover(),
+            Sense::click(),
         );
 
         // Until the first frame has measured the window, the layout is a placeholder.
@@ -855,6 +874,17 @@ impl NoidoApp {
         // Also images kept from an earlier version, which the tracker never knew.
         self.textures.retain(|&page, _| keep.contains(page));
 
+        for page in visible.clone() {
+            self.links.want(page);
+        }
+        // Not over a scroll bar, the sidebar or a popup: the response
+        // isn't hovered there.
+        let hovered = response.hover_pos().and_then(|pos| {
+            let p = layout.doc_point(pos.x - content.min.x, pos.y - content.min.y)?;
+            visible.contains(&p.page).then_some(())?;
+            Some((p.page, self.links.at(p.page, p.x, p.y)?.clone()))
+        });
+
         let painter = ui.painter();
         let hits = &self.search_state.hits;
         for page in visible {
@@ -885,6 +915,27 @@ impl NoidoApp {
                 }
             }
         }
+
+        if let Some((page, link)) = hovered
+            && let Some(r) = layout.page_rect(page)
+        {
+            let origin = content.min + vec2(r.x, r.y);
+            let stroke = egui::Stroke::new(LINK_OUTLINE_WIDTH, ui.visuals().hyperlink_color);
+            for area in &link.areas {
+                let min = origin + vec2(area.x, area.y) * layout.scale();
+                let size = vec2(area.width, area.height) * layout.scale();
+                painter.rect_stroke(
+                    Rect::from_min_size(min, size),
+                    2.0,
+                    stroke,
+                    egui::StrokeKind::Outside,
+                );
+            }
+            if let noido_engine::LinkTarget::Web(uri) = &link.target {
+                response.on_hover_text_at_pointer(uri);
+            }
+            self.hovered_link = Some(link);
+        }
     }
 }
 
@@ -914,6 +965,7 @@ impl NoidoApp {
         self.come_forward(&ctx);
         self.receive_renders(&ctx);
         self.sidebar_view.receive(&ctx, self.view.layout());
+        self.links.receive();
         self.sync_from_egui();
         self.receive_reload();
         self.handle_input(&ctx);
@@ -986,12 +1038,20 @@ impl NoidoApp {
             }
             // A hand where a drag pans (not over the scroll bars), unless a
             // resize edge or the sidebar's handle set a cursor already.
-            if ui.ctx().output(|o| o.cursor_icon) == egui::CursorIcon::Default {
+            let cursor_free = ui.ctx().output(|o| o.cursor_icon) == egui::CursorIcon::Default;
+            if cursor_free {
                 scroll_area = scroll_area
                     .on_hover_cursor(egui::CursorIcon::Grab)
                     .on_drag_cursor(egui::CursorIcon::Grabbing);
             }
             let output = scroll_area.show_viewport(ui, |ui, viewport| self.pages(ui, viewport));
+            // The pointing hand over a link, unless a drag is under way.
+            if cursor_free
+                && self.hovered_link.is_some()
+                && !ui.ctx().input(|i| i.pointer.is_decidedly_dragging())
+            {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
             let size = self.last_scroll.map(|last| last.inner.size());
             self.told = size.map(|size| (wanted, size));
             self.last_scroll = Some(ScrollState {
@@ -1266,12 +1326,15 @@ mod tests {
             let thumbnailer = Thumbnailer::start(engine.clone(), bytes.clone(), Box::new(|| {}));
             let sidebar =
                 Renderer::start_background(engine.clone(), bytes.clone(), Box::new(|| {}));
+            let linker =
+                noido_render::Linker::start(engine.clone(), bytes.clone(), Box::new(|| {}));
             let searcher = TextSearcher::start(engine, bytes, Box::new(|| {}));
             let reload = crate::watch::Reload {
                 renderer,
                 thumbnailer,
                 sidebar,
                 searcher,
+                linker,
                 info,
                 key,
             };
@@ -1292,12 +1355,15 @@ mod tests {
             let thumbnailer = Thumbnailer::start(engine.clone(), bytes.clone(), Box::new(|| {}));
             let sidebar =
                 Renderer::start_background(Arc::new(sidebar), bytes.clone(), Box::new(|| {}));
+            let linker =
+                noido_render::Linker::start(engine.clone(), bytes.clone(), Box::new(|| {}));
             let searcher = TextSearcher::start(engine, bytes, Box::new(|| {}));
             self.reloads.put(crate::watch::Reload {
                 renderer,
                 thumbnailer,
                 sidebar,
                 searcher,
+                linker,
                 info,
                 key,
             });
@@ -3512,6 +3578,10 @@ mod tests {
         gate: Option<Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>>,
         /// The pages rendered, in order.
         rendered: Arc<std::sync::Mutex<Vec<usize>>>,
+        /// Each page's links.
+        links: Arc<Vec<Vec<noido_engine::Link>>>,
+        /// With a link gate, each `links` call waits until it opens.
+        link_gate: Option<Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>>,
     }
 
     impl TextEngine {
@@ -3526,6 +3596,25 @@ mod tests {
                 calls: Arc::default(),
                 gate: None,
                 rendered: Arc::default(),
+                links: Arc::new(vec![Vec::new(); pages.len()]),
+                link_gate: None,
+            }
+        }
+
+        fn with_links(mut self, page: usize, links: Vec<noido_engine::Link>) -> TextEngine {
+            Arc::make_mut(&mut self.links)[page] = links;
+            self
+        }
+
+        fn gated_links(mut self) -> TextEngine {
+            self.link_gate = Some(Arc::default());
+            self
+        }
+
+        fn open_link_gate(&self) {
+            if let Some(gate) = &self.link_gate {
+                *gate.0.lock().unwrap() = true;
+                gate.1.notify_all();
             }
         }
 
@@ -3608,6 +3697,15 @@ mod tests {
                 }
             }
             Ok(glyphs)
+        }
+        fn links(&self, page: usize) -> Result<Vec<noido_engine::Link>, EngineError> {
+            if let Some(gate) = &self.link_gate {
+                let mut open = gate.0.lock().unwrap();
+                while !*open {
+                    open = gate.1.wait(open).unwrap();
+                }
+            }
+            Ok(self.links[page].clone())
         }
     }
 
@@ -4174,5 +4272,191 @@ mod tests {
         let h = Harness::new();
         // egui's 20 pt, plus 2 pt above and below.
         assert_eq!(h.app.bar.search.height(), 24.0);
+    }
+
+    // ---- Links ----
+
+    fn area(x: f32, y: f32, width: f32, height: f32) -> noido_engine::Rect {
+        noido_engine::Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn web(uri: &str, areas: Vec<noido_engine::Rect>) -> noido_engine::Link {
+        noido_engine::Link {
+            areas,
+            target: noido_engine::LinkTarget::Web(uri.into()),
+        }
+    }
+
+    fn internal(areas: Vec<noido_engine::Rect>, page: usize, y: Option<f32>) -> noido_engine::Link {
+        noido_engine::Link {
+            areas,
+            target: noido_engine::LinkTarget::Internal(noido_engine::Destination {
+                page,
+                x: Some(72.0),
+                y,
+            }),
+        }
+    }
+
+    /// Ten pages with two lines of text; on page 0 an internal link at
+    /// (72, 90) to page 5, a web link at (72, 200), a link of two areas at
+    /// y 300 and 320, and two overlapping web links around (350, 430).
+    fn link_engine() -> TextEngine {
+        TextEngine::new(&[&["first line", "second line"] as &[&str]; 10]).with_links(
+            0,
+            vec![
+                internal(vec![area(72.0, 90.0, 60.0, 12.0)], 5, Some(300.0)),
+                web("https://example.org/", vec![area(72.0, 200.0, 100.0, 12.0)]),
+                web(
+                    "https://two.example/",
+                    vec![
+                        area(72.0, 300.0, 100.0, 12.0),
+                        area(72.0, 320.0, 50.0, 12.0),
+                    ],
+                ),
+                web("https://x.example/", vec![area(300.0, 400.0, 100.0, 40.0)]),
+                web("https://y.example/", vec![area(300.0, 420.0, 100.0, 40.0)]),
+            ],
+        )
+    }
+
+    /// A harness whose document and links thread are `engine`.
+    fn linking(engine: &TextEngine) -> Harness {
+        let linker = engine.clone();
+        Harness::build_with(Arc::new(engine.clone()), move |app| {
+            app.with_linker(noido_render::Linker::start(
+                Arc::new(linker),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+        })
+    }
+
+    /// Where page point (`x`, `y`) on `page` is on screen.
+    fn screen_pos(h: &Harness, page: usize, x: f32, y: f32) -> egui::Pos2 {
+        let view = &h.app.view;
+        let (cx, cy) = view
+            .layout()
+            .content_point(noido_core::DocPoint { page, x, y })
+            .unwrap();
+        let (ox, oy) = view.offset();
+        h.app.last_scroll.unwrap().inner.min + vec2(cx - ox, cy - oy)
+    }
+
+    /// Moves the pointer to `at` and runs frames until the pointing hand
+    /// shows there.
+    fn hover_link(h: &mut Harness, at: egui::Pos2) {
+        h.frames(1, vec![Event::PointerMoved(at)]);
+        h.until(|h| h.cursor == egui::CursorIcon::PointingHand);
+        assert_eq!(h.cursor, egui::CursorIcon::PointingHand);
+    }
+
+    /// The rectangles stroked in the hyperlink colour last frame.
+    fn link_outlines(h: &Harness) -> Vec<Rect> {
+        let colour = h.ctx.global_style().visuals.hyperlink_color;
+        fn find(shape: &egui::Shape, colour: Color32, out: &mut Vec<Rect>) {
+            match shape {
+                egui::Shape::Rect(r) if r.stroke.width > 0.0 && r.stroke.color == colour => {
+                    out.push(r.rect);
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| find(s, colour, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &h.shapes {
+            find(&clipped.shape, colour, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn hand_over_a_link() {
+        let mut h = linking(&link_engine());
+        let at = screen_pos(&h, 0, 100.0, 96.0);
+        hover_link(&mut h, at);
+    }
+
+    #[test]
+    fn grab_beside_a_link() {
+        let mut h = linking(&link_engine());
+        let at = screen_pos(&h, 0, 100.0, 96.0);
+        hover_link(&mut h, at);
+        let beside = screen_pos(&h, 0, 400.0, 600.0);
+        h.frames(2, vec![Event::PointerMoved(beside)]);
+        assert_eq!(h.cursor, egui::CursorIcon::Grab);
+        assert!(link_outlines(&h).is_empty());
+    }
+
+    #[test]
+    fn outline_drawn_around_every_area_of_hovered_link() {
+        let mut h = linking(&link_engine());
+        let at = screen_pos(&h, 0, 100.0, 306.0);
+        hover_link(&mut h, at);
+        let outlines = link_outlines(&h);
+        assert_eq!(outlines.len(), 2, "{outlines:?}");
+        let second = screen_pos(&h, 0, 72.0, 320.0);
+        assert!(
+            outlines.iter().any(|r| (r.min - second).length() < 4.0),
+            "{outlines:?}"
+        );
+    }
+
+    #[test]
+    fn no_hand_over_scroll_bar_at_a_link() {
+        let engine = TextEngine::new(&[&["text"] as &[&str]; 3]).with_links(
+            0,
+            vec![web(
+                "https://page.example/",
+                vec![area(0.0, 0.0, 612.0, 792.0)],
+            )],
+        );
+        let mut h = linking(&engine);
+        for _ in 0..3 {
+            h.app.view.apply(Action::ZoomIn);
+        }
+        h.frames(2, vec![]);
+        let at = screen_pos(&h, 0, 300.0, 300.0);
+        hover_link(&mut h, at);
+        let bar = scroll_bar_point(&h);
+        assert!(h.app.view.layout().page_rect(0).unwrap().width > h.size.x);
+        h.frames(3, vec![Event::PointerMoved(bar)]);
+        assert_ne!(h.cursor, egui::CursorIcon::PointingHand);
+    }
+
+    #[test]
+    fn topmost_of_overlapping_links_wins() {
+        let mut h = linking(&link_engine());
+        let at = screen_pos(&h, 0, 350.0, 430.0);
+        hover_link(&mut h, at);
+        h.until(|h| h.text_rect("https://y.example/").is_some());
+        assert!(h.text_rect("https://y.example/").is_some());
+        assert!(h.text_rect("https://x.example/").is_none());
+    }
+
+    #[test]
+    fn hand_appears_when_links_arrive_under_still_pointer() {
+        let engine = link_engine().gated_links();
+        let mut h = linking(&engine);
+        let at = screen_pos(&h, 0, 100.0, 96.0);
+        h.frames(5, vec![Event::PointerMoved(at)]);
+        assert_eq!(h.cursor, egui::CursorIcon::Grab);
+        engine.open_link_gate();
+        h.until(|h| h.cursor == egui::CursorIcon::PointingHand);
+        assert_eq!(h.cursor, egui::CursorIcon::PointingHand);
+    }
+
+    #[test]
+    fn web_link_shows_its_address() {
+        let mut h = linking(&link_engine());
+        let at = screen_pos(&h, 0, 100.0, 206.0);
+        hover_link(&mut h, at);
+        h.until(|h| h.text_rect("https://example.org/").is_some());
+        assert!(h.text_rect("https://example.org/").is_some());
     }
 }
