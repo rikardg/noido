@@ -1,4 +1,4 @@
-use noido_engine::Size;
+use noido_engine::{Destination, Size};
 
 use crate::{Action, Defaults, DocPoint, Layout, LayoutMode, MARGIN, StartZoom, scroll_target};
 
@@ -468,6 +468,47 @@ impl View {
         } else {
             self.show_spread(self.layout.spread_of(page), true);
         }
+    }
+
+    /// Goes to a link's `target` (the last page if past it) without
+    /// changing zoom: in continuous mode its point is centred vertically,
+    /// and horizontally only if it is out of view; without a height, the
+    /// page's top goes to the top. In paged mode its spread is shown from
+    /// the top, then the point brought into view if it isn't.
+    pub fn go_to_target(&mut self, target: &Destination) {
+        let Some(last) = self.layout.page_count().checked_sub(1) else {
+            return;
+        };
+        let page = target.page.min(last);
+        if !self.continuous() {
+            self.go_to_page(page);
+            let at = noido_text::Rect {
+                x: target.x.unwrap_or(0.0),
+                y: target.y.unwrap_or(0.0),
+                width: 0.0,
+                height: 0.0,
+            };
+            self.reveal(page, &[at]);
+            return;
+        }
+        let Some(y) = target.y else {
+            self.go_to_page(page);
+            return;
+        };
+        let point = DocPoint {
+            page,
+            x: target.x.unwrap_or(0.0),
+            y,
+        };
+        let Some((cx, cy)) = self.layout.content_point(point) else {
+            return;
+        };
+        let (width, height) = self.viewport;
+        let mut x = self.offset.0;
+        if target.x.is_some() && (cx < x || cx > x + width) {
+            x = cx - width / 2.0;
+        }
+        self.scrolled_to(x, cy - height / 2.0);
     }
 
     /// Brings `rects`, in PDF points on `page`, into view without changing
@@ -1088,6 +1129,106 @@ mod tests {
         view.reveal(99, &[rect(72.0, 300.0, 50.0, 12.0)]);
         view.reveal(3, &[]);
         assert_eq!(view.offset(), (0.0, 0.0));
+    }
+
+    fn dest(page: usize, x: Option<f32>, y: Option<f32>) -> Destination {
+        Destination { page, x, y }
+    }
+
+    fn point(page: usize, x: f32, y: f32) -> DocPoint {
+        DocPoint { page, x, y }
+    }
+
+    #[test]
+    fn go_to_target_centres_point_in_continuous() {
+        let mut view = letter_view();
+        view.go_to_target(&dest(5, Some(72.0), Some(300.0)));
+        let (x, y) = on_screen(&view, point(5, 72.0, 300.0));
+        assert!((y - 400.0).abs() < 1.0, "{y}");
+        assert!((0.0..636.0).contains(&x), "{x}");
+    }
+
+    #[test]
+    fn go_to_target_near_end_is_clamped() {
+        let mut view = letter_view();
+        view.go_to_target(&dest(9, None, Some(700.0)));
+        let max = view.layout().content_height() - 800.0;
+        assert!((view.offset().1 - max).abs() < 0.01);
+    }
+
+    #[test]
+    fn go_to_target_without_y_shows_page_top() {
+        let mut view = letter_view();
+        view.go_to_target(&dest(4, Some(72.0), None));
+        let rect = view.layout().page_rect(4).unwrap();
+        assert!((view.offset().1 - (rect.y - MARGIN)).abs() < 0.01);
+    }
+
+    #[test]
+    fn go_to_target_keeps_x_when_visible() {
+        let mut view = letter_view();
+        while view.scale() < 2.0 {
+            view.apply(Action::ZoomIn);
+        }
+        view.scrolled_to(100.0, 0.0);
+        // Page x 85 is at content x 12 + 85 * scale: on screen at scale 2.
+        view.go_to_target(&dest(3, Some(85.0), Some(300.0)));
+        assert_eq!(view.offset().0, 100.0);
+    }
+
+    #[test]
+    fn go_to_target_brings_x_into_view_when_zoomed() {
+        let mut view = letter_view();
+        while view.scale() < 2.0 {
+            view.apply(Action::ZoomIn);
+        }
+        view.scrolled_to(0.0, 0.0);
+        view.go_to_target(&dest(2, Some(400.0), Some(300.0)));
+        let (x, y) = on_screen(&view, point(2, 400.0, 300.0));
+        assert!((x - 318.0).abs() < 1.0, "{x}");
+        assert!((y - 400.0).abs() < 1.0, "{y}");
+    }
+
+    #[test]
+    fn go_to_target_in_paged_shows_spread() {
+        let mut view = paged_view();
+        view.go_to_target(&dest(6, Some(72.0), Some(300.0)));
+        assert!(!view.continuous());
+        assert_eq!(view.current_spread(), Some(6));
+        assert_eq!(view.offset().1, 0.0);
+    }
+
+    #[test]
+    fn go_to_target_in_paged_zoomed_reveals_point() {
+        let mut view = paged_view();
+        for _ in 0..4 {
+            view.apply(Action::ZoomIn);
+        }
+        view.go_to_target(&dest(3, Some(72.0), Some(600.0)));
+        assert_eq!(view.current_spread(), Some(3));
+        let (x, y) = on_screen(&view, point(3, 72.0, 600.0));
+        assert!(
+            (0.0..=636.0).contains(&x) && (0.0..=800.0).contains(&y),
+            "{x}, {y}"
+        );
+    }
+
+    #[test]
+    fn go_to_target_keeps_zoom() {
+        let mut view = letter_view();
+        view.apply(Action::ZoomIn);
+        let scale = view.scale();
+        view.go_to_target(&dest(5, Some(72.0), Some(300.0)));
+        assert_eq!(view.scale(), scale);
+        assert_eq!(view.mode(), ZoomMode::Custom);
+        assert!(view.continuous());
+    }
+
+    #[test]
+    fn go_to_target_past_end_goes_to_last_page() {
+        let mut view = paged_view();
+        view.go_to_target(&dest(42, None, None));
+        assert_eq!(view.current_spread(), Some(9));
     }
 
     #[test]
