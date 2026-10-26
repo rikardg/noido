@@ -158,9 +158,6 @@ when it is fixed.
   to `egui_kittest`. Do not fake input on the real desktop —
   on GNOME that triggers a remote-desktop permission prompt.
 
-- Settings: a starting zoom level for new documents (e.g. 100 %), as a third
-  choice beside fit width / fit page. Builds on the settings page
-  (`docs/superpowers/specs/2026-10-26-settings-design.md`).
 - Vim key layer (zathura-style), with key sequences and counts.
 - hayro render cache reused across renders (needs a self-referential holder
   for `Pdf` + `RenderCache`).
