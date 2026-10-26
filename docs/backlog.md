@@ -16,6 +16,13 @@ when it is fixed.
   `XDG_ACTIVATION_TOKEN` on); the dock shows "noido" with the document
   icon. `noido --uninstall` removes it again.
 
+- **Try links by hand (user).** In the network analysis paper: contents
+  entries and footnote markers jump and flash the target line; the
+  networkx URL on printed page 14 opens the browser; a drag starting on a
+  link pans; in paged mode (`c`) a link shows the target's spread. Vaesen's
+  contents links go to whole pages, so the flash lands on the page's top
+  line (the running head), as agreed.
+
 - **Try the LaTeX loop by hand (user).** Run `latexmk -pvc` (or repeated
   `pdflatex`) with noido open: it should follow each compile, keep the
   place, and survive a failing build.
