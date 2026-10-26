@@ -129,7 +129,7 @@ requests, answered in order:
   no line there. Extracts that one page's text and doesn't keep it.
 
 The GUI asks for a page's links when the page becomes visible and keeps
-them while the page is in the keep window, as it does textures. A failed
+them for the whole document (they are small); a reload drops them. A failed
 page answers with no links. The thread is restarted on reload like the
 others (`watch::Reload` gets a linker).
 
