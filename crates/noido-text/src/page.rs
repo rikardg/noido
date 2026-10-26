@@ -14,6 +14,9 @@ use crate::search::Forms;
 const NEW_LINE: f32 = 0.5;
 /// A gap wider than this many ems between glyphs is a space.
 const SPACE: f32 = 0.1;
+/// How far above a target point, in points, the line it names may start:
+/// hyperref puts its anchors a little above the text.
+pub const LINE_TOLERANCE: f32 = 4.0;
 
 /// A page's text in content-stream order, each character mapped back to the
 /// glyph it came from.
@@ -86,6 +89,55 @@ impl PageText {
     /// inserted spaces and newlines.
     pub fn glyph_bounds(&self, char: usize) -> Option<Rect> {
         self.chars[char].glyph.map(|g| self.bounds[g])
+    }
+
+    /// The line a link target at (`x`, `y`) names: of the lines starting
+    /// no more than [`LINE_TOLERANCE`] above `y` and reaching past `x`, the
+    /// one nearest below, by position on the page. Without `y`, the top
+    /// line. Missing coordinates don't constrain.
+    pub fn line_near(&self, x: Option<f32>, y: Option<f32>) -> Option<Rect> {
+        self.line_rects()
+            .into_iter()
+            .filter(|r| y.is_none_or(|y| r.y >= y - LINE_TOLERANCE))
+            .filter(|r| x.is_none_or(|x| r.x + r.width > x))
+            .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)))
+    }
+
+    /// The horizontal extent of the page's glyphs: (left, right).
+    pub fn text_span(&self) -> Option<(f32, f32)> {
+        let rects = self.line_rects();
+        let left = rects.iter().map(|r| r.x).reduce(f32::min)?;
+        let right = rects.iter().map(|r| r.x + r.width).reduce(f32::max)?;
+        Some((left, right))
+    }
+
+    /// Each line's bounds: the union of its glyphs'.
+    fn line_rects(&self) -> Vec<Rect> {
+        let mut lines: Vec<Option<Rect>> = Vec::new();
+        for info in &self.chars {
+            let Some(glyph) = info.glyph else {
+                continue;
+            };
+            if lines.len() <= info.line {
+                lines.resize(info.line + 1, None);
+            }
+            let b = self.bounds[glyph];
+            lines[info.line] = Some(match lines[info.line] {
+                None => b,
+                Some(r) => {
+                    let (left, top) = (r.x.min(b.x), r.y.min(b.y));
+                    let right = (r.x + r.width).max(b.x + b.width);
+                    let bottom = (r.y + r.height).max(b.y + b.height);
+                    Rect {
+                        x: left,
+                        y: top,
+                        width: right - left,
+                        height: bottom - top,
+                    }
+                }
+            });
+        }
+        lines.into_iter().flatten().collect()
     }
 }
 
@@ -278,6 +330,65 @@ mod tests {
 
     fn text(glyphs: Vec<noido_engine::Glyph>) -> String {
         PageText::new(glyphs).text().to_owned()
+    }
+
+    fn rect(x: f32, y: f32, width: f32, height: f32) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn line_near_takes_first_line_below_anchor() {
+        // Line tops at 92, 106, 120; the anchor is 2 pt above the second.
+        let page = PageText::new(page(&["one", "two", "three"]));
+        assert_eq!(
+            page.line_near(Some(72.0), Some(104.0)),
+            Some(rect(72.0, 106.0, 15.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn line_near_ignores_lines_left_of_x() {
+        let mut glyphs = line("left", 72.0, 120.0, 10.0);
+        glyphs.extend(line("right", 300.0, 130.0, 10.0));
+        let page = PageText::new(glyphs);
+        assert_eq!(
+            page.line_near(Some(300.0), Some(110.0)),
+            Some(rect(300.0, 122.0, 25.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn line_near_without_y_is_top_line() {
+        let mut glyphs = line("low", 72.0, 200.0, 10.0);
+        glyphs.extend(line("high", 72.0, 100.0, 10.0));
+        let page = PageText::new(glyphs);
+        assert_eq!(
+            page.line_near(None, None),
+            Some(rect(72.0, 92.0, 20.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn line_near_below_all_text_is_none() {
+        let page = PageText::new(page(&["a"]));
+        assert_eq!(page.line_near(None, Some(500.0)), None);
+        assert_eq!(PageText::new(Vec::new()).line_near(None, None), None);
+    }
+
+    #[test]
+    fn text_span_covers_all_lines() {
+        let page = PageText::new(page(&["ab", "abcd"]));
+        assert_eq!(page.text_span(), Some((72.0, 92.0)));
+    }
+
+    #[test]
+    fn empty_page_has_no_span() {
+        assert_eq!(PageText::new(Vec::new()).text_span(), None);
     }
 
     #[test]
