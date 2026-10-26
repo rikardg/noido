@@ -685,6 +685,11 @@ impl NoidoApp {
             Action::PreviousHit => self.step_hit(false),
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::OpenSettings => {
+                // Another noido may have saved changes since: start from
+                // them, so saving here doesn't undo them.
+                if let Some(Ok(settings)) = self.settings_file.as_ref().map(SettingsFile::load) {
+                    self.settings = settings;
+                }
                 // So Esc closes the page, not the search behind it.
                 ctx.memory_mut(|m| m.stop_text_input());
                 self.settings_page = Some(settings::Page::default());
@@ -2046,6 +2051,23 @@ mod tests {
         assert_eq!(saved.zoom, noido_core::StartZoom::Fixed);
         assert_eq!(saved.zoom_percent, percent);
         assert!(!saved.continuous);
+    }
+
+    #[test]
+    fn opening_settings_rereads_the_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = settings_in(dir.path());
+        // Another noido saved a change since this one started.
+        let file = SettingsFile::at(dir.path());
+        let mut other = Settings::default();
+        other.new_documents.continuous = false;
+        file.save(&other).unwrap();
+        open_settings(&mut h);
+        h.click_text("Dual page (default: off)");
+        h.frames(2, vec![]);
+        let saved = file.load().unwrap().new_documents;
+        assert!(saved.dual);
+        assert!(!saved.continuous, "the other window's change was lost");
     }
 
     #[test]
