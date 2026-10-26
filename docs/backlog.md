@@ -401,3 +401,26 @@ when it is fixed.
   catch a stray Grabbing.
 - No test for a drag that starts outside the pages (sidebar scroll bar,
   search text selection) and moves over them: it should show no hand.
+
+## Links (review minors, 2026-10-26)
+
+- **A click that closes a menu also follows a link** under the pointer, and
+  the hand and outline show while a menu is open. Skip link hover and
+  click while `Popup::is_any_open`. (`gui-egui/src/app.rs`, `pages`)
+- **A click that stops a fling follows the link.** Clicking to stop kinetic
+  scrolling counts as a click on whatever link is under it.
+- **A click from the frame before a reload is followed in the new
+  version.** Clear `clicked_link` and `hovered_link` in `reload()`.
+- **Non-finite coordinates.** Huge numbers in `/XYZ` or `/Rect` become `inf`
+  after the f32 cast; filter with `is_finite()` in `engine-hayro/src/links.rs`
+  (`to_page`, `page_rect`).
+- **Long URIs make huge tooltips.** Truncate the shown text (about 200
+  chars with an ellipsis); the opened URL stays whole.
+- **QuadPoints with non-numbers** are misread (`iter::<f64>()` skips them
+  and shifts the rest). Fall back to `/Rect` when any entry isn't a number.
+- **Leading whitespace in a URI** defeats the scheme check (it then does
+  nothing, which is safe). Trim before checking.
+- **An unresolvable `/Dest` doesn't fall back to `/A`.** Matches the spec;
+  try `/A` too if real files need it.
+- **No cropped-page fixture.** A page with `/CropBox [50 50 562 742]` in
+  `links.pdf` would lock in that areas and targets follow the crop box.
