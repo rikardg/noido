@@ -2381,6 +2381,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "noido-settings"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "noido-core",
+ "serde",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "noido-state"
 version = "0.1.0"
 dependencies = [

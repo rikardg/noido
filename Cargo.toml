@@ -5,6 +5,7 @@ members = [
     "crates/engine-hayro",
     "crates/noido-core",
     "crates/noido-render",
+    "crates/noido-settings",
     "crates/noido-state",
     "crates/noido-text",
     "crates/frontends/gui-egui",
@@ -21,6 +22,7 @@ noido-engine = { path = "crates/noido-engine" }
 engine-hayro = { path = "crates/engine-hayro" }
 noido-render = { path = "crates/noido-render" }
 noido-core = { path = "crates/noido-core" }
+noido-settings = { path = "crates/noido-settings" }
 noido-state = { path = "crates/noido-state" }
 noido-text = { path = "crates/noido-text" }
 hayro = "0.8"
