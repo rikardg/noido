@@ -145,6 +145,16 @@ const TEX_FONTS: &[(&str, &str, &str)] = &[
     ("SFSS", "Computer Modern", "Sans Serif"),
     ("SFSX", "Computer Modern", "Sans Serif Bold Extended"),
     ("SFSI", "Computer Modern", "Sans Serif Italic"),
+    ("SFRB", "Computer Modern", "Bold"),
+    ("SFBL", "Computer Modern", "Bold Extended Slanted"),
+    (
+        "SFXC",
+        "Computer Modern",
+        "Bold Extended Caps and Small Caps",
+    ),
+    ("SFIT", "Computer Modern", "Italic Typewriter"),
+    ("SFST", "Computer Modern", "Slanted Typewriter"),
+    ("SFUI", "Computer Modern", "Unslanted Italic"),
     ("MSAM", "AMS Symbols", "A"),
     ("MSBM", "AMS Symbols", "B"),
     ("EUFM", "Euler Fraktur", "Regular"),
@@ -338,6 +348,14 @@ mod tests {
         assert_eq!(split("CMTT9"), pair("Computer Modern", "Typewriter"));
         assert_eq!(split("CMBX12"), pair("Computer Modern", "Bold Extended"));
         assert_eq!(split("SFRM1000"), pair("Computer Modern", "Roman"));
+        assert_eq!(
+            split("SFXC1000"),
+            pair("Computer Modern", "Bold Extended Caps and Small Caps")
+        );
+        assert_eq!(
+            split("SFIT1000"),
+            pair("Computer Modern", "Italic Typewriter")
+        );
         assert_eq!(split("MSBM10"), pair("AMS Symbols", "B"));
         assert_eq!(split("EUFM10"), pair("Euler Fraktur", "Regular"));
         assert_eq!(split("EUSB10"), pair("Euler Script", "Bold"));
