@@ -38,6 +38,8 @@ const OFFSET_EPSILON: f32 = 0.5;
 const SAVE_DELAY: f64 = 2.0;
 /// The outline around the link under the pointer, in points.
 const LINK_OUTLINE_WIDTH: f32 = 1.5;
+/// The outline flashed at a link's target, in points.
+const FLASH_OUTLINE_WIDTH: f32 = 2.5;
 
 /// What egui's scroll area reported at the end of the last frame.
 #[derive(Clone, Copy)]
@@ -105,6 +107,9 @@ pub struct NoidoApp {
     links: Links,
     /// The link under the pointer this frame.
     hovered_link: Option<noido_engine::Link>,
+    /// The link clicked last frame, followed at the start of the next:
+    /// the view takes egui's offset first.
+    clicked_link: Option<noido_engine::Link>,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -196,6 +201,7 @@ impl NoidoApp {
             settings_page: None,
             links: Links::new(page_count),
             hovered_link: None,
+            clicked_link: None,
         }
     }
 
@@ -877,6 +883,7 @@ impl NoidoApp {
         for page in visible.clone() {
             self.links.want(page);
         }
+        let visible_pages = visible.clone();
         // Not over a scroll bar, the sidebar or a popup: the response
         // isn't hovered there.
         let hovered = response.hover_pos().and_then(|pos| {
@@ -931,10 +938,49 @@ impl NoidoApp {
                     egui::StrokeKind::Outside,
                 );
             }
+            if response.clicked() {
+                self.clicked_link = Some(link.clone());
+            }
             if let noido_engine::LinkTarget::Web(uri) = &link.target {
                 response.on_hover_text_at_pointer(uri);
             }
             self.hovered_link = Some(link);
+        }
+
+        if let Some((page, area, opacity)) = self.links.flash(ui.input(|i| i.time))
+            && visible_pages.contains(&page)
+            && let Some(r) = layout.page_rect(page)
+        {
+            let origin = content.min + vec2(r.x, r.y);
+            let colour = ui.visuals().hyperlink_color.gamma_multiply(opacity);
+            let min = origin + vec2(area.x, area.y) * layout.scale();
+            let size = vec2(area.width, area.height) * layout.scale();
+            painter.rect_stroke(
+                Rect::from_min_size(min, size),
+                2.0,
+                egui::Stroke::new(FLASH_OUTLINE_WIDTH, colour),
+                egui::StrokeKind::Outside,
+            );
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// Follows `link`: jumps to an internal target and flashes it, or
+    /// opens a web or mail address.
+    fn follow(&mut self, ctx: &egui::Context, link: noido_engine::Link) {
+        match link.target {
+            noido_engine::LinkTarget::Internal(target) => {
+                self.view.go_to_target(&target);
+                let last = self.view.layout().page_count().saturating_sub(1);
+                self.chosen = Some(target.page.min(last));
+                self.search_state.reader_moved();
+                self.links.start_flash(target);
+            }
+            noido_engine::LinkTarget::Web(uri) => {
+                if crate::links::opens(&uri) {
+                    ctx.open_url(egui::OpenUrl::new_tab(uri));
+                }
+            }
         }
     }
 }
@@ -965,10 +1011,13 @@ impl NoidoApp {
         self.come_forward(&ctx);
         self.receive_renders(&ctx);
         self.sidebar_view.receive(&ctx, self.view.layout());
-        self.links.receive();
+        self.links.receive(ctx.input(|i| i.time));
         self.sync_from_egui();
         self.receive_reload();
         self.handle_input(&ctx);
+        if let Some(link) = self.clicked_link.take() {
+            self.follow(&ctx, link);
+        }
         self.update_focus();
         self.update_thumbnails(&ctx);
 
@@ -1052,6 +1101,7 @@ impl NoidoApp {
             {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
+
             let size = self.last_scroll.map(|last| last.inner.size());
             self.told = size.map(|size| (wanted, size));
             self.last_scroll = Some(ScrollState {
@@ -1245,6 +1295,8 @@ mod tests {
         commands: Vec<egui::ViewportCommand>,
         /// The pointer's cursor after the last frame.
         cursor: egui::CursorIcon,
+        /// The URLs the app asked to open.
+        opened: Vec<String>,
         /// Whether the window is reported as maximised.
         maximized: bool,
         /// Hands the app new versions of the document, like the watcher.
@@ -1280,6 +1332,7 @@ mod tests {
                 shapes: vec![],
                 commands: vec![],
                 cursor: egui::CursorIcon::Default,
+                opened: vec![],
                 maximized: false,
                 reloads,
             };
@@ -1313,6 +1366,11 @@ mod tests {
                     self.commands.extend(viewport.commands.iter().cloned());
                 }
                 self.cursor = output.platform_output.cursor_icon;
+                for command in &output.platform_output.commands {
+                    if let egui::OutputCommand::OpenUrl(open) = command {
+                        self.opened.push(open.url.clone());
+                    }
+                }
                 output.drop_without_applying_deltas();
             }
         }
@@ -4458,5 +4516,201 @@ mod tests {
         hover_link(&mut h, at);
         h.until(|h| h.text_rect("https://example.org/").is_some());
         assert!(h.text_rect("https://example.org/").is_some());
+    }
+
+    /// The flash's outlines drawn last frame (wider than the hover outline).
+    fn flash_outlines(h: &Harness) -> Vec<Rect> {
+        fn find(shape: &egui::Shape, out: &mut Vec<Rect>) {
+            match shape {
+                egui::Shape::Rect(r) if r.stroke.width == FLASH_OUTLINE_WIDTH => {
+                    out.push(r.rect);
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| find(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &h.shapes {
+            find(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Hovers the link at page point (`x`, `y`) on `page`, then clicks it.
+    fn click_link(h: &mut Harness, page: usize, x: f32, y: f32) {
+        let at = screen_pos(h, page, x, y);
+        hover_link(h, at);
+        h.click(at);
+        h.frames(1, vec![]);
+    }
+
+    #[test]
+    fn click_on_internal_link_centres_target() {
+        let mut h = linking(&link_engine());
+        click_link(&mut h, 0, 100.0, 96.0);
+        let target = screen_pos(&h, 5, 72.0, 300.0);
+        let centre = h.app.last_scroll.unwrap().inner.center();
+        assert!(
+            (target.y - centre.y).abs() < 1.0,
+            "{target:?} vs {centre:?}"
+        );
+    }
+
+    #[test]
+    fn click_sets_target_as_current_page() {
+        let mut h = linking(&link_engine());
+        click_link(&mut h, 0, 100.0, 96.0);
+        assert_eq!(h.app.chosen, Some(5));
+    }
+
+    #[test]
+    fn drag_starting_on_link_pans_and_does_not_follow() {
+        let mut h = linking(&link_engine());
+        let at = screen_pos(&h, 0, 100.0, 96.0);
+        hover_link(&mut h, at);
+        h.drag(at, vec2(0.0, -100.0));
+        h.frames(2, vec![]);
+        // Panned (kinetic scrolling may carry it further), not followed.
+        let y = h.app.view.offset().1;
+        assert!(y >= 90.0, "{y}");
+        assert_eq!(h.app.chosen, None);
+    }
+
+    #[test]
+    fn click_in_paged_mode_shows_target_spread() {
+        let mut h = linking(&link_engine());
+        h.press(egui::Key::C, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(!h.app.view.continuous());
+        click_link(&mut h, 0, 100.0, 96.0);
+        assert_eq!(h.app.view.current_spread(), Some(5));
+    }
+
+    #[test]
+    fn click_on_web_link_opens_it() {
+        let mut h = linking(&link_engine());
+        click_link(&mut h, 0, 100.0, 206.0);
+        assert_eq!(h.opened, vec!["https://example.org/".to_owned()]);
+        assert_eq!(h.app.chosen, None);
+    }
+
+    #[test]
+    fn javascript_and_file_links_do_not_open() {
+        let engine = TextEngine::new(&[&["text"] as &[&str]; 3]).with_links(
+            0,
+            vec![
+                web("javascript:alert(1)", vec![area(72.0, 100.0, 100.0, 20.0)]),
+                web("file:///etc/passwd", vec![area(72.0, 200.0, 100.0, 20.0)]),
+                web("no scheme at all", vec![area(72.0, 300.0, 100.0, 20.0)]),
+            ],
+        );
+        let mut h = linking(&engine);
+        for y in [110.0, 210.0, 310.0] {
+            click_link(&mut h, 0, 100.0, y);
+        }
+        assert!(h.opened.is_empty(), "{:?}", h.opened);
+    }
+
+    #[test]
+    fn uppercase_https_and_mailto_open() {
+        let engine = TextEngine::new(&[&["text"] as &[&str]; 3]).with_links(
+            0,
+            vec![
+                web("HTTPS://EXAMPLE.ORG/", vec![area(72.0, 100.0, 100.0, 20.0)]),
+                web(
+                    "mailto:someone@example.org",
+                    vec![area(72.0, 200.0, 100.0, 20.0)],
+                ),
+            ],
+        );
+        let mut h = linking(&engine);
+        click_link(&mut h, 0, 100.0, 110.0);
+        click_link(&mut h, 0, 100.0, 210.0);
+        assert_eq!(
+            h.opened,
+            vec![
+                "HTTPS://EXAMPLE.ORG/".to_owned(),
+                "mailto:someone@example.org".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn flash_drawn_after_jump_and_gone_after_a_second() {
+        let mut h = linking(&link_engine());
+        click_link(&mut h, 0, 100.0, 96.0);
+        h.until(|h| !flash_outlines(h).is_empty());
+        assert!(!flash_outlines(&h).is_empty());
+        let flash = flash_outlines(&h);
+        assert_eq!(flash.len(), 1);
+        // No line below 300 on page 5: a bar at its height.
+        let at = screen_pos(&h, 5, 72.0, 300.0);
+        assert!(
+            (flash[0].center().y - at.y).abs() < 4.0,
+            "{flash:?} vs {at:?}"
+        );
+        h.frames(70, vec![]);
+        assert!(flash_outlines(&h).is_empty());
+    }
+
+    #[test]
+    fn new_jump_replaces_flash() {
+        let engine = link_engine().with_links(
+            5,
+            vec![internal(
+                vec![area(72.0, 280.0, 100.0, 30.0)],
+                8,
+                Some(85.0),
+            )],
+        );
+        let mut h = linking(&engine);
+        click_link(&mut h, 0, 100.0, 96.0);
+        h.until(|h| !flash_outlines(h).is_empty());
+        assert!(!flash_outlines(&h).is_empty());
+        click_link(&mut h, 5, 100.0, 295.0);
+        // Page 8's first line, from 90.4 down.
+        let line = screen_pos(&h, 8, 72.0, 90.4);
+        h.until(|h| {
+            flash_outlines(h)
+                .iter()
+                .any(|r| (r.min - line).length() < 4.0)
+        });
+        let flash = flash_outlines(&h);
+        assert_eq!(flash.len(), 1, "{flash:?}");
+        assert!(
+            (flash[0].min - line).length() < 4.0,
+            "{flash:?} vs {line:?}"
+        );
+    }
+
+    #[test]
+    fn reload_drops_links_and_flash() {
+        // The jump lands on page 5, where each version has a link of its own.
+        let old = link_engine().with_links(
+            5,
+            vec![web(
+                "https://old.example/",
+                vec![area(300.0, 250.0, 100.0, 30.0)],
+            )],
+        );
+        let mut h = linking(&old);
+        click_link(&mut h, 0, 100.0, 96.0);
+        h.until(|h| !flash_outlines(h).is_empty());
+        assert!(!flash_outlines(&h).is_empty());
+        let new = TextEngine::new(&[&["text"] as &[&str]; 10]).with_links(
+            5,
+            vec![web(
+                "https://new.example/",
+                vec![area(72.0, 330.0, 100.0, 30.0)],
+            )],
+        );
+        h.reload(Arc::new(new), recompiled_key());
+        h.frames(1, vec![]);
+        assert!(flash_outlines(&h).is_empty());
+        let stale = screen_pos(&h, 5, 350.0, 265.0);
+        h.frames(5, vec![Event::PointerMoved(stale)]);
+        assert_eq!(h.cursor, egui::CursorIcon::Grab);
+        let fresh = screen_pos(&h, 5, 100.0, 345.0);
+        hover_link(&mut h, fresh);
     }
 }
