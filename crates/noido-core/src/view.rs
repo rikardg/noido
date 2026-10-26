@@ -303,6 +303,7 @@ impl View {
             | Action::FocusSearch
             | Action::NextHit
             | Action::PreviousHit
+            | Action::OpenSettings
             | Action::Quit => {}
         }
     }
@@ -1455,5 +1456,14 @@ mod tests {
         );
         view.set_viewport_size(636.0, 800.0);
         assert!(view.state().is_none());
+    }
+
+    #[test]
+    fn open_settings_leaves_view_alone() {
+        let mut view = letter_view();
+        view.apply(Action::ScrollScreenDown);
+        let before = (view.offset(), view.scale(), view.mode());
+        view.apply(Action::OpenSettings);
+        assert_eq!((view.offset(), view.scale(), view.mode()), before);
     }
 }

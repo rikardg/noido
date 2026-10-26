@@ -13,6 +13,7 @@ pub enum Key {
     O,
     Q,
     G,
+    Comma,
     F3,
     F9,
     ArrowUp,
@@ -60,6 +61,7 @@ pub enum Action {
     FocusSearch,
     NextHit,
     PreviousHit,
+    OpenSettings,
     Quit,
 }
 
@@ -106,6 +108,7 @@ impl Keymap {
             (shift(command(Key::G)), Action::PreviousHit),
             (plain(Key::F3), Action::NextHit),
             (shift(plain(Key::F3)), Action::PreviousHit),
+            (command(Key::Comma), Action::OpenSettings),
             (command(Key::Q), Action::Quit),
         ];
         Self { bindings }
@@ -158,6 +161,7 @@ pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
         Key::O => "O",
         Key::Q => "Q",
         Key::G => "G",
+        Key::Comma => ",",
         Key::F3 => "F3",
         Key::F9 => "F9",
         Key::ArrowUp => "↑",
@@ -372,6 +376,21 @@ mod tests {
             Keymap::native().action(press(Key::Plus, false), false),
             None
         );
+    }
+
+    #[test]
+    fn mod_comma_opens_settings() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::Comma, true), false),
+            Some(Action::OpenSettings)
+        );
+        assert_eq!(keymap.action(press(Key::Comma, false), false), None);
+        assert_eq!(
+            shortcut_label(press(Key::Comma, true), Platform::Other),
+            "Ctrl+,"
+        );
+        assert_eq!(shortcut_label(press(Key::Comma, true), Platform::Mac), "⌘,");
     }
 
     #[test]
