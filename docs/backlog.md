@@ -221,6 +221,10 @@ when it is fixed.
   replaced; add the method to its delegate instead. Part of a proper macOS
   app (`.app`, cask, being the default PDF viewer), checked on a Mac; see
   `docs/investigations/2026-10-26-macos-app.md`.
+- **Releases with dist:** versioning, a hand-written changelog, a
+  Homebrew formula, released from GitHub's Actions page after a dry run.
+  After the macOS port. See
+  `docs/investigations/2026-10-26-versioning-and-releases.md`.
 - **Bringing the window forward on Windows, checked on Windows:** the
   foreground rules may need `AllowSetForegroundWindow` from the second
   launch. The handover itself no longer relies on pipe timeouts (unsupported

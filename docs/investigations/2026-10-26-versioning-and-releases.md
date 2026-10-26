@@ -2,6 +2,8 @@
 
 Date: 2026-10-26
 
+Status: decided, not started. Comes after the macOS port.
+
 ## Question
 
 How should noido be versioned, and how do releases get built and published
