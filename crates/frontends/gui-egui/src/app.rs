@@ -118,6 +118,8 @@ pub struct NoidoApp {
     /// The old view's edge after PageUp/PageDown and when its flash
     /// started: `None` while the key is still held.
     screen_edge: Option<(noido_core::DocPoint, Option<f64>)>,
+    /// Whether PageUp or PageDown repeated while held: no flash then.
+    page_key_repeated: bool,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -213,6 +215,7 @@ impl NoidoApp {
             hovered_link: None,
             clicked_link: None,
             screen_edge: None,
+            page_key_repeated: false,
         }
     }
 
@@ -591,7 +594,7 @@ impl NoidoApp {
             return;
         }
         let editing = ctx.text_edit_focused();
-        let (presses, wheel, zoom, pointer) = ctx.input(|i| {
+        let (presses, wheel, zoom, pointer, repeated) = ctx.input(|i| {
             let presses: Vec<KeyPress> = i
                 .events
                 .iter()
@@ -629,8 +632,26 @@ impl NoidoApp {
                     _ => None,
                 })
                 .collect();
-            (presses, wheel, i.zoom_delta(), i.pointer.hover_pos())
+            let repeated = i.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: egui::Key::PageUp | egui::Key::PageDown,
+                        pressed: true,
+                        repeat: true,
+                        ..
+                    }
+                )
+            });
+            (
+                presses,
+                wheel,
+                i.zoom_delta(),
+                i.pointer.hover_pos(),
+                repeated,
+            )
         });
+        self.page_key_repeated |= repeated;
 
         // egui moves focus with the arrows, and menus take them too.
         let egui_arrows = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
@@ -1025,16 +1046,19 @@ impl NoidoApp {
     }
 
     /// Starts the screen edge's flash once PageUp and PageDown are let go,
-    /// so holding one down flashes only the last edge.
+    /// unless one was held down long enough to repeat.
     fn start_screen_edge(&mut self, ctx: &egui::Context) {
-        if let Some((_, start @ None)) = &mut self.screen_edge {
-            let (held, now) = ctx.input(|i| {
-                let held = i.key_down(egui::Key::PageUp) || i.key_down(egui::Key::PageDown);
-                (held, i.time)
-            });
-            if !held {
-                *start = Some(now);
-            }
+        let (held, now) = ctx.input(|i| {
+            let held = i.key_down(egui::Key::PageUp) || i.key_down(egui::Key::PageDown);
+            (held, i.time)
+        });
+        if held {
+            return;
+        }
+        if std::mem::take(&mut self.page_key_repeated) {
+            self.screen_edge = None;
+        } else if let Some((_, start @ None)) = &mut self.screen_edge {
+            *start = Some(now);
         }
     }
 
@@ -1726,21 +1750,18 @@ mod tests {
     }
 
     #[test]
-    fn held_page_down_flashes_last_edge_after_release() {
+    fn held_page_down_flashes_nothing() {
         let mut h = Harness::new();
         h.frames(1, vec![key_event(egui::Key::PageDown, true, false)]);
-        let (_, top) = h.app.view.offset();
-        let height = h.app.view.viewport_size().1;
-        let edge = h.app.view.layout().doc_point(0.0, top + height).unwrap();
         h.frames(1, vec![key_event(egui::Key::PageDown, true, true)]);
-        h.frames(70, vec![]);
-        assert!(edge_lines(&h).is_empty(), "not while held");
-
         h.frames(1, vec![key_event(egui::Key::PageDown, false, false)]);
-        let lines = edge_lines(&h);
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        let at = screen_pos(&h, edge.page, 0.0, edge.y);
-        assert!((lines[0].2 - at.y).abs() < 1.0, "{lines:?} vs {at:?}");
+        h.frames(2, vec![]);
+        assert!(edge_lines(&h).is_empty());
+
+        // A tap after it flashes again.
+        h.frames(1, vec![key_event(egui::Key::PageDown, true, false)]);
+        h.frames(1, vec![key_event(egui::Key::PageDown, false, false)]);
+        assert_eq!(edge_lines(&h).len(), 1);
     }
 
     #[test]
