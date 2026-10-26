@@ -1,7 +1,7 @@
 //! Link annotations and their destinations, read from the page's raw
 //! dictionaries: hayro has no annotation API.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hayro::hayro_interpret::util::TransformExt;
 use hayro::hayro_syntax::Pdf;
@@ -153,7 +153,7 @@ fn named<'a>(pdf: &'a Pdf, name: &[u8]) -> Option<Array<'a>> {
     let value = catalog
         .get::<Dict>(b"Names")
         .and_then(|names| names.get::<Dict>(b"Dests"))
-        .and_then(|tree| lookup(&tree, name, 0))
+        .and_then(|tree| lookup(pdf, &tree, name, 0, &mut HashSet::new()))
         .or_else(|| catalog.get::<Dict>(b"Dests")?.get::<Object>(name))?;
     match value {
         Object::Array(array) => Some(array),
@@ -162,8 +162,15 @@ fn named<'a>(pdf: &'a Pdf, name: &[u8]) -> Option<Array<'a>> {
     }
 }
 
-/// Looks `name` up in a name tree node.
-fn lookup<'a>(node: &Dict<'a>, name: &[u8], depth: usize) -> Option<Object<'a>> {
+/// Looks `name` up in a name tree node. Each node is visited once, so
+/// nodes shared between branches (or cycles) can't make it run long.
+fn lookup<'a>(
+    pdf: &'a Pdf,
+    node: &Dict<'a>,
+    name: &[u8],
+    depth: usize,
+    visited: &mut HashSet<ObjectIdentifier>,
+) -> Option<Object<'a>> {
     if depth > MAX_TREE_DEPTH {
         return None;
     }
@@ -185,9 +192,24 @@ fn lookup<'a>(node: &Dict<'a>, name: &[u8], depth: usize) -> Option<Object<'a>> 
             }
         }
     }
-    node.get::<Array>(b"Kids")?
-        .iter::<Dict>()
-        .find_map(|kid| lookup(&kid, name, depth + 1))
+    let kids = node.get::<Array>(b"Kids")?;
+    for kid in kids.raw_iter() {
+        let kid = match kid {
+            MaybeRef::Ref(r) => {
+                let id = ObjectIdentifier::from(r);
+                if !visited.insert(id) {
+                    continue;
+                }
+                pdf.xref().get::<Dict>(id)
+            }
+            MaybeRef::NotRef(Object::Dict(dict)) => Some(dict),
+            MaybeRef::NotRef(_) => None,
+        };
+        if let Some(found) = kid.and_then(|kid| lookup(pdf, &kid, name, depth + 1, visited)) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// An explicit destination: `[page kind args…]`.

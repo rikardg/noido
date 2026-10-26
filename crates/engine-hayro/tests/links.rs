@@ -193,3 +193,16 @@ fn network_paper_links() {
     assert_eq!(web.len(), 2);
     assert_eq!(web[0], web[1]);
 }
+
+#[test]
+fn name_tree_with_shared_kids_ends() {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let links = open(&format!("{FIXTURES}/shared-names.pdf")).links(0);
+        let _ = done.send(links.map(|l| l.len()));
+    });
+    let count = finished
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("looking a name up in a tree of shared kids didn't end");
+    assert_eq!(count.unwrap(), 0);
+}

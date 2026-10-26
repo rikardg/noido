@@ -30,6 +30,11 @@ links.pdf (no text):
     K  /Dest [7 /Fit], a page number past the end   Rect 72 400 172 420
   page 1: 612x792 pt, no annotations
   page 2: 595x842 pt with /Rotate 90, no annotations
+
+shared-names.pdf:
+  page 0: 612x792 pt with one link, GoTo (nowhere); the /Names /Dests tree
+          is 40 nodes without /Limits, each with the next twice as /Kids:
+          2^39 paths through 40 objects
 """
 
 from pathlib import Path
@@ -115,8 +120,26 @@ def links() -> bytes:
     )
 
 
+def shared_names() -> bytes:
+    depth = 40
+    nodes = [
+        b"<< /Kids [%d 0 R %d 0 R] >>" % (5 + i, 5 + i) for i in range(depth - 1)
+    ] + [b"<< /Names [(other) [3 0 R /Fit]] >>"]
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R /Names << /Dests 4 0 R >> >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots"
+            b" [<< /Type /Annot /Subtype /Link /Rect [72 690 172 710]"
+            b" /A << /S /GoTo /D (nowhere) >> >>] >>",
+        ]
+        + nodes
+    )
+
+
 if __name__ == "__main__":
     here = Path(__file__).resolve().parent
     (here / "two-pages.pdf").write_bytes(two_pages())
     (here / "text.pdf").write_bytes(text())
     (here / "links.pdf").write_bytes(links())
+    (here / "shared-names.pdf").write_bytes(shared_names())
