@@ -64,6 +64,9 @@ pub fn families(fonts: &[Font]) -> Vec<Family> {
 /// A font name's family and style: ("Minion Pro", "Italic").
 pub fn family_and_style(name: &str) -> (String, String) {
     let name = without_subset(name);
+    if let Some((family, style)) = tex_name(name) {
+        return (family.to_owned(), style.to_owned());
+    }
     let (family, style) = match name.find(['-', ',']) {
         Some(i) => (&name[..i], &name[i + 1..]),
         None => (name, ""),
@@ -91,6 +94,81 @@ pub fn family_and_style(name: &str) -> (String, String) {
         family_words.join(" ")
     };
     (family, style_name(&style_words))
+}
+
+/// Classic TeX fonts, by the abbreviation their names start with; a
+/// design size follows ("CMR9"), dropped here.
+const TEX_FONTS: &[(&str, &str, &str)] = &[
+    ("CMR", "Computer Modern", "Roman"),
+    ("CMB", "Computer Modern", "Bold"),
+    ("CMBX", "Computer Modern", "Bold Extended"),
+    ("CMBXTI", "Computer Modern", "Bold Extended Italic"),
+    ("CMBXSL", "Computer Modern", "Bold Extended Slanted"),
+    ("CMTI", "Computer Modern", "Italic"),
+    ("CMSL", "Computer Modern", "Slanted"),
+    ("CMU", "Computer Modern", "Unslanted Italic"),
+    ("CMCSC", "Computer Modern", "Caps and Small Caps"),
+    ("CMMI", "Computer Modern", "Math Italic"),
+    ("CMMIB", "Computer Modern", "Math Bold Italic"),
+    ("CMSY", "Computer Modern", "Symbol"),
+    ("CMBSY", "Computer Modern", "Bold Symbol"),
+    ("CMEX", "Computer Modern", "Math Extension"),
+    ("CMTT", "Computer Modern", "Typewriter"),
+    ("CMSLTT", "Computer Modern", "Slanted Typewriter"),
+    ("CMITT", "Computer Modern", "Italic Typewriter"),
+    (
+        "CMTCSC",
+        "Computer Modern",
+        "Typewriter Caps and Small Caps",
+    ),
+    ("CMVTT", "Computer Modern", "Variable-width Typewriter"),
+    ("CMTEX", "Computer Modern", "TeX Extended ASCII"),
+    ("CMSS", "Computer Modern", "Sans Serif"),
+    ("CMSSBX", "Computer Modern", "Sans Serif Bold Extended"),
+    ("CMSSI", "Computer Modern", "Sans Serif Italic"),
+    ("CMSSDC", "Computer Modern", "Sans Serif Demibold Condensed"),
+    ("CMSSQ", "Computer Modern", "Sans Serif Quotation"),
+    ("CMSSQI", "Computer Modern", "Sans Serif Quotation Italic"),
+    ("CMDUNH", "Computer Modern", "Dunhill"),
+    ("CMFF", "Computer Modern", "Funny"),
+    ("CMFI", "Computer Modern", "Funny Italic"),
+    ("CMFIB", "Computer Modern", "Fibonacci"),
+    ("CMINCH", "Computer Modern", "Inch"),
+    // CM-Super, Computer Modern in T1 encoding: "SFRM1000".
+    ("SFRM", "Computer Modern", "Roman"),
+    ("SFBX", "Computer Modern", "Bold Extended"),
+    ("SFBI", "Computer Modern", "Bold Extended Italic"),
+    ("SFTI", "Computer Modern", "Italic"),
+    ("SFSL", "Computer Modern", "Slanted"),
+    ("SFCC", "Computer Modern", "Caps and Small Caps"),
+    ("SFTT", "Computer Modern", "Typewriter"),
+    ("SFSS", "Computer Modern", "Sans Serif"),
+    ("SFSX", "Computer Modern", "Sans Serif Bold Extended"),
+    ("SFSI", "Computer Modern", "Sans Serif Italic"),
+    ("MSAM", "AMS Symbols", "A"),
+    ("MSBM", "AMS Symbols", "B"),
+    ("EUFM", "Euler Fraktur", "Regular"),
+    ("EUFB", "Euler Fraktur", "Bold"),
+    ("EURM", "Euler Roman", "Regular"),
+    ("EURB", "Euler Roman", "Bold"),
+    ("EUSM", "Euler Script", "Regular"),
+    ("EUSB", "Euler Script", "Bold"),
+    ("EUEX", "Euler", "Extension"),
+];
+
+/// A classic TeX font's family and style: "CMMI9" is Computer Modern, Math
+/// Italic. Only a known abbreviation followed by a size of one to four
+/// digits.
+fn tex_name(name: &str) -> Option<(&'static str, &'static str)> {
+    let letters = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    let size = name.len() - letters.len();
+    if !(1..=4).contains(&size) {
+        return None;
+    }
+    TEX_FONTS
+        .iter()
+        .find(|(abbreviation, _, _)| *abbreviation == letters)
+        .map(|&(_, family, style)| (family, style))
 }
 
 /// The name without a subset prefix: six capitals and a plus.
@@ -249,9 +327,42 @@ mod tests {
     }
 
     #[test]
-    fn tex_names_stay_whole() {
-        assert_eq!(split("CMR9"), pair("CMR9", "Regular"));
-        assert_eq!(split("CMMI9"), pair("CMMI9", "Regular"));
+    fn tex_names_are_spelled_out_without_their_size() {
+        assert_eq!(split("ACEGLD+CMR6"), pair("Computer Modern", "Roman"));
+        assert_eq!(split("CMMI9"), pair("Computer Modern", "Math Italic"));
+        assert_eq!(
+            split("CMMIB10"),
+            pair("Computer Modern", "Math Bold Italic")
+        );
+        assert_eq!(split("CMSY8"), pair("Computer Modern", "Symbol"));
+        assert_eq!(split("CMTT9"), pair("Computer Modern", "Typewriter"));
+        assert_eq!(split("CMBX12"), pair("Computer Modern", "Bold Extended"));
+        assert_eq!(split("SFRM1000"), pair("Computer Modern", "Roman"));
+        assert_eq!(split("MSBM10"), pair("AMS Symbols", "B"));
+        assert_eq!(split("EUFM10"), pair("Euler Fraktur", "Regular"));
+        assert_eq!(split("EUSB10"), pair("Euler Script", "Bold"));
+    }
+
+    #[test]
+    fn unknown_or_sizeless_tex_like_names_stay_whole() {
+        assert_eq!(split("CMXYZ9"), pair("CMXYZ9", "Regular"));
+        assert_eq!(split("CMR"), pair("CMR", "Regular"));
+        assert_eq!(split("CMR12345"), pair("CMR12345", "Regular"));
+    }
+
+    #[test]
+    fn tex_sizes_of_one_style_are_one_style() {
+        let fonts = [font("CMR9", true), font("CMR6", true), font("CMMI9", true)];
+        assert_eq!(
+            families(&fonts),
+            vec![Family {
+                name: "Computer Modern".into(),
+                styles: vec![
+                    style("Roman", true, &["CMR9", "CMR6"]),
+                    style("Math Italic", true, &["CMMI9"]),
+                ],
+            }]
+        );
     }
 
     #[test]
