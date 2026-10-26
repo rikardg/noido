@@ -527,3 +527,28 @@ when it is fixed.
   about 4 px of text; widen the right margin to the bar width, or accept.
 - The `right` helper in `info::show` takes `&mut dyn FnMut`; a small
   generic fn would read better.
+
+## Screen edge flash (review minors, 2026-10-26)
+
+- `reload()` doesn't clear `screen_edge`, unlike the link flash: a reload
+  within the fade keeps the line on the new version. Clear it, with a test
+  like `reload_drops_links_and_flash`.
+- A finished flash whose page isn't shown (paged mode, jumped away) stays
+  in `screen_edge` until a page key; check the time before the page rect.
+- Holding PageDown to the document's end flashes nothing on release (the
+  last repeat moves nothing and clears the edge); a no-op press also
+  clears a fading line. Keep the last real edge if wanted.
+- Other moves (Home, a link) don't clear a showing or pending edge; held
+  PageDown then Home flashes off screen. Maybe clear it in `reader_moved`.
+- PageUp from inside the top margin draws the line in the margin above
+  page 0 (negative y); skip it when `y < 0`.
+- An edge in a gap between rows is a page point past the page's bottom;
+  the gap doesn't scale with zoom, so a zoom during the fade can move the
+  line out of the gap.
+- `page_keys_leave_the_old_edge` asserts the unused `x: -12.0` from the
+  margin; compare only page and y.
+- Tests: no GUI test for PageUp, a dual spread (two segments), an edge in
+  a gap, a no-op press at the end, or a flip clearing a showing flash;
+  `edge_lines` matches any line of the flash width.
+- Harness `press()` sends no release, so egui keeps the key down for the
+  rest of the test; a `tap()` helper would behave like a real tap.
