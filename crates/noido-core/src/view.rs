@@ -1,6 +1,6 @@
 use noido_engine::Size;
 
-use crate::{Action, DocPoint, Layout, LayoutMode, MARGIN, scroll_target};
+use crate::{Action, Defaults, DocPoint, Layout, LayoutMode, MARGIN, StartZoom, scroll_target};
 
 /// Smallest and largest zoom, in UI points per PDF point.
 pub const MIN_ZOOM: f32 = 0.1;
@@ -52,14 +52,32 @@ pub struct View {
 
 impl View {
     pub fn new(page_sizes: Vec<Size>) -> Self {
+        Self::with_defaults(page_sizes, &Defaults::default())
+    }
+
+    /// A view of a document with no saved state, at its top.
+    pub fn with_defaults(page_sizes: Vec<Size>, defaults: &Defaults) -> Self {
+        let has_pages = !page_sizes.is_empty();
         let mut view = Self {
             layout: Layout::new(page_sizes),
-            mode: ZoomMode::FitWidth,
+            mode: match defaults.zoom {
+                StartZoom::FitWidth => ZoomMode::FitWidth,
+                StartZoom::FitPage => ZoomMode::FitPage,
+                StartZoom::Fixed => ZoomMode::Custom,
+            },
             viewport: (0.0, 0.0),
             offset: (0.0, 0.0),
             pending: None,
         };
-        let scale = view.fit_scale(ZoomMode::FitWidth);
+        view.layout.set_mode(LayoutMode {
+            dual: defaults.dual,
+            odd_left: defaults.odd_left,
+            paged: (!defaults.continuous && has_pages).then_some(0),
+        });
+        let scale = match defaults.zoom {
+            StartZoom::Fixed => defaults.fixed_scale(),
+            _ => view.fit_scale(view.mode),
+        };
         view.layout.arrange(scale, 0.0, 0.0);
         view
     }
@@ -1368,5 +1386,74 @@ mod tests {
         assert!(view.state().is_none());
         assert!(view.continuous());
         assert_eq!(view.offset(), (0.0, 0.0));
+    }
+
+    fn defaults_view(defaults: Defaults) -> View {
+        let mut view = View::with_defaults(vec![size(612.0, 792.0); 10], &defaults);
+        view.set_viewport_size(636.0, 800.0);
+        view
+    }
+
+    #[test]
+    fn with_defaults_paged_starts_on_first_spread() {
+        let view = defaults_view(Defaults {
+            continuous: false,
+            ..Defaults::default()
+        });
+        assert!(!view.continuous());
+        assert_eq!(view.current_spread(), Some(0));
+        assert_eq!(view.offset().1, 0.0);
+    }
+
+    #[test]
+    fn with_defaults_dual_and_pairing() {
+        let view = defaults_view(Defaults {
+            dual: true,
+            odd_left: false,
+            ..Defaults::default()
+        });
+        assert!(view.dual());
+        assert!(!view.odd_left());
+        assert!(view.continuous());
+        assert_eq!(view.offset(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn with_defaults_fit_page() {
+        let view = defaults_view(Defaults {
+            zoom: StartZoom::FitPage,
+            ..Defaults::default()
+        });
+        let mut fitted = letter_view();
+        fitted.apply(Action::FitPage);
+        assert_eq!(view.mode(), ZoomMode::FitPage);
+        assert_eq!(view.scale(), fitted.scale());
+    }
+
+    #[test]
+    fn with_defaults_fixed_zoom_survives_first_viewport() {
+        let view = defaults_view(Defaults {
+            zoom: StartZoom::Fixed,
+            zoom_percent: 150,
+            dual: true,
+            ..Defaults::default()
+        });
+        assert_eq!(view.mode(), ZoomMode::Custom);
+        assert_eq!(view.scale(), 1.5);
+        assert_eq!(view.offset().1, 0.0);
+    }
+
+    #[test]
+    fn with_defaults_on_zero_pages() {
+        let mut view = View::with_defaults(
+            vec![],
+            &Defaults {
+                continuous: false,
+                zoom: StartZoom::Fixed,
+                ..Defaults::default()
+            },
+        );
+        view.set_viewport_size(636.0, 800.0);
+        assert!(view.state().is_none());
     }
 }
