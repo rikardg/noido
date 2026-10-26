@@ -217,7 +217,10 @@ when it is fixed.
   Today the running window only asks for attention.
 - **macOS open-file events.** On macOS files reach a running app as
   "open document" events, not new launches; handle them, and dropping a
-  file on the app icon.
+  file on the app icon. winit 0.30 drops them and panics if its delegate is
+  replaced; add the method to its delegate instead. Part of a proper macOS
+  app (`.app`, cask, being the default PDF viewer), checked on a Mac; see
+  `docs/investigations/2026-10-26-macos-app.md`.
 - **Bringing the window forward on Windows, checked on Windows:** the
   foreground rules may need `AllowSetForegroundWindow` from the second
   launch. The handover itself no longer relies on pipe timeouts (unsupported
