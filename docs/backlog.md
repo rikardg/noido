@@ -504,3 +504,17 @@ when it is fixed.
 - **Computer Modern says "Roman"** where other fonts' "Roman" reads
   "Regular" (`Times-Roman`). Deliberate, CM's own word; say so in the spec
   if it stays.
+
+## Document info jump fix (review minors, 2026-10-26)
+
+- **A vertical jump is still possible**: the modal centres on last frame's
+  size, so when the properties arrive (and on a second opening, which
+  starts from the last height) it may draw a frame at the old top, then
+  re-centre. The test checks only x. Look by hand; a fixed minimum height
+  for the contents would stop it.
+- `section` sets `item_spacing.y` on the shared scroll area Ui, so the
+  "File" heading is spaced unlike the later ones. Use `ui.scope` or set it
+  once in `contents`. (`gui-egui/src/info.rs`)
+- `info_stays_still_when_the_properties_arrive`: the long `title` is never
+  shown (`BookDocument` ignores the bytes); and 20 × 5 ms may be short on a
+  loaded machine. Wait until "Intervogue" shows, with a deadline.
