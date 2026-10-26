@@ -371,3 +371,9 @@ when it is fixed.
   wheel event, so it doesn't prove egui's ScrollArea is blocked by the modal.
 - Spec "Code shape" says `View::new(page_sizes, &Defaults)`; the code kept
   `View::new` and added `View::with_defaults`. Update the spec.
+- Sidebar row: "Set from current view" copies a sidebar that search opened
+  by itself (`sidebar_opened_by_search`), saving `sidebar = true` though
+  the reader never chose it. Could use `open && !opened_by_search`.
+- Sidebar row: no settings test can fail on a file without `sidebar`
+  (its default is also `bool::default()`); `new_document_opens_with_sidebar_setting`
+  checks the flag, not that the sidebar is drawn.
