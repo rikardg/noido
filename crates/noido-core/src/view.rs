@@ -48,6 +48,9 @@ pub struct View {
     offset: (f32, f32),
     /// A restored centre point waiting for the first non-empty viewport.
     pending: Option<DocPoint>,
+    /// The old view's edge after a PageUp/PageDown scroll: where the
+    /// reader goes on reading.
+    screen_edge: Option<DocPoint>,
 }
 
 impl View {
@@ -68,6 +71,7 @@ impl View {
             viewport: (0.0, 0.0),
             offset: (0.0, 0.0),
             pending: None,
+            screen_edge: None,
         };
         view.layout.set_mode(LayoutMode {
             dual: defaults.dual,
@@ -242,6 +246,12 @@ impl View {
         self.clamp_offset();
     }
 
+    /// Takes the old view's edge left by the last PageUp/PageDown, if it
+    /// scrolled: its bottom edge going down, its top edge going up.
+    pub fn take_screen_edge(&mut self) -> Option<DocPoint> {
+        self.screen_edge.take()
+    }
+
     /// Records a scroll the frontend performed itself.
     pub fn scrolled_to(&mut self, x: f32, y: f32) {
         self.offset = (x, y);
@@ -279,15 +289,7 @@ impl View {
             Action::ScrollScreenUp | Action::ScrollScreenDown if !self.continuous() => {
                 self.page_in_paged_mode(action);
             }
-            Action::ScrollScreenUp | Action::ScrollScreenDown => {
-                let y = scroll_target(
-                    action,
-                    self.offset.1,
-                    self.viewport.1,
-                    self.layout.content_height(),
-                );
-                self.scrolled_to(self.offset.0, y);
-            }
+            Action::ScrollScreenUp | Action::ScrollScreenDown => self.scroll_screen(action),
             // Like the wheel: flips where it flips, else a small step.
             // Sideways only when there's no room to scroll sideways either.
             Action::ScrollUp if self.wheel_flips() => self.wheel_flip(false),
@@ -389,16 +391,26 @@ impl View {
             self.offset.1 <= EDGE_EPSILON
         };
         if !at_edge {
-            let y = scroll_target(
-                action,
-                self.offset.1,
-                self.viewport.1,
-                self.layout.content_height(),
-            );
-            self.scrolled_to(self.offset.0, y);
+            self.scroll_screen(action);
             return;
         }
         self.flip(spread, down);
+    }
+
+    /// Scrolls a screenful, keeping the old edge facing the new view if
+    /// anything moved.
+    fn scroll_screen(&mut self, action: Action) {
+        let (x, top) = self.offset;
+        let y = scroll_target(action, top, self.viewport.1, self.layout.content_height());
+        self.scrolled_to(x, y);
+        if self.offset.1 != top {
+            let edge = if action == Action::ScrollScreenDown {
+                top + self.viewport.1
+            } else {
+                top
+            };
+            self.screen_edge = self.layout.doc_point(0.0, edge);
+        }
     }
 
     /// A wheel step in paged mode: flips to the adjacent spread when the
@@ -785,6 +797,46 @@ mod tests {
         assert_eq!(view.offset(), (0.0, 720.0));
         view.apply(Action::ScrollScreenUp);
         assert_eq!(view.offset(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn page_keys_leave_the_old_edge() {
+        let mut view = letter_view();
+        assert_eq!(view.take_screen_edge(), None);
+        view.apply(Action::ScrollScreenDown);
+        let bottom = DocPoint {
+            page: 0,
+            x: -12.0,
+            y: 788.0,
+        };
+        assert_eq!(view.take_screen_edge(), Some(bottom));
+        assert_eq!(view.take_screen_edge(), None);
+        view.apply(Action::ScrollScreenUp);
+        let top = DocPoint {
+            page: 0,
+            x: -12.0,
+            y: 708.0,
+        };
+        assert_eq!(view.take_screen_edge(), Some(top));
+    }
+
+    #[test]
+    fn no_edge_without_a_screen_scroll() {
+        let mut view = letter_view();
+        view.apply(Action::ScrollScreenUp);
+        assert_eq!(view.take_screen_edge(), None, "nothing moved");
+        view.apply(Action::ScrollDown);
+        assert_eq!(view.take_screen_edge(), None, "an arrow step");
+    }
+
+    #[test]
+    fn paged_edge_when_scrolling_not_when_flipping() {
+        let mut view = paged_view();
+        view.apply(Action::ScrollScreenDown);
+        assert_eq!(view.take_screen_edge().map(|p| p.page), Some(0));
+        view.apply(Action::ScrollScreenDown);
+        assert_eq!(view.current_spread(), Some(1));
+        assert_eq!(view.take_screen_edge(), None);
     }
 
     /// `letter_view` switched to paged mode at the top of page 0.

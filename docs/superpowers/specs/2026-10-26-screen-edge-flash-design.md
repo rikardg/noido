@@ -22,6 +22,8 @@ top edge after PageUp. A try-out; it may be tuned or dropped.
 ## Behaviour
 
 - PageDown/PageUp that scrolls: a line at the old bottom/top edge.
+- Holding PageUp/PageDown (key repeat): nothing while held; once both are
+  let go, the edge from the last press flashes. A tap flashes on release.
 - A flip to another spread in paged mode, or a key press that moves
   nothing (at the document's ends): no line.
 - The line runs across the page(s) of the row it falls on, at the old
@@ -36,5 +38,6 @@ top edge after PageUp. A try-out; it may be tuned or dropped.
 
 - `noido-core/view.rs`: a `screen_edge: Option<DocPoint>` set by the
   screen-scroll actions when the offset moved; `take_screen_edge()`.
-- `gui-egui/app.rs`: after `view.apply`, take the edge and start its flash;
-  draw it beside the link flash, one segment per page of the row.
+- `gui-egui/app.rs`: after a PageUp/PageDown `view.apply`, take the edge
+  (a flip clears it); start its flash once neither key is down; draw it
+  beside the link flash, one segment per page of the row.

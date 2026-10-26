@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
-use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Vec2, vec2};
+use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Vec2, pos2, vec2};
 use noido_core::{
     Action, Defaults, Direction, Keep, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker,
     SidebarState, THUMBNAIL_BUDGET, View, ViewState, render_scale, window_keep, window_order,
@@ -15,7 +15,7 @@ use crate::frame;
 use crate::image::PageImage;
 use crate::info;
 use crate::instance::Activation;
-use crate::links::Links;
+use crate::links::{FLASH_SECONDS, Links};
 use crate::search::{self, Search};
 use crate::settings;
 use crate::sidebar::{self, SidebarView};
@@ -115,6 +115,9 @@ pub struct NoidoApp {
     /// The link clicked last frame, followed at the start of the next:
     /// the view takes egui's offset first.
     clicked_link: Option<noido_engine::Link>,
+    /// The old view's edge after PageUp/PageDown and when its flash
+    /// started: `None` while the key is still held.
+    screen_edge: Option<(noido_core::DocPoint, Option<f64>)>,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -209,6 +212,7 @@ impl NoidoApp {
             links: Links::new(page_count),
             hovered_link: None,
             clicked_link: None,
+            screen_edge: None,
         }
     }
 
@@ -750,6 +754,9 @@ impl NoidoApp {
                 let place = |view: &View| (view.offset(), view.current_spread(), view.scale());
                 let before = place(&self.view);
                 self.view.apply(action);
+                if matches!(action, Action::ScrollScreenUp | Action::ScrollScreenDown) {
+                    self.screen_edge = self.view.take_screen_edge().map(|edge| (edge, None));
+                }
                 // An arrow at an edge moves nothing; the place stays.
                 if place(&self.view) != before {
                     self.reader_moved();
@@ -993,6 +1000,42 @@ impl NoidoApp {
             );
             ui.ctx().request_repaint();
         }
+
+        if let Some((edge, Some(start))) = self.screen_edge
+            && let Some(r) = layout.page_rect(edge.page)
+        {
+            let elapsed = ui.input(|i| i.time) - start;
+            if elapsed < FLASH_SECONDS {
+                let opacity = (1.0 - elapsed / FLASH_SECONDS) as f32;
+                let colour = ui.visuals().hyperlink_color.gamma_multiply(opacity);
+                let y = content.min.y + r.y + edge.y * layout.scale();
+                let row = layout.spread_pages(layout.spread_of(edge.page));
+                for page in row.filter_map(|page| layout.page_rect(page)) {
+                    let left = content.min.x + page.x;
+                    painter.line_segment(
+                        [pos2(left, y), pos2(left + page.width, y)],
+                        egui::Stroke::new(FLASH_OUTLINE_WIDTH, colour),
+                    );
+                }
+                ui.ctx().request_repaint();
+            } else {
+                self.screen_edge = None;
+            }
+        }
+    }
+
+    /// Starts the screen edge's flash once PageUp and PageDown are let go,
+    /// so holding one down flashes only the last edge.
+    fn start_screen_edge(&mut self, ctx: &egui::Context) {
+        if let Some((_, start @ None)) = &mut self.screen_edge {
+            let (held, now) = ctx.input(|i| {
+                let held = i.key_down(egui::Key::PageUp) || i.key_down(egui::Key::PageDown);
+                (held, i.time)
+            });
+            if !held {
+                *start = Some(now);
+            }
+        }
     }
 
     /// Follows `link`: jumps to an internal target and flashes it, or
@@ -1045,6 +1088,7 @@ impl NoidoApp {
         self.sync_from_egui();
         self.receive_reload(&ctx);
         self.handle_input(&ctx);
+        self.start_screen_edge(&ctx);
         if let Some(link) = self.clicked_link.take() {
             self.follow(&ctx, link);
         }
@@ -1625,6 +1669,95 @@ mod tests {
             h.frames(2, vec![]);
         }
         assert_eq!(h.app.view.current_spread(), Some(1));
+    }
+
+    /// The screen edge lines drawn last frame: (left, right, y) each.
+    fn edge_lines(h: &Harness) -> Vec<(f32, f32, f32)> {
+        fn find(shape: &egui::Shape, out: &mut Vec<(f32, f32, f32)>) {
+            match shape {
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.width == FLASH_OUTLINE_WIDTH =>
+                {
+                    out.push((points[0].x, points[1].x, points[0].y));
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| find(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &h.shapes {
+            find(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    fn key_event(key: egui::Key, pressed: bool, repeat: bool) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn page_down_flashes_old_bottom_edge_once_released() {
+        let mut h = Harness::new();
+        let (_, top) = h.app.view.offset();
+        let height = h.app.view.viewport_size().1;
+        let edge = h.app.view.layout().doc_point(0.0, top + height).unwrap();
+        h.frames(1, vec![key_event(egui::Key::PageDown, true, false)]);
+        h.frames(2, vec![]);
+        assert!(edge_lines(&h).is_empty(), "not while held");
+
+        h.frames(1, vec![key_event(egui::Key::PageDown, false, false)]);
+        let lines = edge_lines(&h);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let page = h.app.view.layout().page_rect(edge.page).unwrap();
+        let at = screen_pos(&h, edge.page, 0.0, edge.y);
+        let left = screen_pos(&h, edge.page, 0.0, 0.0).x;
+        assert!((lines[0].2 - at.y).abs() < 1.0, "{lines:?} vs {at:?}");
+        assert!((lines[0].0 - left).abs() < 1.0);
+        assert!((lines[0].1 - (left + page.width)).abs() < 1.0);
+
+        h.frames(70, vec![]);
+        assert!(edge_lines(&h).is_empty());
+    }
+
+    #[test]
+    fn held_page_down_flashes_last_edge_after_release() {
+        let mut h = Harness::new();
+        h.frames(1, vec![key_event(egui::Key::PageDown, true, false)]);
+        let (_, top) = h.app.view.offset();
+        let height = h.app.view.viewport_size().1;
+        let edge = h.app.view.layout().doc_point(0.0, top + height).unwrap();
+        h.frames(1, vec![key_event(egui::Key::PageDown, true, true)]);
+        h.frames(70, vec![]);
+        assert!(edge_lines(&h).is_empty(), "not while held");
+
+        h.frames(1, vec![key_event(egui::Key::PageDown, false, false)]);
+        let lines = edge_lines(&h);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let at = screen_pos(&h, edge.page, 0.0, edge.y);
+        assert!((lines[0].2 - at.y).abs() < 1.0, "{lines:?} vs {at:?}");
+    }
+
+    #[test]
+    fn paged_flip_flashes_no_edge() {
+        let mut h = Harness::new();
+        h.press(egui::Key::C, Modifiers::NONE);
+        for _ in 0..5 {
+            // Each scroll's flash fades before the next press.
+            h.frames(70, vec![]);
+            h.frames(1, vec![key_event(egui::Key::PageDown, true, false)]);
+            h.frames(1, vec![key_event(egui::Key::PageDown, false, false)]);
+            if h.app.view.current_spread() == Some(1) {
+                break;
+            }
+        }
+        assert_eq!(h.app.view.current_spread(), Some(1));
+        assert!(edge_lines(&h).is_empty());
     }
 
     #[test]
