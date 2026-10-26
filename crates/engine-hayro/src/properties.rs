@@ -63,6 +63,8 @@ fn version(version: PdfVersion) -> &'static str {
     }
 }
 
+/// hayro reads a date without an offset as offset zero, as it reads "Z":
+/// a zero offset is left unsaid rather than claimed as UTC.
 fn info_date(d: DateTime) -> Date {
     // hayro keeps the sign on the hours only.
     let minutes = i16::from(d.utc_offset_minute);
@@ -79,7 +81,7 @@ fn info_date(d: DateTime) -> Date {
         hour: d.hour,
         minute: d.minute,
         second: d.second,
-        utc_offset: Some(offset),
+        utc_offset: (offset != 0).then_some(offset),
     }
 }
 
@@ -220,30 +222,21 @@ fn xmp_date(text: &str) -> Option<Date> {
 }
 
 /// Each named font once, by name, from every page and the forms they draw
-/// (each form once, so forms that draw each other end).
+/// (each form once, so forms that draw each other end). Forms waiting to be
+/// visited are kept in a list, not on the stack: forms may nest deep.
 fn fonts(pdf: &Pdf) -> Vec<Font> {
-    let mut walk = FontWalk::default();
-    for page in pdf.pages().iter() {
-        walk.resources(page.resources());
-    }
-    walk.fonts.sort_by(|a, b| a.name.cmp(&b.name));
-    walk.fonts
-}
-
-#[derive(Default)]
-struct FontWalk {
-    fonts: Vec<Font>,
-    seen_fonts: HashSet<Font>,
-    seen_forms: HashSet<ObjectIdentifier>,
-}
-
-impl FontWalk {
-    fn resources(&mut self, resources: &Resources<'_>) {
+    let mut fonts = Vec::new();
+    let mut seen_fonts = HashSet::new();
+    let mut seen_forms: HashSet<ObjectIdentifier> = HashSet::new();
+    let mut waiting: Vec<Resources<'_>> =
+        pdf.pages().iter().map(|p| p.resources().clone()).collect();
+    waiting.reverse();
+    while let Some(resources) = waiting.pop() {
         for key in resources.fonts.keys() {
             if let Some(font) = resources.fonts.get::<Dict>(&key).and_then(|d| font(&d))
-                && self.seen_fonts.insert(font.clone())
+                && seen_fonts.insert(font.clone())
             {
-                self.fonts.push(font);
+                fonts.push(font);
             }
         }
         for key in resources.x_objects.keys() {
@@ -252,14 +245,16 @@ impl FontWalk {
             };
             let dict = form.dict();
             let is_form = dict.get::<Name>(b"Subtype").is_some_and(|s| &*s == b"Form");
-            if !is_form || !self.seen_forms.insert(form.obj_id()) {
+            if !is_form || !seen_forms.insert(form.obj_id()) {
                 continue;
             }
             if let Some(inner) = dict.get::<Dict>(b"Resources") {
-                self.resources(&Resources::new(inner));
+                waiting.push(Resources::new(inner));
             }
         }
     }
+    fonts.sort_by(|a, b| a.name.cmp(&b.name));
+    fonts
 }
 
 /// A font dictionary's name and whether it carries its font program: a
@@ -281,4 +276,31 @@ fn font(dict: &Dict<'_>) -> Option<Font> {
         name: decode_text(&name),
         embedded,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(utc_offset_hour: i8, utc_offset_minute: u8) -> DateTime {
+        DateTime {
+            year: 2024,
+            month: 3,
+            day: 5,
+            hour: 14,
+            minute: 22,
+            second: 1,
+            utc_offset_hour,
+            utc_offset_minute,
+        }
+    }
+
+    #[test]
+    fn info_date_without_offset_has_none() {
+        // hayro reads "D:20240305142201" with a zero offset, as it does "Z":
+        // the date can't tell, so it says nothing.
+        assert_eq!(info_date(info(0, 0)).utc_offset, None);
+        assert_eq!(info_date(info(1, 0)).utc_offset, Some(60));
+        assert_eq!(info_date(info(-4, 30)).utc_offset, Some(-270));
+    }
 }

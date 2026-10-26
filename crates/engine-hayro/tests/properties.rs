@@ -97,3 +97,51 @@ fn a_bare_document_has_no_properties() {
         }
     );
 }
+
+/// A PDF whose page has form X1, which has form X2, … down to X`depth`.
+fn nested_forms(depth: usize) -> Vec<u8> {
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /XObject << /X 4 0 R >> >> >>"
+            .to_owned(),
+    ];
+    for i in 0..depth {
+        let inner = if i + 1 < depth {
+            format!("/XObject << /X {} 0 R >>", 5 + i)
+        } else {
+            "/Font << /F << /Type /Font /Subtype /Type1 /BaseFont /Deepest >> >>".to_owned()
+        };
+        objects.push(format!(
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << {inner} >> \
+             /Length 0 >>\nstream\n\nendstream"
+        ));
+    }
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend(format!("{} 0 obj\n{body}\nendobj\n", i + 1).bytes());
+    }
+    let xref = out.len();
+    out.extend(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).bytes());
+    for offset in offsets {
+        out.extend(format!("{offset:010} 00000 n \n").bytes());
+    }
+    out.extend(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .bytes(),
+    );
+    out
+}
+
+#[test]
+fn deeply_nested_forms_do_not_overflow_the_stack() {
+    let bytes: PdfBytes = Arc::new(nested_forms(5_000));
+    let fonts = HayroEngine.open(bytes).unwrap().properties().fonts;
+    assert_eq!(fonts, vec![font("Deepest", false)]);
+}
