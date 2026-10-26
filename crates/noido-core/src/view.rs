@@ -303,6 +303,7 @@ impl View {
             | Action::FocusSearch
             | Action::NextHit
             | Action::PreviousHit
+            | Action::ShowDocumentInfo
             | Action::OpenSettings
             | Action::Quit => {}
         }
@@ -1605,6 +1606,15 @@ mod tests {
         view.apply(Action::ScrollScreenDown);
         let before = (view.offset(), view.scale(), view.mode());
         view.apply(Action::OpenSettings);
+        assert_eq!((view.offset(), view.scale(), view.mode()), before);
+    }
+
+    #[test]
+    fn show_document_info_leaves_view_alone() {
+        let mut view = letter_view();
+        view.apply(Action::ScrollScreenDown);
+        let before = (view.offset(), view.scale(), view.mode());
+        view.apply(Action::ShowDocumentInfo);
         assert_eq!((view.offset(), view.scale(), view.mode()), before);
     }
 }

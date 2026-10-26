@@ -13,6 +13,7 @@ pub enum Key {
     O,
     Q,
     G,
+    I,
     Comma,
     F3,
     F9,
@@ -61,6 +62,7 @@ pub enum Action {
     FocusSearch,
     NextHit,
     PreviousHit,
+    ShowDocumentInfo,
     OpenSettings,
     Quit,
 }
@@ -108,6 +110,7 @@ impl Keymap {
             (shift(command(Key::G)), Action::PreviousHit),
             (plain(Key::F3), Action::NextHit),
             (shift(plain(Key::F3)), Action::PreviousHit),
+            (command(Key::I), Action::ShowDocumentInfo),
             (command(Key::Comma), Action::OpenSettings),
             (command(Key::Q), Action::Quit),
         ];
@@ -161,6 +164,7 @@ pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
         Key::O => "O",
         Key::Q => "Q",
         Key::G => "G",
+        Key::I => "I",
         Key::Comma => ",",
         Key::F3 => "F3",
         Key::F9 => "F9",
@@ -376,6 +380,21 @@ mod tests {
             Keymap::native().action(press(Key::Plus, false), false),
             None
         );
+    }
+
+    #[test]
+    fn mod_i_shows_document_info() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::I, true), false),
+            Some(Action::ShowDocumentInfo)
+        );
+        assert_eq!(keymap.action(press(Key::I, false), false), None);
+        assert_eq!(
+            shortcut_label(press(Key::I, true), Platform::Other),
+            "Ctrl+I"
+        );
+        assert_eq!(shortcut_label(press(Key::I, true), Platform::Mac), "⌘I");
     }
 
     #[test]

@@ -47,7 +47,10 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
             entry(Action::NextHit, "Next match"),
             entry(Action::PreviousHit, "Previous match"),
         ],
-        vec![entry(Action::OpenSettings, "Settings…")],
+        vec![
+            entry(Action::ShowDocumentInfo, "Document info…"),
+            entry(Action::OpenSettings, "Settings…"),
+        ],
         vec![entry(Action::Quit, "Quit")],
     ]
 }
@@ -71,7 +74,7 @@ mod tests {
                 vec!["Continuous", "Dual page", "Odd pages left"],
                 vec!["Show sidebar"],
                 vec!["Next match", "Previous match"],
-                vec!["Settings…"],
+                vec!["Document info…", "Settings…"],
                 vec!["Quit"],
             ]
         );
