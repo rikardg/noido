@@ -348,3 +348,26 @@ when it is fixed.
 - Tests: the glue (`proceed`, `Places::here`, the `XDG_DATA_HOME` rules)
   is untested; quoting tests check substrings rather than parsing back;
   temp dirs aren't cleaned up.
+
+## Settings (review minors, 2026-10-26)
+
+- Test module: the `/// Puts the cursor in the search field.` doc comment
+  now sits above `open_settings`; it belongs on `focus_search`.
+- The fixed-zoom `DragValue` saves the file on every drag frame and every
+  keystroke (typing 150 saves 10, 15, 150). Save on drag stop / focus loss.
+- A field of the wrong type (`zoom_percent = 150.0`, `dual = "yes"`) fails
+  the whole load, so every field falls back and the next change overwrites
+  the file. Could fall back field by field via `toml::Value`.
+- A failed settings load (bad TOML, newer `version`) is only on stderr;
+  the page could say its values are defaults, not the file's. A newer
+  version file is quietly downgraded on the next change.
+- Ctrl+Q does nothing while the settings page is open (`handle_input`
+  returns early); Quit could be let through.
+- With the page open, clicks on the title bar (move, close) hit the modal
+  backdrop and close the page first. Acceptable; check by hand.
+- `reload` builds with `View::new`, not the settings; only matters when the
+  document had no pages before the reload.
+- `view_keys_do_nothing_while_open` doesn't hover the pages before the
+  wheel event, so it doesn't prove egui's ScrollArea is blocked by the modal.
+- Spec "Code shape" says `View::new(page_sizes, &Defaults)`; the code kept
+  `View::new` and added `View::with_defaults`. Update the spec.
