@@ -219,7 +219,7 @@ pub struct Properties {
     /// Marked as tagged (structured for accessibility).
     pub tagged: bool,
     pub has_outline: bool,
-    /// Each font once, in the order first met.
+    /// Each font once, by name.
     pub fonts: Vec<Font>,
 }
 

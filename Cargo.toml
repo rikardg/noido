@@ -38,6 +38,7 @@ ctrlc = { version = "3", features = ["termination"] }
 notify = "8"
 interprocess = "2"
 unicode-normalization = "0.1"
+roxmltree = "0.21"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

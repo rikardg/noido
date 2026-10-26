@@ -31,6 +31,23 @@ links.pdf (no text):
   page 1: 612x792 pt, no annotations
   page 2: 595x842 pt with /Rotate 90, no annotations
 
+properties.pdf (PDF 1.7, no text):
+  info: /Title (Info Title), /Author "\u00c5sa Olson" in UTF-16BE,
+        /Keywords "caf\u00e9 \u2014 menu" in PDFDocEncoding,
+        /CreationDate D:20240305142201+01'00', /Producer (make_fixtures.py)
+  XMP (uncompressed): dc:title "XMP Title" and dc:creator (losing to info),
+        dc:description "XMP subject", xmp:CreatorTool "XMP Writer 1.0" as
+        an attribute, xmp:ModifyDate 2024-06-01T09:30:00-04:00
+  catalog: /MarkInfo << /Marked true >>, an outline with one item
+  fonts:
+    page 0: F1 Helvetica (Type1, not embedded), F2 ABCDEF+MinionPro-It
+            (Type1, /FontFile3), F3 GHIJKL+NotoSans-Bold (Type0, its
+            CIDFontType2 has /FontFile2), F5 a Type3 font with no name;
+            form X1, whose fonts are F4 TimesNewRomanPSMT (TrueType, a
+            descriptor without a font file) and whose own /XObject has X1
+            again
+    page 1: F1 and X1 again
+
 shared-names.pdf:
   page 0: 612x792 pt with one link, GoTo (nowhere); the /Names /Dests tree
           is 40 nodes without /Limits, each with the next twice as /Kids:
@@ -40,7 +57,7 @@ shared-names.pdf:
 from pathlib import Path
 
 
-def build_pdf(objects: list[bytes]) -> bytes:
+def build_pdf(objects: list[bytes], info: int | None = None) -> bytes:
     out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
     offsets = []
     for number, body in enumerate(objects, start=1):
@@ -51,7 +68,8 @@ def build_pdf(objects: list[bytes]) -> bytes:
     out += b"0000000000 65535 f \n"
     for offset in offsets:
         out += b"%010d 00000 n \n" % offset
-    out += b"trailer\n<< /Size %d /Root 1 0 R >>\n" % (len(objects) + 1)
+    info_entry = b" /Info %d 0 R" % info if info else b""
+    out += b"trailer\n<< /Size %d /Root 1 0 R%s >>\n" % (len(objects) + 1, info_entry)
     out += b"startxref\n%d\n%%%%EOF\n" % xref
     return bytes(out)
 
@@ -120,6 +138,62 @@ def links() -> bytes:
     )
 
 
+def properties() -> bytes:
+    xmp = (
+        b'<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>\n'
+        b'<x:xmpmeta xmlns:x="adobe:ns:meta/">\n'
+        b'<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n'
+        b'<rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"'
+        b' xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmp:CreatorTool="XMP Writer 1.0">\n'
+        b'<dc:title><rdf:Alt><rdf:li xml:lang="x-default">XMP Title</rdf:li></rdf:Alt></dc:title>\n'
+        b"<dc:creator><rdf:Seq><rdf:li>One</rdf:li><rdf:li>Two</rdf:li></rdf:Seq></dc:creator>\n"
+        b'<dc:description><rdf:Alt><rdf:li xml:lang="x-default">XMP subject</rdf:li></rdf:Alt></dc:description>\n'
+        b"<xmp:ModifyDate>2024-06-01T09:30:00-04:00</xmp:ModifyDate>\n"
+        b"</rdf:Description>\n</rdf:RDF>\n</x:xmpmeta>\n"
+        b'<?xpacket end="w"?>'
+    )
+    author = "\u00c5sa Olson".encode("utf-16-be").hex().upper().encode()
+    page = (
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]"
+        b" /Resources << /Font << %s >> /XObject << /X1 12 0 R >> >> >>"
+    )
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >>"
+            b" /Outlines 6 0 R /Metadata 7 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+            page % b"/F1 8 0 R /F2 9 0 R /F3 10 0 R /F5 14 0 R",
+            page % b"/F1 8 0 R",
+            b"<< /Title (Info Title) /Author <FEFF%s> /Keywords (caf\\351 \\204 menu)"
+            b" /CreationDate (D:20240305142201+01'00') /Producer (make_fixtures.py) >>"
+            % author,
+            b"<< /Type /Outlines /First 15 0 R /Last 15 0 R /Count 1 >>",
+            b"<< /Type /Metadata /Subtype /XML /Length %d >>\nstream\n" % len(xmp)
+            + xmp
+            + b"\nendstream",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /ABCDEF+MinionPro-It"
+            b" /FontDescriptor << /Type /FontDescriptor /FontName /ABCDEF+MinionPro-It"
+            b" /FontFile3 11 0 R >> >>",
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /GHIJKL+NotoSans-Bold"
+            b" /Encoding /Identity-H /DescendantFonts [<< /Type /Font /Subtype /CIDFontType2"
+            b" /BaseFont /GHIJKL+NotoSans-Bold /FontDescriptor << /Type /FontDescriptor"
+            b" /FontName /GHIJKL+NotoSans-Bold /FontFile2 11 0 R >> >>] >>",
+            b"<< /Length 0 >>\nstream\n\nendstream",
+            b"<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources"
+            b" << /Font << /F4 13 0 R >> /XObject << /X1 12 0 R >> >> /Length 0 >>"
+            b"\nstream\n\nendstream",
+            b"<< /Type /Font /Subtype /TrueType /BaseFont /TimesNewRomanPSMT"
+            b" /FontDescriptor << /Type /FontDescriptor /FontName /TimesNewRomanPSMT >> >>",
+            b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1 1] /FontMatrix [1 0 0 1 0 0]"
+            b" /CharProcs << >> /Encoding << /Differences [] >> /FirstChar 0 /LastChar 0"
+            b" /Widths [0] >>",
+            b"<< /Title (One) /Parent 6 0 R /Dest [3 0 R /Fit] >>",
+        ],
+        info=5,
+    )
+
+
 def shared_names() -> bytes:
     depth = 40
     nodes = [
@@ -143,3 +217,4 @@ if __name__ == "__main__":
     (here / "text.pdf").write_bytes(text())
     (here / "links.pdf").write_bytes(links())
     (here / "shared-names.pdf").write_bytes(shared_names())
+    (here / "properties.pdf").write_bytes(properties())

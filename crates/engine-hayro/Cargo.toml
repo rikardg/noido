@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 noido-engine.workspace = true
 hayro.workspace = true
+roxmltree.workspace = true
 
 [lints]
 workspace = true

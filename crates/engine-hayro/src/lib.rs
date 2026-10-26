@@ -1,6 +1,7 @@
 //! noido PDF engine backed by hayro, a pure-Rust PDF rasterizer.
 
 mod links;
+mod properties;
 mod text;
 
 use hayro::hayro_interpret::InterpreterSettings;
@@ -14,7 +15,8 @@ use hayro::{RenderCache, RenderSettings};
 use std::cell::OnceCell;
 
 use noido_engine::{
-    Document, EngineError, Glyph, Link, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size,
+    Document, EngineError, Glyph, Link, PdfBytes, PdfEngine, PixelRect, Properties, Rgba8Image,
+    Size,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -116,5 +118,9 @@ impl Document for HayroDocument {
         self.page(page)?;
         let index = self.pages.get_or_init(|| links::page_index(&self.pdf));
         Ok(links::page_links(&self.pdf, index, page))
+    }
+
+    fn properties(&self) -> Properties {
+        properties::properties(&self.pdf)
     }
 }
