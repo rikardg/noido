@@ -1,13 +1,16 @@
 //! The render thread. PDF engines are not thread-safe, so one thread opens
 //! the document, owns it, and renders pages on request. A second thread
 //! renders thumbnails on its own copy, a third extracts and searches text,
-//! and a fourth reads links.
+//! a fourth reads links, and a short-lived one reads the document's
+//! properties.
 
 mod links;
+mod properties;
 mod text;
 mod thumbnails;
 
 pub use links::{FLASH_BAR_HEIGHT, LinkReply, Linker};
+pub use properties::read_properties;
 pub use text::{MAX_HITS, SearchUpdate, TextSearcher};
 pub use thumbnails::{Thumbnail, Thumbnailer};
 
