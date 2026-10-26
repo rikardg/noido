@@ -1643,6 +1643,7 @@ dependencies = [
  "noido-core",
  "noido-engine",
  "noido-render",
+ "noido-settings",
  "noido-state",
  "notify",
  "tempfile",

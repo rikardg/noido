@@ -8,6 +8,7 @@ use noido_core::{
     THUMBNAIL_BUDGET, View, ViewState, render_scale, window_keep, window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
+use noido_settings::{Settings, SettingsFile};
 use noido_state::{DocState, Slot, Store};
 
 use crate::frame;
@@ -91,6 +92,9 @@ pub struct NoidoApp {
     /// where that left them: a version cut short mid-write mustn't cost
     /// them their place, so the next reload returns there unless they moved.
     clamped: Option<(ViewState, ViewState)>,
+    settings: Settings,
+    /// Where settings changes are saved; `None` without a config directory.
+    settings_file: Option<SettingsFile>,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -177,6 +181,8 @@ impl NoidoApp {
             watcher: None,
             activation: None,
             clamped: None,
+            settings: Settings::default(),
+            settings_file: None,
         }
     }
 
@@ -451,6 +457,21 @@ impl NoidoApp {
         if let Some(persistence) = &mut self.persistence {
             persistence.store.rekey(&mut persistence.slot, reload.key);
         }
+    }
+
+    /// Opens the document as `settings` say a new one opens; a state restored
+    /// afterwards by [`Self::with_persistence`] takes over.
+    pub fn with_settings(mut self, file: Option<SettingsFile>, settings: Settings) -> Self {
+        let layout = self.view.layout();
+        let sizes = (0..layout.page_count())
+            .filter_map(|page| layout.page_size(page))
+            .collect();
+        let (width, height) = self.view.viewport_size();
+        self.view = View::with_defaults(sizes, &settings.new_documents);
+        self.view.set_viewport_size(width, height);
+        self.settings = settings;
+        self.settings_file = file;
+        self
     }
 
     /// Restores `restored` and saves the document's state from now on.
@@ -1611,6 +1632,75 @@ mod tests {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
         });
         assert_eq!(h.centre().page, 6);
+    }
+
+    fn with_new_documents(defaults: noido_core::Defaults) -> noido_settings::Settings {
+        noido_settings::Settings {
+            new_documents: defaults,
+        }
+    }
+
+    #[test]
+    fn new_document_opens_with_settings() {
+        let settings = with_new_documents(noido_core::Defaults {
+            continuous: false,
+            dual: true,
+            ..Default::default()
+        });
+        let h = Harness::build(|app| app.with_settings(None, settings));
+        assert!(!h.app.view.continuous());
+        assert!(h.app.view.dual());
+        assert_eq!(h.app.view.current_spread(), Some(0));
+    }
+
+    #[test]
+    fn fixed_zoom_setting_opens_at_that_scale() {
+        let settings = with_new_documents(noido_core::Defaults {
+            zoom: noido_core::StartZoom::Fixed,
+            zoom_percent: 150,
+            ..Default::default()
+        });
+        let h = Harness::build(|app| app.with_settings(None, settings));
+        assert_eq!(h.app.view.scale(), 1.5);
+        assert_eq!(h.app.view.offset().1, 0.0);
+    }
+
+    #[test]
+    fn saved_state_beats_settings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let settings = with_new_documents(noido_core::Defaults {
+            zoom: noido_core::StartZoom::Fixed,
+            zoom_percent: 150,
+            continuous: false,
+            dual: true,
+            odd_left: false,
+        });
+        let restored = DocState {
+            view: ViewState {
+                zoom: noido_core::ZoomMode::FitWidth,
+                scale: 1.0,
+                continuous: true,
+                dual: false,
+                odd_left: true,
+                centre: noido_core::DocPoint {
+                    page: 2,
+                    x: 306.0,
+                    y: 400.0,
+                },
+            },
+            sidebar: SidebarState::default(),
+        };
+        let h = Harness::build(|app| {
+            app.with_settings(None, settings).with_persistence(
+                Store::at(dir.path()),
+                test_slot(dir.path()),
+                Some(restored),
+            )
+        });
+        let view = &h.app.view;
+        assert_eq!(view.mode(), noido_core::ZoomMode::FitWidth);
+        assert!(view.continuous() && !view.dual() && view.odd_left());
+        assert_eq!(h.centre().page, 2);
     }
 
     #[test]

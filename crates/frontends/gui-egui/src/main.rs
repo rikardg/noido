@@ -20,6 +20,7 @@ use clap::Parser;
 use eframe::egui;
 use engine_hayro::HayroEngine;
 use noido_render::{Renderer, TextSearcher, Thumbnailer};
+use noido_settings::{Settings, SettingsFile};
 use noido_state::{DocKey, Store};
 
 use crate::app::NoidoApp;
@@ -85,6 +86,17 @@ fn run(path: &Path) -> Result<(), String> {
         let (slot, restored) = store.load(key.clone());
         (store, slot, restored)
     });
+
+    let settings_file = SettingsFile::open_default();
+    let settings = settings_file
+        .as_ref()
+        .map_or_else(Settings::default, |file| {
+            file.load().unwrap_or_else(|e| {
+                let path = file.path().display();
+                eprintln!("noido: cannot read settings ({path}): {e}; using the defaults");
+                Settings::default()
+            })
+        });
 
     // Created up front so the render thread can wake the UI when a page is ready.
     let ctx = egui::Context::default();
@@ -155,6 +167,7 @@ fn run(path: &Path) -> Result<(), String> {
         Some(watcher) => app.with_watcher(watcher),
         None => app,
     };
+    let app = app.with_settings(settings_file, settings);
     let app = match session {
         Some((store, slot, restored)) => app.with_persistence(store, slot, restored),
         None => app,
