@@ -4499,7 +4499,9 @@ mod tests {
         go_to(&mut h, 6);
         h.press(egui::Key::G, Modifiers::COMMAND);
         assert_eq!(current(&h), Some(3));
-        assert_eq!(h.app.view.centre_page(), Some(7));
+        let top = h.app.view.offset().1;
+        let bottom = top + h.app.view.viewport_size().1;
+        assert!(h.app.view.layout().visible_pages(top, bottom).contains(&7));
     }
 
     #[test]

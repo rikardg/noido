@@ -794,7 +794,7 @@ mod tests {
     fn page_keys_scroll_a_screen() {
         let mut view = letter_view();
         view.apply(Action::ScrollScreenDown);
-        assert_eq!(view.offset(), (0.0, 720.0));
+        assert_eq!(view.offset(), (0.0, 784.0));
         view.apply(Action::ScrollScreenUp);
         assert_eq!(view.offset(), (0.0, 0.0));
     }
@@ -815,7 +815,7 @@ mod tests {
         let top = DocPoint {
             page: 0,
             x: -12.0,
-            y: 708.0,
+            y: 772.0,
         };
         assert_eq!(view.take_screen_edge(), Some(top));
     }
@@ -907,13 +907,13 @@ mod tests {
     #[test]
     fn paged_zoomed_scrolls_screenfuls() {
         let mut view = paged_view();
-        for _ in 0..3 {
+        for _ in 0..4 {
             view.apply(Action::ZoomIn);
         }
         view.scrolled_to(0.0, 0.0);
         let max_y = view.layout().content_height() - 800.0;
         view.apply(Action::ScrollScreenDown);
-        assert_eq!((view.current_spread(), view.offset().1), (Some(0), 720.0));
+        assert_eq!((view.current_spread(), view.offset().1), (Some(0), 784.0));
         view.apply(Action::ScrollScreenDown);
         assert_eq!((view.current_spread(), view.offset().1), (Some(0), max_y));
         view.apply(Action::ScrollScreenDown);

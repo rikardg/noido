@@ -183,7 +183,7 @@ pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
 }
 
 /// Fraction of the visible height that stays on screen when scrolling a screenful.
-pub const SCREEN_OVERLAP: f32 = 0.1;
+pub const SCREEN_OVERLAP: f32 = 0.02;
 
 /// The scroll offset after `action`, clamped to the document.
 pub fn scroll_target(
@@ -503,7 +503,7 @@ mod tests {
     fn screen_down_keeps_overlap() {
         assert_eq!(
             scroll_target(Action::ScrollScreenDown, 0.0, 1000.0, 5000.0),
-            900.0
+            980.0
         );
     }
 
@@ -511,7 +511,7 @@ mod tests {
     fn screen_up_from_middle() {
         assert_eq!(
             scroll_target(Action::ScrollScreenUp, 2000.0, 1000.0, 5000.0),
-            1100.0
+            1020.0
         );
     }
 
