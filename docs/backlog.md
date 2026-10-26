@@ -476,3 +476,24 @@ when it is fixed.
   in the info page keeping the search text.
 - **Encryption isn't shown**: hayro doesn't expose the trailer. Revisit if
   it does.
+
+## TeX font names (review minors, 2026-10-26)
+
+- **"Slanted" doesn't count as slanted** in `slanted()` (only "Slant"), so
+  Slanted, Bold Extended Slanted and Slanted Typewriter sort among the
+  upright styles. Add it, with a `families()` test on CMSL10 and CMR10.
+- **Roman isn't first** among Computer Modern's styles: most tie at weight
+  400 and sort by name, so "Caps and Small Caps" and "Math Italic" come
+  first. Rank Roman (and Regular) first among equals.
+- **`CMINCH` never matches**: it has no design size, and the rule wants one.
+  Drop it or allow it without.
+- **Missing common TeX fonts**: `LASY` (LaTeX symbols), `CMEXB`, `RSFS`,
+  `STMARY`, `WASY`, `LCIRCLE`/`LINE`; CM-Super `SFSO` (check the cm-super
+  README).
+- **`EUEX`** is family "Euler", style "Extension", unlike the other Euler
+  entries; "Euler Extension" / Regular would match them.
+- **Lowercase TeX names** (`cmr10`, from old dvips bitmap output) stay raw;
+  compare ignoring ASCII case.
+- **Computer Modern says "Roman"** where other fonts' "Roman" reads
+  "Regular" (`Times-Roman`). Deliberate, CM's own word; say so in the spec
+  if it stays.
