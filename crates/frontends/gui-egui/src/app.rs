@@ -4,8 +4,8 @@ use std::time::Duration;
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Vec2, vec2};
 use noido_core::{
-    Action, Direction, Keep, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker, SidebarState,
-    THUMBNAIL_BUDGET, View, ViewState, render_scale, window_keep, window_order,
+    Action, Defaults, Direction, Keep, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker,
+    SidebarState, THUMBNAIL_BUDGET, View, ViewState, render_scale, window_keep, window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
 use noido_settings::{Settings, SettingsFile};
@@ -473,6 +473,7 @@ impl NoidoApp {
         let (width, height) = self.view.viewport_size();
         self.view = View::with_defaults(sizes, &settings.new_documents);
         self.view.set_viewport_size(width, height);
+        self.sidebar.open = settings.new_documents.sidebar;
         self.settings = settings;
         self.settings_file = file;
         self
@@ -1003,7 +1004,11 @@ impl NoidoApp {
         let Some(page) = &mut self.settings_page else {
             return;
         };
-        let output = settings::show(page, ctx, &mut self.settings, self.view.state());
+        let current = self
+            .view
+            .state()
+            .map(|state| Defaults::from_view(&state, self.sidebar.open));
+        let output = settings::show(page, ctx, &mut self.settings, current);
         if output.changed
             && let Some(file) = &self.settings_file
         {
@@ -1716,6 +1721,48 @@ mod tests {
     }
 
     #[test]
+    fn new_document_opens_with_sidebar_setting() {
+        let settings = with_new_documents(noido_core::Defaults {
+            sidebar: true,
+            ..Default::default()
+        });
+        let h = Harness::build(|app| app.with_settings(None, settings));
+        assert!(h.app.sidebar.open);
+    }
+
+    #[test]
+    fn saved_sidebar_beats_settings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let settings = with_new_documents(noido_core::Defaults {
+            sidebar: true,
+            ..Default::default()
+        });
+        let restored = DocState {
+            view: ViewState {
+                zoom: noido_core::ZoomMode::FitWidth,
+                scale: 1.0,
+                continuous: true,
+                dual: false,
+                odd_left: true,
+                centre: noido_core::DocPoint {
+                    page: 0,
+                    x: 306.0,
+                    y: 400.0,
+                },
+            },
+            sidebar: SidebarState::default(),
+        };
+        let h = Harness::build(|app| {
+            app.with_settings(None, settings).with_persistence(
+                Store::at(dir.path()),
+                test_slot(dir.path()),
+                Some(restored),
+            )
+        });
+        assert!(!h.app.sidebar.open);
+    }
+
+    #[test]
     fn fixed_zoom_setting_opens_at_that_scale() {
         let settings = with_new_documents(noido_core::Defaults {
             zoom: noido_core::StartZoom::Fixed,
@@ -1736,6 +1783,7 @@ mod tests {
             continuous: false,
             dual: true,
             odd_left: false,
+            sidebar: true,
         });
         let restored = DocState {
             view: ViewState {
@@ -1957,6 +2005,7 @@ mod tests {
             "Continuous (default: on)",
             "Dual page (default: off)",
             "Odd pages left (default: on)",
+            "Show sidebar (default: off)",
             "Set from current view",
         ] {
             assert!(h.text_rect(text).is_some(), "{text:?} not drawn");
@@ -2042,6 +2091,7 @@ mod tests {
         let mut h = settings_in(dir.path());
         h.press(egui::Key::Equals, Modifiers::COMMAND);
         h.press(egui::Key::C, Modifiers::NONE);
+        h.press(egui::Key::F9, Modifiers::NONE);
         h.frames(2, vec![]);
         let percent = (h.app.view.scale() * 100.0).round() as u32;
         open_settings(&mut h);
@@ -2051,6 +2101,19 @@ mod tests {
         assert_eq!(saved.zoom, noido_core::StartZoom::Fixed);
         assert_eq!(saved.zoom_percent, percent);
         assert!(!saved.continuous);
+        assert!(saved.sidebar);
+    }
+
+    #[test]
+    fn sidebar_row_saves() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = settings_in(dir.path());
+        open_settings(&mut h);
+        h.click_text("Show sidebar (default: off)");
+        h.frames(2, vec![]);
+        let saved = SettingsFile::at(dir.path()).load().unwrap();
+        assert!(saved.new_documents.sidebar);
+        assert!(!h.app.sidebar.open, "the open document changed");
     }
 
     #[test]

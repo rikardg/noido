@@ -108,6 +108,7 @@ struct NewDocuments {
     continuous: bool,
     dual: bool,
     odd_left: bool,
+    sidebar: bool,
 }
 
 impl Default for NewDocuments {
@@ -129,6 +130,7 @@ impl From<&Defaults> for NewDocuments {
             continuous: defaults.continuous,
             dual: defaults.dual,
             odd_left: defaults.odd_left,
+            sidebar: defaults.sidebar,
         }
     }
 }
@@ -146,6 +148,7 @@ impl NewDocuments {
             continuous: self.continuous,
             dual: self.dual,
             odd_left: self.odd_left,
+            sidebar: self.sidebar,
         }
         .clamped()
     }
@@ -183,6 +186,7 @@ mod tests {
                 continuous: false,
                 dual: true,
                 odd_left: false,
+                sidebar: true,
             },
         };
         file(&dir).save(&settings).unwrap();

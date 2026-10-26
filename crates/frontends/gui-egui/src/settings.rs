@@ -1,7 +1,7 @@
 //! The settings page: what a document noido hasn't seen opens with.
 
 use eframe::egui;
-use noido_core::{Defaults, MAX_ZOOM_PERCENT, MIN_ZOOM_PERCENT, StartZoom, ViewState};
+use noido_core::{Defaults, MAX_ZOOM_PERCENT, MIN_ZOOM_PERCENT, StartZoom};
 use noido_settings::Settings;
 
 /// The open settings page.
@@ -17,13 +17,13 @@ pub struct Output {
     pub close: bool,
 }
 
-/// Shows the page over the window. `current` is the open document's view,
-/// for "Set from current view".
+/// Shows the page over the window. `current` is how the open document is
+/// shown, for "Set from current view".
 pub fn show(
     page: &Page,
     ctx: &egui::Context,
     settings: &mut Settings,
-    current: Option<ViewState>,
+    current: Option<Defaults>,
 ) -> Output {
     let before = *settings;
     let new = &mut settings.new_documents;
@@ -56,6 +56,7 @@ pub fn show(
         ui.checkbox(&mut new.continuous, label("Continuous", builtin.continuous));
         ui.checkbox(&mut new.dual, label("Dual page", builtin.dual));
         ui.checkbox(&mut new.odd_left, label("Odd pages left", builtin.odd_left));
+        ui.checkbox(&mut new.sidebar, label("Show sidebar", builtin.sidebar));
         ui.add_space(8.0);
 
         let from_view = ui.add_enabled(
@@ -63,9 +64,9 @@ pub fn show(
             egui::Button::new("Set from current view"),
         );
         if from_view.clicked()
-            && let Some(current) = &current
+            && let Some(current) = current
         {
-            *new = Defaults::from_view(current);
+            *new = current;
         }
         if let Some(error) = &page.error {
             ui.add_space(4.0);

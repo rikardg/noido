@@ -25,6 +25,8 @@ pub struct Defaults {
     pub continuous: bool,
     pub dual: bool,
     pub odd_left: bool,
+    /// Whether the sidebar is shown.
+    pub sidebar: bool,
 }
 
 impl Default for Defaults {
@@ -35,6 +37,7 @@ impl Default for Defaults {
             continuous: true,
             dual: false,
             odd_left: true,
+            sidebar: false,
         }
     }
 }
@@ -48,9 +51,10 @@ impl Defaults {
         }
     }
 
-    /// The defaults that open documents like `state`: a custom zoom becomes a
-    /// fixed one at its rounded percentage.
-    pub fn from_view(state: &ViewState) -> Self {
+    /// The defaults that open documents like `state`, with the sidebar
+    /// shown or not: a custom zoom becomes a fixed one at its rounded
+    /// percentage.
+    pub fn from_view(state: &ViewState, sidebar: bool) -> Self {
         let (zoom, zoom_percent) = match state.zoom {
             ZoomMode::FitWidth => (StartZoom::FitWidth, Self::default().zoom_percent),
             ZoomMode::FitPage => (StartZoom::FitPage, Self::default().zoom_percent),
@@ -62,6 +66,7 @@ impl Defaults {
             continuous: state.continuous,
             dual: state.dual,
             odd_left: state.odd_left,
+            sidebar,
         }
         .clamped()
     }
@@ -102,6 +107,7 @@ mod tests {
                 continuous: true,
                 dual: false,
                 odd_left: true,
+                sidebar: false,
             }
         );
     }
@@ -119,7 +125,7 @@ mod tests {
 
     #[test]
     fn from_view_fit_modes() {
-        let defaults = Defaults::from_view(&state(ZoomMode::FitPage, 0.7));
+        let defaults = Defaults::from_view(&state(ZoomMode::FitPage, 0.7), true);
         assert_eq!(
             defaults,
             Defaults {
@@ -128,20 +134,21 @@ mod tests {
                 continuous: false,
                 dual: true,
                 odd_left: false,
+                sidebar: true,
             }
         );
-        let defaults = Defaults::from_view(&state(ZoomMode::FitWidth, 0.7));
+        let defaults = Defaults::from_view(&state(ZoomMode::FitWidth, 0.7), false);
         assert_eq!(defaults.zoom, StartZoom::FitWidth);
     }
 
     #[test]
     fn from_view_custom_becomes_fixed() {
-        let defaults = Defaults::from_view(&state(ZoomMode::Custom, 1.234));
+        let defaults = Defaults::from_view(&state(ZoomMode::Custom, 1.234), false);
         assert_eq!(
             (defaults.zoom, defaults.zoom_percent),
             (StartZoom::Fixed, 123)
         );
-        let defaults = Defaults::from_view(&state(ZoomMode::Custom, 9.0));
+        let defaults = Defaults::from_view(&state(ZoomMode::Custom, 9.0), false);
         assert_eq!(defaults.zoom_percent, 400);
     }
 }
