@@ -559,3 +559,14 @@ when it is fixed.
   took the key); harmless, matches the spec.
 - No test for PageUp held then PageDown tapped (no flash), or a hold at
   the document's end followed by a tap (flashes).
+
+## Page step 98% (review minors, 2026-10-26)
+
+- `next_after_scrolling_goes_from_view` reaches page 6 with `go_to`, which
+  presses PageDown, so it depends on the step size; it now checks the hit
+  is visible rather than centred. Placing the view directly with
+  `scrolled_to` would make it independent and bring back the centred
+  check.
+- The page-keys spec and plan (2026-10-25) and the screen edge flash spec
+  still say 90% / `SCREEN_OVERLAP = 0.1`; they are dated records, superseded
+  by `2026-10-26-page-step-98-design.md`.
