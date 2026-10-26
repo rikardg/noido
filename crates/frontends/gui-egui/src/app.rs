@@ -791,10 +791,12 @@ impl NoidoApp {
             .collect();
         self.hovered_link = None;
         let layout = self.view.layout();
-        // Clicks follow links; drags still pan, as they don't click.
+        // Clicks follow links; drags still pan, as they don't click. Not
+        // focusable (`Sense::click()` is): a focused page area would take
+        // the arrow keys from scrolling.
         let (content, response) = ui.allocate_exact_size(
             vec2(layout.content_width(), layout.content_height()),
-            Sense::click(),
+            Sense::CLICK,
         );
 
         // Until the first frame has measured the window, the layout is a placeholder.
@@ -4712,5 +4714,21 @@ mod tests {
         assert_eq!(h.cursor, egui::CursorIcon::Grab);
         let fresh = screen_pos(&h, 5, 100.0, 345.0);
         hover_link(&mut h, fresh);
+    }
+
+    #[test]
+    fn tab_never_focuses_the_page_area() {
+        let mut h = linking(&link_engine());
+        for _ in 0..40 {
+            h.press(egui::Key::Tab, Modifiers::NONE);
+            let focused = h.ctx.memory(|m| m.focused());
+            if let Some(response) = focused.and_then(|id| h.ctx.read_response(id)) {
+                assert!(
+                    response.rect.height() < 2000.0,
+                    "the page area took focus: {:?}",
+                    response.rect
+                );
+            }
+        }
     }
 }
