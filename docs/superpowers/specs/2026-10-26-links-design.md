@@ -63,7 +63,7 @@ same URI (16th page, printed page 14).
 
 | Approach | Trade-off | Outcome |
 | --- | --- | --- |
-| 1. A links thread of its own | Never waits behind rendering or a search; link code in one place, testable on its own. One more parsed copy (1–3 MB, bytes shared) | **Chosen** |
+| 1. A links thread of its own | Never waits behind rendering or a search; link code in one place, testable on its own. One more parsed copy (1–3 MB, bytes shared); measured with 20 pages' links and flashes: +2.7 MB (network paper), +4.2 MB (tracemonkey), +5.0 MB (Vaesen) | **Chosen** |
 | 2. Links come with each rendered page; the flash line from the search thread | No new thread; but one feature spread over two threads, the flash waits behind a running search, and every render pays for link parsing | Rejected |
 | 3. Everything from the search thread | During the first text pass or a search on a big book, links on the visible page show up late; hovering feels broken | Rejected |
 
