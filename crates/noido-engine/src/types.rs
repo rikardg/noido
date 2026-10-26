@@ -200,3 +200,48 @@ mod tests {
         );
     }
 }
+
+/// What a document says about itself. Fields it doesn't give are `None`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Properties {
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub subject: Option<String>,
+    pub keywords: Option<String>,
+    /// The application the document was made in.
+    pub creator: Option<String>,
+    /// The application that made the PDF.
+    pub producer: Option<String>,
+    pub created: Option<Date>,
+    pub modified: Option<Date>,
+    /// "1.7", "2.0".
+    pub version: Option<String>,
+    /// Marked as tagged (structured for accessibility).
+    pub tagged: bool,
+    pub has_outline: bool,
+    /// Each font once, in the order first met.
+    pub fonts: Vec<Font>,
+}
+
+/// A date as the document writes it. `utc_offset` is in minutes, `None`
+/// when the date doesn't say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Date {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+    pub utc_offset: Option<i16>,
+}
+
+/// A font the document uses.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Font {
+    /// As the document names it: "ABCDEF+MinionPro-It".
+    pub name: String,
+    /// Whether the document carries the font; if not, it only names it and
+    /// the reader's system stands in.
+    pub embedded: bool,
+}

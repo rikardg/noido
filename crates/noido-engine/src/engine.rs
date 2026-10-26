@@ -4,7 +4,7 @@ use std::sync::Arc;
 /// thread and engine.
 pub type PdfBytes = Arc<Vec<u8>>;
 
-use crate::{Glyph, Link, PixelRect, Rgba8Image, Size};
+use crate::{Glyph, Link, PixelRect, Properties, Rgba8Image, Size};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -52,6 +52,13 @@ pub trait Document {
         let _ = page;
         Ok(Vec::new())
     }
+
+    /// What the document says about itself, and the fonts it uses. Slow on
+    /// a long document: every page's resources are visited. Engines that
+    /// can't read it give none.
+    fn properties(&self) -> Properties {
+        Properties::default()
+    }
 }
 
 #[cfg(test)]
@@ -75,6 +82,11 @@ mod tests {
         fn render_tile(&self, _: usize, _: f32, _: PixelRect) -> Result<Rgba8Image, EngineError> {
             Err(EngineError::Render("not drawn".into()))
         }
+    }
+
+    #[test]
+    fn document_without_properties_has_none() {
+        assert_eq!(OnePage.properties(), crate::Properties::default());
     }
 
     #[test]
