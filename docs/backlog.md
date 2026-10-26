@@ -251,6 +251,14 @@ when it is fixed.
 - **More link kinds.** Links to another file (GoToR), named actions
   (NextPage, PrevPage, FirstPage, LastPage), Launch. Today they do nothing.
 
+- **Font names from the font files.** Read the family name embedded in each
+  font program (Type 1 `FamilyName`, CFF and TrueType `name` tables) for
+  the document info page, falling back to the name rules in
+  `noido-core/src/fonts.rs`. Would fix run-together names
+  (`PlayfairDisplay`), non-ASCII names and TeX fonts the table doesn't
+  know; needs three font formats parsed (see what hayro exposes); nothing
+  for fonts that aren't embedded, and writers put junk there.
+
 ## Far future
 
 - **Our own OCR** for scanned PDFs without a usable text layer, so search,
@@ -460,9 +468,8 @@ when it is fixed.
   word: `PlayfairDisplay` becomes Playfair / Display while
   `PlayfairDisplay-Bold` is Playfair Display. Peel only weight and slant
   words off names without a separator.
-- **TeX names stay cryptic** (CMR9, CMMI9, CMSY8): map the Computer Modern
-  and Latin Modern abbreviations to their names. `Code2000` becomes
-  "Code 2000".
+- **`Code2000` becomes "Code 2000"**: a number after a small letter is
+  split off, which is right for "Source Serif 4" but not here.
 - **"1000 kB"** for 999 999 bytes: pick the unit after rounding.
 - **Test gaps**: no unit tests of their own for `xmp_date` and `xmp_value`;
   none for malformed XMP, a BOM'd UTF-16 string beyond the fixture, or Esc
