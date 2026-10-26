@@ -4,7 +4,7 @@ use std::sync::Arc;
 /// thread and engine.
 pub type PdfBytes = Arc<Vec<u8>>;
 
-use crate::{Glyph, PixelRect, Rgba8Image, Size};
+use crate::{Glyph, Link, PixelRect, Rgba8Image, Size};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -44,5 +44,41 @@ pub trait Document {
     fn text(&self, page: usize) -> Result<Vec<Glyph>, EngineError> {
         let _ = page;
         Ok(Vec::new())
+    }
+
+    /// The links on `page`, in annotation order: where they overlap, the
+    /// later one is on top. Engines that can't read links give none.
+    fn links(&self, page: usize) -> Result<Vec<Link>, EngineError> {
+        let _ = page;
+        Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct OnePage;
+
+    impl Document for OnePage {
+        fn page_count(&self) -> usize {
+            1
+        }
+
+        fn page_size(&self, _: usize) -> Result<Size, EngineError> {
+            Ok(Size {
+                width: 612.0,
+                height: 792.0,
+            })
+        }
+
+        fn render_tile(&self, _: usize, _: f32, _: PixelRect) -> Result<Rgba8Image, EngineError> {
+            Err(EngineError::Render("not drawn".into()))
+        }
+    }
+
+    #[test]
+    fn document_without_links_has_none() {
+        assert_eq!(OnePage.links(0).unwrap(), Vec::<crate::Link>::new());
     }
 }

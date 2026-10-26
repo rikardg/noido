@@ -110,6 +110,41 @@ pub struct Glyph {
     pub invisible: bool,
 }
 
+/// An upright rectangle on the page, in PDF points from its top-left.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// A link on a page: where it is and where it goes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Link {
+    /// The areas that follow it: one, or several for a link over wrapped
+    /// lines.
+    pub areas: Vec<Rect>,
+    pub target: LinkTarget,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum LinkTarget {
+    /// A place in this document.
+    Internal(Destination),
+    /// A URI, as the document gives it.
+    Web(String),
+}
+
+/// A place in the document: a page, and optionally a point on it in page
+/// points. A missing coordinate means the destination doesn't say.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Destination {
+    pub page: usize,
+    pub x: Option<f32>,
+    pub y: Option<f32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

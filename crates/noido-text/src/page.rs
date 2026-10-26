@@ -2,6 +2,7 @@
 
 use std::sync::OnceLock;
 
+pub use noido_engine::Rect;
 use noido_engine::{Glyph, Point};
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
@@ -13,15 +14,6 @@ use crate::search::Forms;
 const NEW_LINE: f32 = 0.5;
 /// A gap wider than this many ems between glyphs is a space.
 const SPACE: f32 = 0.1;
-
-/// An upright rectangle on the page, in PDF points from its top-left.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rect {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
-}
 
 /// A page's text in content-stream order, each character mapped back to the
 /// glyph it came from.
