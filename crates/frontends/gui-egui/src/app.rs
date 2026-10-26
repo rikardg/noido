@@ -984,8 +984,14 @@ impl NoidoApp {
             if move_scroll {
                 scroll_area = scroll_area.scroll_offset(wanted);
             }
+            // A hand where a drag pans (not over the scroll bars), unless a
+            // resize edge or the sidebar's handle set a cursor already.
+            if ui.ctx().output(|o| o.cursor_icon) == egui::CursorIcon::Default {
+                scroll_area = scroll_area
+                    .on_hover_cursor(egui::CursorIcon::Grab)
+                    .on_drag_cursor(egui::CursorIcon::Grabbing);
+            }
             let output = scroll_area.show_viewport(ui, |ui, viewport| self.pages(ui, viewport));
-            hand_cursor(ui, output.inner_rect);
             let size = self.last_scroll.map(|last| last.inner.size());
             self.told = size.map(|size| (wanted, size));
             self.last_scroll = Some(ScrollState {
@@ -1022,24 +1028,6 @@ impl NoidoApp {
             self.settings_page = None;
         }
     }
-}
-
-/// The hand over the page area, closed while a drag that started there pans:
-/// not under a menu or dialog, nor where a resize edge set its own cursor.
-fn hand_cursor(ui: &egui::Ui, area: Rect) {
-    let ctx = ui.ctx();
-    if !ui.rect_contains_pointer(area) || ctx.output(|o| o.cursor_icon) != egui::CursorIcon::Default
-    {
-        return;
-    }
-    let dragging = ctx.input(|i| {
-        i.pointer.primary_down() && i.pointer.press_origin().is_some_and(|p| area.contains(p))
-    });
-    ctx.set_cursor_icon(if dragging {
-        egui::CursorIcon::Grabbing
-    } else {
-        egui::CursorIcon::Grab
-    });
 }
 
 /// Whether the reader is still where `b` left them: same page and modes.
@@ -2319,6 +2307,37 @@ mod tests {
         h.frames(1, vec![button(false)]);
         h.frames(1, vec![]);
         assert_eq!(h.cursor, egui::CursorIcon::Grab);
+    }
+
+    /// A point on the vertical scroll bar, at the page area's right edge.
+    fn scroll_bar_point(h: &Harness) -> egui::Pos2 {
+        let inner = h.app.last_scroll.unwrap().inner;
+        pos2(inner.right() - 3.0, inner.top() + 40.0)
+    }
+
+    #[test]
+    fn no_hand_over_scroll_bar() {
+        let mut h = Harness::new();
+        let at = scroll_bar_point(&h);
+        h.frames(3, vec![Event::PointerMoved(at)]);
+        h.frames(2, vec![]);
+        assert_eq!(h.cursor, egui::CursorIcon::Default);
+    }
+
+    #[test]
+    fn no_closed_hand_dragging_scroll_bar() {
+        let mut h = Harness::new();
+        let at = scroll_bar_point(&h);
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frames(3, vec![Event::PointerMoved(at)]);
+        h.frames(1, vec![button(true)]);
+        h.frames(1, vec![Event::PointerMoved(at + vec2(0.0, 30.0))]);
+        assert_ne!(h.cursor, egui::CursorIcon::Grabbing);
     }
 
     #[test]
