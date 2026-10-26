@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use noido_engine::PdfEngine;
+use noido_engine::{PdfBytes, PdfEngine};
 use noido_render::{DocumentInfo, Linker, Renderer, TextSearcher, Thumbnailer};
 use noido_state::DocKey;
 use notify::event::{AccessKind, AccessMode};
@@ -35,6 +35,8 @@ pub struct Reload {
     pub linker: Linker,
     pub info: DocumentInfo,
     pub key: DocKey,
+    /// The new version's file contents, for reading its properties.
+    pub bytes: PdfBytes,
 }
 
 /// The newest version not shown yet. A newer one replaces it, so versions
@@ -111,7 +113,7 @@ fn open_new(
     let thumbnailer = Thumbnailer::start(engine.clone(), bytes.clone(), boxed(waker));
     let sidebar = Renderer::start_background(engine.clone(), bytes.clone(), boxed(waker));
     let linker = Linker::start(engine.clone(), bytes.clone(), boxed(waker));
-    let searcher = TextSearcher::start(engine.clone(), bytes, boxed(waker));
+    let searcher = TextSearcher::start(engine.clone(), bytes.clone(), boxed(waker));
     Some(Reload {
         renderer,
         thumbnailer,
@@ -120,6 +122,7 @@ fn open_new(
         linker,
         info,
         key,
+        bytes,
     })
 }
 

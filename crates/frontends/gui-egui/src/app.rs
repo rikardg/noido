@@ -13,6 +13,7 @@ use noido_state::{DocState, Slot, Store};
 
 use crate::frame;
 use crate::image::PageImage;
+use crate::info;
 use crate::instance::Activation;
 use crate::links::Links;
 use crate::search::{self, Search};
@@ -103,6 +104,10 @@ pub struct NoidoApp {
     settings_file: Option<SettingsFile>,
     /// The settings page, while it is open.
     settings_page: Option<settings::Page>,
+    /// The document's file, for the info page; `None` in tests without one.
+    source: Option<info::Source>,
+    /// The document info page, while it is open.
+    info_page: Option<info::Page>,
     /// The pages' links.
     links: Links,
     /// The link under the pointer this frame.
@@ -199,6 +204,8 @@ impl NoidoApp {
             settings: Settings::default(),
             settings_file: None,
             settings_page: None,
+            source: None,
+            info_page: None,
             links: Links::new(page_count),
             hovered_link: None,
             clicked_link: None,
@@ -208,6 +215,12 @@ impl NoidoApp {
     /// Shows `name` in the title bar.
     pub fn with_name(mut self, name: String) -> Self {
         self.name = name;
+        self
+    }
+
+    /// Reads the document's info from `source` when asked.
+    pub fn with_source(mut self, source: info::Source) -> Self {
+        self.source = Some(source);
         self
     }
 
@@ -431,17 +444,17 @@ impl NoidoApp {
     /// Takes in the newest version of the document the watcher brought, if
     /// any. Called after the view has caught up with egui's scrolling, so
     /// the place it keeps is the current one.
-    fn receive_reload(&mut self) {
+    fn receive_reload(&mut self, ctx: &egui::Context) {
         let Some(watcher) = &self.watcher else {
             return;
         };
         if let Some(reload) = watcher.try_recv() {
-            self.reload(reload);
+            self.reload(reload, ctx);
         }
     }
 
     /// Shows `reload`, a new version of the document, at the same place.
-    fn reload(&mut self, reload: Reload) {
+    fn reload(&mut self, reload: Reload, ctx: &egui::Context) {
         let current = self.view.state();
         let state = match (self.clamped, current) {
             (Some((wanted, left)), Some(current)) if same_place(&current, &left) => Some(wanted),
@@ -483,6 +496,13 @@ impl NoidoApp {
         self.browse = None;
         if let Some(persistence) = &mut self.persistence {
             persistence.store.rekey(&mut persistence.slot, reload.key);
+        }
+        if let Some(source) = &mut self.source {
+            source.bytes = reload.bytes;
+            // An open info page reads the new version.
+            if let Some(page) = &mut self.info_page {
+                *page = info::Page::open(source, ctx);
+            }
         }
     }
 
@@ -561,8 +581,9 @@ impl NoidoApp {
     }
 
     fn handle_input(&mut self, ctx: &egui::Context) {
-        // The settings page is modal: the document doesn't move behind it.
-        if self.settings_page.is_some() {
+        // The settings and info pages are modal: the document doesn't move
+        // behind them.
+        if self.settings_page.is_some() || self.info_page.is_some() {
             return;
         }
         let editing = ctx.text_edit_focused();
@@ -717,6 +738,13 @@ impl NoidoApp {
                 // So Esc closes the page, not the search behind it.
                 ctx.memory_mut(|m| m.stop_text_input());
                 self.settings_page = Some(settings::Page::default());
+            }
+            Action::ShowDocumentInfo => {
+                if let Some(source) = &self.source {
+                    // So Esc closes the page, not the search behind it.
+                    ctx.memory_mut(|m| m.stop_text_input());
+                    self.info_page = Some(info::Page::open(source, ctx));
+                }
             }
             _ => {
                 let place = |view: &View| (view.offset(), view.current_spread(), view.scale());
@@ -1015,7 +1043,7 @@ impl NoidoApp {
         self.sidebar_view.receive(&ctx, self.view.layout());
         self.links.receive(ctx.input(|i| i.time));
         self.sync_from_egui();
-        self.receive_reload();
+        self.receive_reload(&ctx);
         self.handle_input(&ctx);
         if let Some(link) = self.clicked_link.take() {
             self.follow(&ctx, link);
@@ -1115,7 +1143,22 @@ impl NoidoApp {
             frame::border(&ctx);
         }
         self.settings_page(&ctx);
+        self.info_page(&ctx);
         self.persist(&ctx);
+    }
+
+    /// Shows the document info page while it is open.
+    fn info_page(&mut self, ctx: &egui::Context) {
+        let (Some(page), Some(source)) = (&mut self.info_page, &self.source) else {
+            return;
+        };
+        let layout = self.view.layout();
+        let sizes: Vec<noido_engine::Size> = (0..layout.page_count())
+            .filter_map(|page| layout.page_size(page))
+            .collect();
+        if info::show(page, ctx, source, &sizes) {
+            self.info_page = None;
+        }
     }
 
     /// Shows the settings page while it is open, saving each change.
@@ -1178,6 +1221,7 @@ fn core_key(key: egui::Key) -> Option<Key> {
         egui::Key::O => Some(Key::O),
         egui::Key::Q => Some(Key::Q),
         egui::Key::G => Some(Key::G),
+        egui::Key::I => Some(Key::I),
         egui::Key::Comma => Some(Key::Comma),
         egui::Key::F3 => Some(Key::F3),
         egui::Key::F9 => Some(Key::F9),
@@ -1380,7 +1424,7 @@ mod tests {
         /// Hands the app a new version of the document, opened with `engine`
         /// and identified by `key`, and runs a frame.
         fn reload(&mut self, engine: Arc<dyn PdfEngine>, key: DocKey) {
-            let bytes = Arc::new(Vec::new());
+            let bytes = Arc::new(b"new version".to_vec());
             let (renderer, info) =
                 Renderer::start(engine.clone(), bytes.clone(), Box::new(|| {})).unwrap();
             let thumbnailer = Thumbnailer::start(engine.clone(), bytes.clone(), Box::new(|| {}));
@@ -1388,7 +1432,7 @@ mod tests {
                 Renderer::start_background(engine.clone(), bytes.clone(), Box::new(|| {}));
             let linker =
                 noido_render::Linker::start(engine.clone(), bytes.clone(), Box::new(|| {}));
-            let searcher = TextSearcher::start(engine, bytes, Box::new(|| {}));
+            let searcher = TextSearcher::start(engine, bytes.clone(), Box::new(|| {}));
             let reload = crate::watch::Reload {
                 renderer,
                 thumbnailer,
@@ -1397,6 +1441,7 @@ mod tests {
                 linker,
                 info,
                 key,
+                bytes,
             };
             self.reloads.put(reload);
             self.frames(1, vec![]);
@@ -1417,7 +1462,7 @@ mod tests {
                 Renderer::start_background(Arc::new(sidebar), bytes.clone(), Box::new(|| {}));
             let linker =
                 noido_render::Linker::start(engine.clone(), bytes.clone(), Box::new(|| {}));
-            let searcher = TextSearcher::start(engine, bytes, Box::new(|| {}));
+            let searcher = TextSearcher::start(engine, bytes.clone(), Box::new(|| {}));
             self.reloads.put(crate::watch::Reload {
                 renderer,
                 thumbnailer,
@@ -1426,6 +1471,7 @@ mod tests {
                 linker,
                 info,
                 key,
+                bytes,
             });
             self.frames(1, vec![]);
         }
@@ -2482,6 +2528,169 @@ mod tests {
         let at = h.app.last_scroll.unwrap().inner.left_bottom() + vec2(20.0, -20.0);
         h.frames(2, vec![Event::PointerMoved(at)]);
         assert_ne!(h.cursor, egui::CursorIcon::Grab);
+    }
+
+    /// Documents whose title is their bytes, as text.
+    struct PropsEngine;
+    struct PropsDocument(String);
+
+    impl PdfEngine for PropsEngine {
+        fn open(&self, bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(PropsDocument(
+                String::from_utf8_lossy(&bytes).into_owned(),
+            )))
+        }
+    }
+
+    impl Document for PropsDocument {
+        fn page_count(&self) -> usize {
+            BlankDocument.page_count()
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument.page_size(page)
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            scale: f32,
+            rect: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            BlankDocument.render_tile(page, scale, rect)
+        }
+        fn properties(&self) -> noido_engine::Properties {
+            let font = |name: &str, embedded| noido_engine::Font {
+                name: name.into(),
+                embedded,
+            };
+            noido_engine::Properties {
+                title: Some(self.0.clone()),
+                author: Some("Åsa Olson".into()),
+                created: Some(noido_engine::Date {
+                    year: 2024,
+                    month: 3,
+                    day: 5,
+                    hour: 14,
+                    minute: 22,
+                    second: 1,
+                    utc_offset: Some(60),
+                }),
+                version: Some("1.7".into()),
+                tagged: true,
+                fonts: vec![
+                    font("ABCDEF+MinionPro-It", true),
+                    font("ABCDEF+MinionPro-Regular", true),
+                    font("Helvetica", false),
+                ],
+                ..Default::default()
+            }
+        }
+    }
+
+    /// A harness whose document is /docs/paper.pdf, made of `bytes`.
+    fn with_info_source(bytes: &[u8]) -> Harness {
+        let source = crate::info::Source {
+            engine: Arc::new(PropsEngine),
+            bytes: Arc::new(bytes.to_vec()),
+            path: "/docs/paper.pdf".into(),
+        };
+        Harness::build(|app| app.with_source(source))
+    }
+
+    fn show_info(h: &mut Harness) {
+        h.press(egui::Key::I, Modifiers::COMMAND);
+        h.until(|h| h.text_rect("Info Title").is_some());
+        // The page takes its new size the frame after.
+        h.frames(2, vec![]);
+        assert!(h.app.info_page.is_some(), "document info not shown");
+    }
+
+    #[test]
+    fn ctrl_i_shows_document_info() {
+        let mut h = with_info_source(b"Info Title");
+        show_info(&mut h);
+        for text in [
+            "paper.pdf",
+            "/docs",
+            "10 bytes",
+            "Info Title",
+            "Åsa Olson",
+            "2024-03-05 14:22 +01:00",
+            "10",
+            "216 × 279 mm (612 × 792 pt)",
+            "1.7",
+            "Minion Pro",
+            "Regular, Italic",
+            "Helvetica",
+            "Regular (not embedded)",
+        ] {
+            assert!(h.text_rect(text).is_some(), "{text:?} not drawn");
+        }
+    }
+
+    #[test]
+    fn rows_without_values_are_left_out() {
+        let mut h = with_info_source(b"Info Title");
+        show_info(&mut h);
+        for text in ["Subject", "Keywords", "Modified", "Outline"] {
+            assert!(h.text_rect(text).is_none(), "{text:?} drawn");
+        }
+    }
+
+    #[test]
+    fn menu_entry_shows_document_info() {
+        let mut h = with_info_source(b"Info Title");
+        let entry = noido_core::menu()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.label == "Document info…")
+            .unwrap();
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, entry.action);
+        h.until(|h| h.text_rect("Info Title").is_some());
+        assert!(h.text_rect("Info Title").is_some());
+    }
+
+    #[test]
+    fn escape_closes_document_info_only() {
+        let mut h = with_info_source(b"Info Title");
+        h.press(egui::Key::F9, Modifiers::NONE);
+        show_info(&mut h);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.info_page.is_none());
+        assert!(h.app.sidebar.open);
+    }
+
+    #[test]
+    fn view_keys_do_nothing_while_info_is_shown() {
+        let mut h = with_info_source(b"Info Title");
+        show_info(&mut h);
+        let before = (h.app.view.offset(), h.app.view.scale(), h.app.view.mode());
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        h.press(egui::Key::D, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(
+            (h.app.view.offset(), h.app.view.scale(), h.app.view.mode()),
+            before
+        );
+    }
+
+    #[test]
+    fn info_shown_during_a_reload_reads_the_new_version() {
+        let mut h = with_info_source(b"Info Title");
+        show_info(&mut h);
+        h.reload(Arc::new(BlankEngine), recompiled_key());
+        h.until(|h| h.text_rect("new version").is_some());
+        assert!(h.text_rect("new version").is_some());
+        assert!(h.text_rect("Info Title").is_none());
+    }
+
+    #[test]
+    fn ctrl_i_without_a_source_does_nothing() {
+        let mut h = Harness::new();
+        h.press(egui::Key::I, Modifiers::COMMAND);
+        h.frames(2, vec![]);
+        assert!(h.app.info_page.is_none());
     }
 
     #[cfg(not(target_os = "macos"))]

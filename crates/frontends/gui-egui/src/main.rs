@@ -4,6 +4,7 @@ mod app;
 mod desktop;
 mod frame;
 mod image;
+mod info;
 mod instance;
 mod interrupt;
 mod links;
@@ -125,6 +126,12 @@ fn run(path: &Path) -> Result<(), String> {
         Renderer::start_background(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
     let searcher = TextSearcher::start(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
     let linker = Linker::start(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
+    let source = info::Source {
+        engine: Arc::new(HayroEngine),
+        bytes: bytes.clone(),
+        // The info page shows the folder: a relative one says little.
+        path: std::path::absolute(path).unwrap_or_else(|_| path.to_owned()),
+    };
     let (renderer, info) = Renderer::start(Arc::new(HayroEngine), bytes, waker(&ctx))
         .map_err(|e| format!("{}: {e}", path.display()))?;
 
@@ -162,7 +169,8 @@ fn run(path: &Path) -> Result<(), String> {
         .with_thumbnails(thumbnailer)
         .with_sidebar_renderer(sidebar_renderer)
         .with_searcher(searcher)
-        .with_linker(linker);
+        .with_linker(linker)
+        .with_source(source);
     let app = match activation {
         Some(activation) => app.with_activation(activation),
         None => app,
