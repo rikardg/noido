@@ -377,3 +377,10 @@ when it is fixed.
 - Sidebar row: no settings test can fail on a file without `sidebar`
   (its default is also `bool::default()`); `new_document_opens_with_sidebar_setting`
   checks the flag, not that the sidebar is drawn.
+
+## Hand cursor (review minors, 2026-10-26)
+
+- `no_hand_under_settings_page` asserts `!= Grab`; `== Default` would also
+  catch a stray Grabbing.
+- No test for a drag that starts outside the pages (sidebar scroll bar,
+  search text selection) and moves over them: it should show no hand.
