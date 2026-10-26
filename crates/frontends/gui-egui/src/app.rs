@@ -985,6 +985,7 @@ impl NoidoApp {
                 scroll_area = scroll_area.scroll_offset(wanted);
             }
             let output = scroll_area.show_viewport(ui, |ui, viewport| self.pages(ui, viewport));
+            hand_cursor(ui, output.inner_rect);
             let size = self.last_scroll.map(|last| last.inner.size());
             self.told = size.map(|size| (wanted, size));
             self.last_scroll = Some(ScrollState {
@@ -1021,6 +1022,24 @@ impl NoidoApp {
             self.settings_page = None;
         }
     }
+}
+
+/// The hand over the page area, closed while a drag that started there pans:
+/// not under a menu or dialog, nor where a resize edge set its own cursor.
+fn hand_cursor(ui: &egui::Ui, area: Rect) {
+    let ctx = ui.ctx();
+    if !ui.rect_contains_pointer(area) || ctx.output(|o| o.cursor_icon) != egui::CursorIcon::Default
+    {
+        return;
+    }
+    let dragging = ctx.input(|i| {
+        i.pointer.primary_down() && i.pointer.press_origin().is_some_and(|p| area.contains(p))
+    });
+    ctx.set_cursor_icon(if dragging {
+        egui::CursorIcon::Grabbing
+    } else {
+        egui::CursorIcon::Grab
+    });
 }
 
 /// Whether the reader is still where `b` left them: same page and modes.
@@ -1176,6 +1195,8 @@ mod tests {
         shapes: Vec<egui::epaint::ClippedShape>,
         /// Everything the app asked of the window so far.
         commands: Vec<egui::ViewportCommand>,
+        /// The pointer's cursor after the last frame.
+        cursor: egui::CursorIcon,
         /// Whether the window is reported as maximised.
         maximized: bool,
         /// Hands the app new versions of the document, like the watcher.
@@ -1210,6 +1231,7 @@ mod tests {
                 time: 0.0,
                 shapes: vec![],
                 commands: vec![],
+                cursor: egui::CursorIcon::Default,
                 maximized: false,
                 reloads,
             };
@@ -1242,6 +1264,7 @@ mod tests {
                 if let Some(viewport) = output.viewport_output.get(&egui::ViewportId::ROOT) {
                     self.commands.extend(viewport.commands.iter().cloned());
                 }
+                self.cursor = output.platform_output.cursor_icon;
                 output.drop_without_applying_deltas();
             }
         }
@@ -2264,6 +2287,65 @@ mod tests {
     /// A point on the title bar with no control under it.
     fn empty_bar_point(h: &Harness) -> egui::Pos2 {
         pos2(h.app.bar.search.right() + 20.0, h.app.bar.search.center().y)
+    }
+
+    /// A point in the middle of the page area.
+    fn page_point(h: &Harness) -> egui::Pos2 {
+        h.app.last_scroll.unwrap().inner.center()
+    }
+
+    #[test]
+    fn open_hand_over_pages() {
+        let mut h = Harness::new();
+        let at = page_point(&h);
+        h.frames(2, vec![Event::PointerMoved(at)]);
+        assert_eq!(h.cursor, egui::CursorIcon::Grab);
+    }
+
+    #[test]
+    fn closed_hand_while_dragging() {
+        let mut h = Harness::new();
+        let at = page_point(&h);
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frames(1, vec![Event::PointerMoved(at)]);
+        h.frames(1, vec![button(true)]);
+        h.frames(1, vec![Event::PointerMoved(at + vec2(0.0, -30.0))]);
+        assert_eq!(h.cursor, egui::CursorIcon::Grabbing);
+        h.frames(1, vec![button(false)]);
+        h.frames(1, vec![]);
+        assert_eq!(h.cursor, egui::CursorIcon::Grab);
+    }
+
+    #[test]
+    fn no_hand_over_title_bar() {
+        let mut h = Harness::new();
+        let at = empty_bar_point(&h);
+        h.frames(2, vec![Event::PointerMoved(at)]);
+        assert_eq!(h.cursor, egui::CursorIcon::Default);
+    }
+
+    #[test]
+    fn no_hand_under_settings_page() {
+        let mut h = Harness::new();
+        open_settings(&mut h);
+        // A corner of the page area, outside the dialog.
+        let at = h.app.last_scroll.unwrap().inner.left_bottom() + vec2(20.0, -20.0);
+        h.frames(2, vec![Event::PointerMoved(at)]);
+        assert_ne!(h.cursor, egui::CursorIcon::Grab);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn resize_edge_keeps_its_cursor() {
+        let mut h = Harness::new();
+        let at = pos2(h.size.x - 2.0, page_point(&h).y);
+        h.frames(2, vec![Event::PointerMoved(at)]);
+        assert_eq!(h.cursor, egui::CursorIcon::ResizeEast);
     }
 
     #[cfg(not(target_os = "macos"))]
