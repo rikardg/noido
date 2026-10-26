@@ -2627,6 +2627,93 @@ mod tests {
         }
     }
 
+    /// Like [`PropsEngine`], each open waiting for a go-ahead on `0`.
+    struct GatedProps(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
+
+    impl PdfEngine for GatedProps {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            let _ = self.0.lock().unwrap().recv();
+            Ok(Box::new(BookDocument))
+        }
+    }
+
+    /// Properties like a typeset book's: long names, many styles.
+    struct BookDocument;
+
+    impl Document for BookDocument {
+        fn page_count(&self) -> usize {
+            BlankDocument.page_count()
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument.page_size(page)
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            scale: f32,
+            rect: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            BlankDocument.render_tile(page, scale, rect)
+        }
+        fn properties(&self) -> noido_engine::Properties {
+            let fonts = [
+                "Intervogue-BlackOblq",
+                "Intervogue-MedOblq",
+                "Intervogue-BoldOblq",
+                "Intervogue-Reg",
+                "Intervogue-Black",
+                "Intervogue-Med",
+                "Intervogue-Bold",
+                "MinionPro-SemiboldSubh",
+                "MinionPro-Semibold",
+                "MinionPro-SemiboldIt",
+                "DeutscheZierschrift",
+                "AlbertusMedium-Regular",
+                "MrsEavesOT-BoldItalic",
+            ];
+            noido_engine::Properties {
+                creator: Some("Adobe InDesign 17.1 (Windows)".into()),
+                producer: Some("Adobe PDF Library 16.0.5".into()),
+                version: Some("1.7".into()),
+                fonts: fonts
+                    .iter()
+                    .map(|name| noido_engine::Font {
+                        name: format!("ABCDEF+{name}"),
+                        embedded: true,
+                    })
+                    .collect(),
+                ..Default::default()
+            }
+        }
+    }
+
+    #[test]
+    fn info_stays_still_when_the_properties_arrive() {
+        let (go, gate) = std::sync::mpsc::channel();
+        let title = "A title long enough that it has to wrap onto a second line in the dialog";
+        let source = crate::info::Source {
+            engine: Arc::new(GatedProps(std::sync::Mutex::new(gate))),
+            bytes: Arc::new(title.as_bytes().to_vec()),
+            path: "/docs/paper.pdf".into(),
+        };
+        let mut h = Harness::build(|app| app.with_source(source));
+        for _ in 0..2 {
+            h.press(egui::Key::I, Modifiers::COMMAND);
+            h.frames(3, vec![]);
+            go.send(()).unwrap();
+            let mut seen = vec![];
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                h.frames(1, vec![]);
+                seen.push(h.text_rect("Document info").unwrap().min.x);
+            }
+            assert!(h.text_rect("Intervogue").is_some(), "properties not shown");
+            assert!(seen.iter().all(|&x| x == seen[0]), "dialog moved: {seen:?}");
+            h.press(egui::Key::Escape, Modifiers::NONE);
+            h.frames(2, vec![]);
+        }
+    }
+
     #[test]
     fn rows_without_values_are_left_out() {
         let mut h = with_info_source(b"Info Title");

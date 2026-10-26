@@ -133,22 +133,26 @@ fn contents(ui: &mut egui::Ui, page: &Page, source: &Source, sizes: &[Size]) {
                     .collect();
                 ui.add(egui::Label::new(egui::RichText::new(&family.name).strong()))
                     .on_hover_text(raw.join("\n"));
-                ui.add(egui::Label::new(styles.join(", ")).wrap());
-                ui.end_row();
+                ui.indent(&family.name, |ui| {
+                    ui.add(egui::Label::new(styles.join(", ")).wrap());
+                });
             }
         }
     });
 }
 
-/// A heading and a grid of rows under it.
+/// The width of the keys' column. Fixed, not an `egui::Grid`: a grid lays
+/// out with last frame's column widths, so when the rows arrive the page
+/// is too wide for a frame and jumps sideways as it re-centres.
+const KEY_WIDTH: f32 = 96.0;
+
+/// A heading and rows under it.
 fn section(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(8.0);
     ui.label(egui::RichText::new(title).strong());
     ui.add_space(2.0);
-    egui::Grid::new(title)
-        .num_columns(2)
-        .spacing([16.0, 4.0])
-        .show(ui, rows);
+    ui.spacing_mut().item_spacing.y = 4.0;
+    rows(ui);
 }
 
 /// A row of a section, left out without a value.
@@ -156,9 +160,17 @@ fn row(ui: &mut egui::Ui, key: &str, value: Option<String>) {
     let Some(value) = value else {
         return;
     };
-    ui.label(egui::RichText::new(key).weak());
-    ui.add(egui::Label::new(value).wrap());
-    ui.end_row();
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(KEY_WIDTH, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(KEY_WIDTH);
+                ui.add(egui::Label::new(egui::RichText::new(key).weak()).wrap());
+            },
+        );
+        ui.add(egui::Label::new(value).wrap());
+    });
 }
 
 /// "216 × 279 mm (612 × 792 pt)"; "mixed" when the pages differ by a
