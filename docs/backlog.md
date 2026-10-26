@@ -518,3 +518,12 @@ when it is fixed.
 - `info_stays_still_when_the_properties_arrive`: the long `title` is never
   shown (`BookDocument` ignores the bytes); and 20 × 5 ms may be short on a
   loaded machine. Wait until "Intervogue" shows, with a deadline.
+
+## Document info scroll bar (review minors, 2026-10-26)
+
+- The edge test passes a bar that sticks out past the page (the
+  difference goes negative); also assert `bar.right() <= modal.right()`.
+- A hovered floating bar is 10 px wide but the margin is 6, so it covers
+  about 4 px of text; widen the right margin to the bar width, or accept.
+- The `right` helper in `info::show` takes `&mut dyn FnMut`; a small
+  generic fn would read better.
