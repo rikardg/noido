@@ -52,18 +52,43 @@ pub fn show(page: &mut Page, ctx: &egui::Context, source: &Source, sizes: &[Size
     page.receive();
     let mut close = false;
     let max_height = ctx.content_rect().height() * 0.7;
-    let response = egui::Modal::new(egui::Id::unique("document-info")).show(ctx, |ui| {
-        ui.set_width(440.0);
-        ui.heading("Document info");
-        ui.add_space(4.0);
-        egui::ScrollArea::vertical()
-            .max_height(max_height)
-            .show(ui, |ui| contents(ui, page, source, sizes));
-        ui.add_space(8.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            close = ui.button("Close").clicked();
-        });
+    // The frame has no right margin, so the scroll bar runs along the
+    // page's edge; everything else keeps the margin itself.
+    let frame = egui::Frame::popup(&ctx.global_style());
+    let margin = frame.inner_margin.right;
+    let frame = frame.inner_margin(egui::Margin {
+        right: 0,
+        ..frame.inner_margin
     });
+    let right = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+        egui::Frame::NONE
+            .inner_margin(egui::Margin {
+                right: margin,
+                ..egui::Margin::ZERO
+            })
+            .show(ui, |ui| add(ui));
+    };
+    let response = egui::Modal::new(egui::Id::unique("document-info"))
+        .frame(frame)
+        .show(ctx, |ui| {
+            ui.set_width(WIDTH + f32::from(margin));
+            right(ui, &mut |ui| {
+                ui.heading("Document info");
+            });
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical()
+                .max_height(max_height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    right(ui, &mut |ui| contents(ui, page, source, sizes))
+                });
+            ui.add_space(8.0);
+            right(ui, &mut |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close = ui.button("Close").clicked();
+                });
+            });
+        });
     close || response.should_close()
 }
 
@@ -140,6 +165,9 @@ fn contents(ui: &mut egui::Ui, page: &Page, source: &Source, sizes: &[Size]) {
         }
     });
 }
+
+/// The width of the page's text.
+const WIDTH: f32 = 440.0;
 
 /// The width of the keys' column. Fixed, not an `egui::Grid`: a grid lays
 /// out with last frame's column widths, so when the rows arrive the page

@@ -2715,6 +2715,55 @@ mod tests {
     }
 
     #[test]
+    fn info_scroll_bar_runs_along_the_right_edge() {
+        let (go, gate) = std::sync::mpsc::channel();
+        go.send(()).unwrap();
+        let source = crate::info::Source {
+            engine: Arc::new(GatedProps(std::sync::Mutex::new(gate))),
+            bytes: Arc::new(vec![]),
+            path: "/docs/paper.pdf".into(),
+        };
+        let mut h = Harness::build(|app| app.with_source(source));
+        h.size = vec2(900.0, 500.0);
+        h.press(egui::Key::I, Modifiers::COMMAND);
+        h.until(|h| h.text_rect("Intervogue").is_some());
+        h.frames(3, vec![]);
+        let modal = h
+            .ctx
+            .memory(|m| m.area_rect(egui::Id::unique("document-info")))
+            .unwrap();
+        h.frames(
+            10,
+            vec![Event::PointerMoved(pos2(
+                modal.right() - 4.0,
+                modal.center().y,
+            ))],
+        );
+        fn rects(shape: &egui::Shape, out: &mut Vec<Rect>) {
+            match shape {
+                egui::Shape::Rect(r) => out.push(r.rect),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| rects(s, out)),
+                _ => {}
+            }
+        }
+        let mut out = vec![];
+        h.shapes.iter().for_each(|c| rects(&c.shape, &mut out));
+        // The scroll bar: narrow and tall, inside the page.
+        out.retain(|r| {
+            r.width() < 20.0 && r.height() > 30.0 && modal.x_range().contains(r.center().x)
+        });
+        assert!(!out.is_empty(), "no scroll bar");
+        for bar in out {
+            assert!(
+                modal.right() - bar.right() <= 4.0,
+                "bar ends at {}, the page at {}",
+                bar.right(),
+                modal.right()
+            );
+        }
+    }
+
+    #[test]
     fn rows_without_values_are_left_out() {
         let mut h = with_info_source(b"Info Title");
         show_info(&mut h);
