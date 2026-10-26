@@ -552,3 +552,10 @@ when it is fixed.
   `edge_lines` matches any line of the flash width.
 - Harness `press()` sends no release, so egui keeps the key down for the
   rest of the test; a `tap()` helper would behave like a real tap.
+- Opening settings or info (by mouse) while a page key repeats: the
+  repeats aren't seen behind the modal, so the edge flashes on release.
+  Record the flag before the modal's early return, or clear the edge.
+- Repeats count even when noido didn't act on them (a text field or menu
+  took the key); harmless, matches the spec.
+- No test for PageUp held then PageDown tapped (no flash), or a hold at
+  the document's end followed by a tap (flashes).
