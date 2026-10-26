@@ -23,6 +23,13 @@ when it is fixed.
   contents links go to whole pages, so the flash lands on the page's top
   line (the running head), as agreed.
 
+- **Try document info by hand (user).** Ctrl+I (or "Document info…" in
+  the menu) on the network analysis paper: title, author, LuaTeX producer,
+  dates with +02:00, Source Serif 4 / Caption / Subhead as three families.
+  On Vaesen: Intervogue with seven styles, Minion Pro, Mrs Eaves OT.
+  Hovering a family shows the raw names; names can be selected and copied;
+  a long list scrolls; Esc and Close close it.
+
 - **Try the LaTeX loop by hand (user).** Run `latexmk -pvc` (or repeated
   `pdflatex`) with noido open: it should follow each compile, keep the
   place, and survive a failing build.
@@ -431,3 +438,34 @@ when it is fixed.
   try `/A` too if real files need it.
 - **No cropped-page fixture.** A page with `/CropBox [50 50 562 742]` in
   `links.pdf` would lock in that areas and targets follow the crop box.
+
+## Document info (review minors, 2026-10-26)
+
+- **Non-ASCII font names are garbled.** `BaseFont` is a name, not a text
+  string: a UTF-8 name (宋体) is read as PDFDocEncoding. Try UTF-8 first.
+  (`engine-hayro/src/properties.rs`, `font`)
+- **An absurd XMP offset overflows** `num(h)? * 60` (`+9999:00`): a panic in
+  debug, a wrong offset in release. Check `h < 24`, `m < 60` first.
+- **XMP dates keep no precision.** "2024" shows as 2024-01-01 00:00; an
+  offset without a colon (`+0100`) loses the whole date.
+- **"Reading…" forever** if the properties thread panics or can't start:
+  `Page::receive` ignores `Disconnected`. Show "Couldn't read" instead.
+- **Reloads stack up reads.** With the page open, each reload starts a new
+  full walk and the old ones run to the end. Re-read only once the current
+  read is done.
+- **Fonts outside page and form resources are missed**: annotation
+  appearance streams (form fields), Type 3 glyph procedures, patterns;
+  Type 3 fonts without `/BaseFont` are skipped silently.
+- **Run-together names split wrongly** when a family ends in a style-ish
+  word: `PlayfairDisplay` becomes Playfair / Display while
+  `PlayfairDisplay-Bold` is Playfair Display. Peel only weight and slant
+  words off names without a separator.
+- **TeX names stay cryptic** (CMR9, CMMI9, CMSY8): map the Computer Modern
+  and Latin Modern abbreviations to their names. `Code2000` becomes
+  "Code 2000".
+- **"1000 kB"** for 999 999 bytes: pick the unit after rounding.
+- **Test gaps**: no unit tests of their own for `xmp_date` and `xmp_value`;
+  none for malformed XMP, a BOM'd UTF-16 string beyond the fixture, or Esc
+  in the info page keeping the search text.
+- **Encryption isn't shown**: hayro doesn't expose the trailer. Revisit if
+  it does.
