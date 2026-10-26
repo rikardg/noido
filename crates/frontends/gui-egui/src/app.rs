@@ -15,6 +15,7 @@ use crate::frame;
 use crate::image::PageImage;
 use crate::instance::Activation;
 use crate::search::{self, Search};
+use crate::settings;
 use crate::sidebar::{self, SidebarView};
 use crate::titlebar::{self, TITLE_BAR_HEIGHT};
 use crate::watch::{Reload, Watcher};
@@ -95,6 +96,8 @@ pub struct NoidoApp {
     settings: Settings,
     /// Where settings changes are saved; `None` without a config directory.
     settings_file: Option<SettingsFile>,
+    /// The settings page, while it is open.
+    settings_page: Option<settings::Page>,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -183,6 +186,7 @@ impl NoidoApp {
             clamped: None,
             settings: Settings::default(),
             settings_file: None,
+            settings_page: None,
         }
     }
 
@@ -533,6 +537,10 @@ impl NoidoApp {
     }
 
     fn handle_input(&mut self, ctx: &egui::Context) {
+        // The settings page is modal: the document doesn't move behind it.
+        if self.settings_page.is_some() {
+            return;
+        }
         let editing = ctx.text_edit_focused();
         let (presses, wheel, zoom, pointer) = ctx.input(|i| {
             let presses: Vec<KeyPress> = i
@@ -676,6 +684,11 @@ impl NoidoApp {
             Action::NextHit => self.step_hit(true),
             Action::PreviousHit => self.step_hit(false),
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::OpenSettings => {
+                // So Esc closes the page, not the search behind it.
+                ctx.memory_mut(|m| m.stop_text_input());
+                self.settings_page = Some(settings::Page::default());
+            }
             _ => {
                 let place = |view: &View| (view.offset(), view.current_spread(), view.scale());
                 let before = place(&self.view);
@@ -976,7 +989,27 @@ impl NoidoApp {
         if !cfg!(target_os = "macos") {
             frame::border(&ctx);
         }
+        self.settings_page(&ctx);
         self.persist(&ctx);
+    }
+
+    /// Shows the settings page while it is open, saving each change.
+    fn settings_page(&mut self, ctx: &egui::Context) {
+        let Some(page) = &mut self.settings_page else {
+            return;
+        };
+        let output = settings::show(page, ctx, &mut self.settings, self.view.state());
+        if output.changed
+            && let Some(file) = &self.settings_file
+        {
+            page.error = file
+                .save(&self.settings)
+                .err()
+                .map(|e| format!("Couldn't save settings: {e}"));
+        }
+        if output.close {
+            self.settings_page = None;
+        }
     }
 }
 
@@ -1016,6 +1049,7 @@ fn core_key(key: egui::Key) -> Option<Key> {
         egui::Key::O => Some(Key::O),
         egui::Key::Q => Some(Key::Q),
         egui::Key::G => Some(Key::G),
+        egui::Key::Comma => Some(Key::Comma),
         egui::Key::F3 => Some(Key::F3),
         egui::Key::F9 => Some(Key::F9),
         egui::Key::ArrowUp => Some(Key::ArrowUp),
@@ -1035,6 +1069,7 @@ mod tests {
 
     use noido_core::{SidebarState, ViewState};
     use noido_render::{TextSearcher, Thumbnailer};
+    use noido_settings::{Settings, SettingsFile};
     use noido_state::{DocKey, DocState, Store};
 
     use super::*;
@@ -1293,6 +1328,28 @@ mod tests {
 
         fn started_move(&self) -> bool {
             self.commands.contains(&egui::ViewportCommand::StartDrag)
+        }
+
+        /// Where text exactly equal to `text` was drawn last frame.
+        fn text_rect(&self, text: &str) -> Option<Rect> {
+            fn find(shape: &egui::Shape, text: &str) -> Option<Rect> {
+                match shape {
+                    egui::Shape::Text(t) if t.galley.text() == text => {
+                        Some(Rect::from_min_size(t.pos, t.galley.size()))
+                    }
+                    egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| find(s, text)),
+                    _ => None,
+                }
+            }
+            self.shapes.iter().find_map(|c| find(&c.shape, text))
+        }
+
+        /// Clicks the middle of `text`.
+        fn click_text(&mut self, text: &str) {
+            let rect = self
+                .text_rect(text)
+                .unwrap_or_else(|| panic!("{text:?} not drawn"));
+            self.click(rect.center());
         }
 
         /// Types `text` into the focused text field.
@@ -1852,6 +1909,159 @@ mod tests {
     }
 
     /// Puts the cursor in the search field.
+    fn open_settings(h: &mut Harness) {
+        h.press(egui::Key::Comma, Modifiers::COMMAND);
+        h.frames(2, vec![]);
+        assert!(h.app.settings_page.is_some(), "settings not open");
+    }
+
+    /// A harness whose settings are saved in `dir`.
+    fn settings_in(dir: &std::path::Path) -> Harness {
+        let file = SettingsFile::at(dir);
+        Harness::build(|app| app.with_settings(Some(file), Settings::default()))
+    }
+
+    #[test]
+    fn ctrl_comma_opens_settings() {
+        let mut h = Harness::new();
+        open_settings(&mut h);
+    }
+
+    #[test]
+    fn menu_entry_opens_settings() {
+        let mut h = Harness::new();
+        let entry = noido_core::menu()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.label == "Settings…")
+            .unwrap();
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, entry.action);
+        assert!(h.app.settings_page.is_some());
+    }
+
+    #[test]
+    fn rows_show_defaults() {
+        let mut h = Harness::new();
+        open_settings(&mut h);
+        for text in [
+            "Zoom (default: fit width)",
+            "Fit width",
+            "Fit page",
+            "Fixed",
+            "Continuous (default: on)",
+            "Dual page (default: off)",
+            "Odd pages left (default: on)",
+            "Set from current view",
+        ] {
+            assert!(h.text_rect(text).is_some(), "{text:?} not drawn");
+        }
+    }
+
+    #[test]
+    fn escape_closes_settings_only() {
+        let mut h = Harness::new();
+        h.press(egui::Key::F9, Modifiers::NONE);
+        open_settings(&mut h);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.settings_page.is_none());
+        assert!(h.app.sidebar.open);
+    }
+
+    #[test]
+    fn escape_in_settings_keeps_search() {
+        let mut h = Harness::new();
+        focus_search(&mut h);
+        h.typed("pond");
+        h.frames(2, vec![]);
+        open_settings(&mut h);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.settings_page.is_none());
+        assert_eq!(h.app.search, "pond");
+    }
+
+    #[test]
+    fn view_keys_do_nothing_while_open() {
+        let mut h = Harness::new();
+        open_settings(&mut h);
+        let before = (h.app.view.offset(), h.app.view.scale(), h.app.view.mode());
+        h.press(egui::Key::D, Modifiers::NONE);
+        h.press(egui::Key::F, Modifiers::NONE);
+        h.frames(
+            2,
+            vec![wheel(
+                egui::MouseWheelUnit::Line,
+                -3.0,
+                egui::MouseWheelSource::Wheel,
+            )],
+        );
+        assert!(!h.app.view.dual());
+        assert_eq!(
+            (h.app.view.offset(), h.app.view.scale(), h.app.view.mode()),
+            before
+        );
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        h.press(egui::Key::D, Modifiers::NONE);
+        assert!(h.app.view.dual());
+    }
+
+    #[test]
+    fn changing_a_setting_saves_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = settings_in(dir.path());
+        open_settings(&mut h);
+        h.click_text("Dual page (default: off)");
+        h.frames(2, vec![]);
+        let saved = SettingsFile::at(dir.path()).load().unwrap();
+        assert!(saved.new_documents.dual);
+        assert!(!h.app.view.dual(), "the open document changed");
+    }
+
+    #[test]
+    fn choosing_fixed_zoom_saves_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = settings_in(dir.path());
+        open_settings(&mut h);
+        h.click_text("Fixed");
+        h.frames(2, vec![]);
+        let saved = SettingsFile::at(dir.path()).load().unwrap();
+        assert_eq!(saved.new_documents.zoom, noido_core::StartZoom::Fixed);
+    }
+
+    #[test]
+    fn set_from_current_view_copies_view() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = settings_in(dir.path());
+        h.press(egui::Key::Equals, Modifiers::COMMAND);
+        h.press(egui::Key::C, Modifiers::NONE);
+        h.frames(2, vec![]);
+        let percent = (h.app.view.scale() * 100.0).round() as u32;
+        open_settings(&mut h);
+        h.click_text("Set from current view");
+        h.frames(2, vec![]);
+        let saved = SettingsFile::at(dir.path()).load().unwrap().new_documents;
+        assert_eq!(saved.zoom, noido_core::StartZoom::Fixed);
+        assert_eq!(saved.zoom_percent, percent);
+        assert!(!saved.continuous);
+    }
+
+    #[test]
+    fn failed_save_shows_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "").unwrap();
+        let mut h = settings_in(&blocker.join("noido"));
+        open_settings(&mut h);
+        h.click_text("Dual page (default: off)");
+        h.frames(2, vec![]);
+        let error = h.app.settings_page.as_ref().unwrap().error.clone();
+        assert!(error.is_some_and(|e| e.starts_with("Couldn't save settings")));
+        assert!(h.app.settings.new_documents.dual, "kept for this run");
+    }
+
     fn focus_search(h: &mut Harness) {
         h.press(egui::Key::F, Modifiers::COMMAND);
         h.frames(2, vec![]);

@@ -8,6 +8,7 @@ mod instance;
 mod interrupt;
 mod load;
 mod search;
+mod settings;
 mod sidebar;
 mod titlebar;
 mod watch;
