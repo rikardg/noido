@@ -219,6 +219,23 @@ when it is fixed.
   `docs/investigations/2026-10-25-text-extraction.md`. Upstream issue or PR,
   or wait for hayro; the text API should let a glyph run carry replacement
   text so this slots in later.
+- **Link history.** Back and forward after following a link (and maybe
+  after other jumps: search hits, thumbnails, go to page). Deferred from
+  links on purpose: which moves count, how scrolling after a jump affects
+  the entry, keys. Own design.
+- **Link preview.** Something on hovering an internal link: the target
+  region, a footnote's text, a citation's entry? Unclear what yet.
+- **Highlight all links.** A key or button that shows every link on the
+  visible pages. Think about whether it's wanted; overlaps with drawing
+  borders below.
+- **Link borders as the spec says.** Follow `/Border` (default `[0 0 1]`,
+  a 1 pt box), `/BS`, `/C`, `/H` (click look) and `/AP` appearance streams,
+  maybe behind a setting, since hyperref's default red boxes are often
+  unwanted.
+- **Outline in the sidebar.** The document's bookmarks (`/Outlines`) as a
+  tree in the left sidebar; uses the same destinations as links.
+- **More link kinds.** Links to another file (GoToR), named actions
+  (NextPage, PrevPage, FirstPage, LastPage), Launch. Today they do nothing.
 
 ## Far future
 
