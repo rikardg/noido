@@ -1426,6 +1426,8 @@ mod tests {
         maximized: bool,
         /// Hands the app new versions of the document, like the watcher.
         reloads: crate::watch::Newest,
+        /// When the last frame asked for the next one.
+        repaint_delay: Duration,
     }
 
     impl Harness {
@@ -1460,6 +1462,7 @@ mod tests {
                 opened: vec![],
                 maximized: false,
                 reloads,
+                repaint_delay: Duration::MAX,
             };
             harness.frames(3, vec![]);
             harness
@@ -1489,6 +1492,7 @@ mod tests {
                 self.shapes = output.shapes.clone();
                 if let Some(viewport) = output.viewport_output.get(&egui::ViewportId::ROOT) {
                     self.commands.extend(viewport.commands.iter().cloned());
+                    self.repaint_delay = viewport.repaint_delay;
                 }
                 self.cursor = output.platform_output.cursor_icon;
                 for command in &output.platform_output.commands {
@@ -3862,6 +3866,30 @@ mod tests {
         );
         assert_eq!(h.app.settings.paper, noido_core::Paper::White);
         assert!(!SettingsFile::at(dir.path()).path().exists(), "saved");
+    }
+
+    #[test]
+    fn hover_change_on_paper_row_asks_for_a_frame() {
+        let mut h = Harness::new();
+        open_settings(&mut h);
+        h.frames(30, vec![]);
+        let sepia = filled_with(&h, sepia())[0];
+        let grey = filled_with(&h, paper_colour(noido_core::Paper::Grey))[0];
+        let close = h.text_rect("Close").unwrap();
+        // The page is drawn before the settings page sees a move, so the
+        // preview and the scrim change a frame later. egui asks for that
+        // frame after any pointer input; were it not to, they would stick.
+        for event in [
+            Event::PointerMoved(grey.center()),
+            Event::PointerMoved(close.center()),
+            Event::PointerMoved(sepia.center()),
+            Event::PointerGone,
+        ] {
+            h.frames(1, vec![event.clone()]);
+            assert_eq!(h.repaint_delay, Duration::ZERO, "after {event:?}");
+            h.frames(30, vec![]);
+        }
+        assert_eq!(h.app.paper(), noido_core::Paper::White);
     }
 
     /// The dimming drawn over the whole window, if any.
