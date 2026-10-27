@@ -1,6 +1,7 @@
 //! Rendered pages on the GPU.
 
-use eframe::egui::{self, ColorImage, Rect, TextureHandle, TextureOptions, pos2};
+use eframe::egui::{self, Color32, ColorImage, Rect, TextureHandle, TextureOptions, pos2};
+use noido_core::Paper;
 use noido_engine::{Rgba8Image, Size};
 
 /// A rendered page on the GPU, full resolution or thumbnail.
@@ -28,6 +29,13 @@ impl PageImage {
             uv: size.map_or(full, |size| page_uv(size, scale, image)),
         }
     }
+}
+
+/// The colour of `paper`: pages and their placeholders are drawn with it as
+/// the tint, which colours white paper and leaves black text black.
+pub(crate) fn paper_colour(paper: Paper) -> Color32 {
+    let [r, g, b] = paper.rgb();
+    Color32::from_rgb(r, g, b)
 }
 
 /// The part of `image` that the page covers. Renders are rounded up to whole

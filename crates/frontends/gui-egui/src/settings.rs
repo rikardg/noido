@@ -1,8 +1,14 @@
-//! The settings page: what a document noido hasn't seen opens with.
+//! The settings page: the paper colour, and what a document noido hasn't
+//! seen opens with.
 
 use eframe::egui;
-use noido_core::{Defaults, MAX_ZOOM_PERCENT, MIN_ZOOM_PERCENT, StartZoom};
+use noido_core::{Defaults, MAX_ZOOM_PERCENT, MIN_ZOOM_PERCENT, Paper, StartZoom};
 use noido_settings::Settings;
+
+use crate::image::paper_colour;
+
+/// The side of a paper colour square.
+const SWATCH: f32 = 20.0;
 
 /// The open settings page.
 #[derive(Default)]
@@ -26,6 +32,7 @@ pub fn show(
     current: Option<Defaults>,
 ) -> Output {
     let before = *settings;
+    let paper = &mut settings.paper;
     let new = &mut settings.new_documents;
     let builtin = Defaults::default();
     let on_off = |on: bool| if on { "on" } else { "off" };
@@ -34,6 +41,13 @@ pub fn show(
         ui.set_width(320.0);
         ui.heading("Settings");
         ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Paper");
+            for choice in Paper::ALL {
+                swatch(ui, paper, choice);
+            }
+        });
+        ui.add_space(12.0);
         ui.label("New documents open with:");
         ui.add_space(8.0);
 
@@ -81,6 +95,29 @@ pub fn show(
         changed: *settings != before,
         close: close || response.should_close(),
     }
+}
+
+/// A square of `choice`'s colour that chooses it, framed when chosen.
+fn swatch(ui: &mut egui::Ui, paper: &mut Paper, choice: Paper) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(SWATCH, SWATCH), egui::Sense::click());
+    let chosen = *paper == choice;
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::RadioButton, true, chosen, choice.name())
+    });
+    if response.clicked() {
+        *paper = choice;
+    }
+    let visuals = ui.visuals();
+    let stroke = if chosen {
+        egui::Stroke::new(2.0, visuals.selection.bg_fill)
+    } else {
+        // The text colour, brighter on hover: visible on light and dark.
+        egui::Stroke::new(1.0, ui.style().interact(&response).fg_stroke.color)
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, paper_colour(choice));
+    painter.rect_stroke(rect, 3.0, stroke, egui::StrokeKind::Outside);
+    response.on_hover_text(choice.name());
 }
 
 fn zoom_name(zoom: StartZoom) -> &'static str {

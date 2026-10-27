@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
-use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Vec2, pos2, vec2};
+use eframe::egui::{self, Rect, ScrollArea, Sense, Vec2, pos2, vec2};
 use noido_core::{
     Action, Defaults, Direction, Keep, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker,
     SidebarState, THUMBNAIL_BUDGET, View, ViewState, render_scale, window_keep, window_order,
@@ -12,7 +12,7 @@ use noido_settings::{Settings, SettingsFile};
 use noido_state::{DocState, Slot, Store};
 
 use crate::frame;
-use crate::image::PageImage;
+use crate::image::{PageImage, paper_colour};
 use crate::info;
 use crate::instance::Activation;
 use crate::links::{FLASH_SECONDS, Links};
@@ -952,6 +952,7 @@ impl NoidoApp {
 
         let painter = ui.painter();
         let hits = &self.search_state.hits;
+        let paper = paper_colour(self.settings.paper);
         for page in visible {
             let Some(r) = layout.page_rect(page) else {
                 continue;
@@ -959,10 +960,10 @@ impl NoidoApp {
             let rect = Rect::from_min_size(content.min + vec2(r.x, r.y), vec2(r.width, r.height));
             match self.page_image(page) {
                 Some(image) => {
-                    painter.image(image.texture.id(), rect, image.uv, Color32::WHITE);
+                    painter.image(image.texture.id(), rect, image.uv, paper);
                 }
                 None => {
-                    painter.rect_filled(rect, 0.0, Color32::WHITE);
+                    painter.rect_filled(rect, 0.0, paper);
                 }
             }
             // Matches over the page, the current one stronger.
@@ -1132,6 +1133,7 @@ impl NoidoApp {
                 lowres: self.thumbnails.as_ref().map(|t| &t.textures),
                 current: self.current_page(),
                 highlighted: self.highlighted(),
+                paper: paper_colour(self.settings.paper),
                 results: self.search_state.searched().map(|_| sidebar::Results {
                     hits: &self.search_state.hits,
                     generation: self.search_state.generation(),
@@ -1305,7 +1307,7 @@ fn core_key(key: egui::Key) -> Option<Key> {
 mod tests {
     use std::sync::Arc;
 
-    use egui::{Event, Modifiers, RawInput, pos2};
+    use egui::{Color32, Event, Modifiers, RawInput, pos2};
     use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 
     use noido_core::{SidebarState, ViewState};
@@ -2041,6 +2043,7 @@ mod tests {
     fn with_new_documents(defaults: noido_core::Defaults) -> noido_settings::Settings {
         noido_settings::Settings {
             new_documents: defaults,
+            ..noido_settings::Settings::default()
         }
     }
 
@@ -3725,6 +3728,108 @@ mod tests {
         h.frames(5, vec![]);
         assert!(h.app.sidebar_view.sharp_pages().is_empty());
         assert!(h.app.sidebar_view.drawn().is_empty());
+    }
+
+    fn sepia() -> Color32 {
+        let [r, g, b] = noido_core::Paper::Sepia.rgb();
+        Color32::from_rgb(r, g, b)
+    }
+
+    fn on_sepia() -> Settings {
+        Settings {
+            paper: noido_core::Paper::Sepia,
+            ..Settings::default()
+        }
+    }
+
+    /// The rectangles filled with `colour` last frame.
+    fn filled_with(h: &Harness, colour: Color32) -> Vec<Rect> {
+        h.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(r) if r.fill == colour => Some(r.rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The tints of the textured meshes drawn last frame: pages and
+    /// thumbnails.
+    fn image_tints(h: &Harness) -> Vec<Color32> {
+        h.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                    Some(mesh.vertices.iter().map(|v| v.color))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    #[test]
+    fn placeholders_are_paper_coloured() {
+        let mut h = Harness::build_with(Arc::new(SlowEngine), |app| {
+            app.with_settings(None, on_sepia())
+        });
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        let sepia = filled_with(&h, sepia());
+        let thumbnails: Vec<Rect> = h.app.sidebar_view.drawn().iter().map(|d| d.1).collect();
+        assert!(!thumbnails.is_empty());
+        for rect in &thumbnails {
+            assert!(sepia.contains(rect), "thumbnail {rect:?} not sepia");
+        }
+        assert!(sepia.len() > thumbnails.len(), "no sepia page");
+    }
+
+    #[test]
+    fn pages_and_thumbnails_are_tinted_with_paper() {
+        let mut h = Harness::build(|app| {
+            // Fails to open: no low-res thumbnails arrive to replace ours.
+            let thumbnailer = Thumbnailer::start(
+                Arc::new(UnopenableEngine),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            );
+            app.with_thumbnails(thumbnailer)
+                .with_settings(None, on_sepia())
+        });
+        let lowres = blank_texture(&h.ctx, "lowres");
+        h.app
+            .thumbnails
+            .as_mut()
+            .unwrap()
+            .textures
+            .insert(0, lowres.clone());
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.until(|h| images(h).len() > 1);
+        let thumbnail = h.shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::Shape::Mesh(mesh) if mesh.texture_id == lowres.texture.id())
+        });
+        assert!(thumbnail, "thumbnail not drawn");
+        let tints = image_tints(&h);
+        assert!(tints.iter().all(|&tint| tint == sepia()), "{tints:?}");
+    }
+
+    #[test]
+    fn choosing_paper_saves_and_shows_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = settings_in(dir.path());
+        h.until(|h| !images(h).is_empty());
+        open_settings(&mut h);
+        // Until the page has faded in: its colours are dimmed before.
+        h.frames(30, vec![]);
+        let swatch = filled_with(&h, sepia());
+        assert_eq!(swatch.len(), 1, "one sepia square: {swatch:?}");
+        h.click(swatch[0].center());
+        h.frames(2, vec![]);
+        let saved = SettingsFile::at(dir.path()).load().unwrap();
+        assert_eq!(saved.paper, noido_core::Paper::Sepia);
+        let tints = image_tints(&h);
+        assert!(!tints.is_empty());
+        assert!(tints.iter().all(|&tint| tint == sepia()), "{tints:?}");
     }
 
     #[test]

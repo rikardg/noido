@@ -45,6 +45,8 @@ pub struct Input<'a> {
     pub current: Option<usize>,
     /// The pages shown as current: the current page, or its spread.
     pub highlighted: Range<usize>,
+    /// The tint thumbnails are drawn with: the paper colour.
+    pub paper: Color32,
     /// While searching: the matches, shown instead of the thumbnails.
     pub results: Option<Results<'a>>,
 }
@@ -303,10 +305,10 @@ impl SidebarView {
                 .or_else(|| input.lowres.and_then(|lowres| lowres.get(&page)));
             match image {
                 Some(image) => {
-                    painter.image(image.texture.id(), rect, image.uv, Color32::WHITE);
+                    painter.image(image.texture.id(), rect, image.uv, input.paper);
                 }
                 None => {
-                    painter.rect_filled(rect, 0.0, Color32::WHITE);
+                    painter.rect_filled(rect, 0.0, input.paper);
                 }
             }
             painter.rect_stroke(
