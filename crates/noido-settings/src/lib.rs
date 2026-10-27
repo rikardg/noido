@@ -1,12 +1,13 @@
 //! noido's settings, in `settings.toml` in the platform's directory for
-//! application config. For now: what a new document opens with.
+//! application config: what a new document opens with, and the paper
+//! colour.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
-use noido_core::{Defaults, StartZoom};
+use noido_core::{Defaults, Paper, StartZoom};
 use serde::{Deserialize, Serialize};
 
 const VERSION: u32 = 1;
@@ -17,6 +18,8 @@ const FILE_NAME: &str = "settings.toml";
 pub struct Settings {
     /// The view a document with no saved state opens with.
     pub new_documents: Defaults,
+    /// The colour pages are shown on, in every document.
+    pub paper: Paper,
 }
 
 /// The settings file.
@@ -62,6 +65,7 @@ impl SettingsFile {
         }
         Ok(Settings {
             new_documents: file.new_documents.defaults(),
+            paper: paper_from_name(&file.paper),
         })
     }
 
@@ -73,6 +77,7 @@ impl SettingsFile {
         let file = File {
             version: VERSION,
             new_documents: NewDocuments::from(&settings.new_documents),
+            paper: paper_name(settings.paper).to_owned(),
         };
         let text = toml::to_string(&file).map_err(io::Error::other)?;
         let temp = self
@@ -92,6 +97,24 @@ struct File {
     version: u32,
     #[serde(default)]
     new_documents: NewDocuments,
+    /// Missing or unknown is white.
+    #[serde(default)]
+    paper: String,
+}
+
+fn paper_name(paper: Paper) -> &'static str {
+    match paper {
+        Paper::White => "white",
+        Paper::Sepia => "sepia",
+        Paper::Grey => "grey",
+    }
+}
+
+fn paper_from_name(name: &str) -> Paper {
+    Paper::ALL
+        .into_iter()
+        .find(|&paper| paper_name(paper) == name)
+        .unwrap_or_default()
 }
 
 fn version() -> u32 {
@@ -158,7 +181,7 @@ impl NewDocuments {
 mod tests {
     use std::fs;
 
-    use noido_core::{Defaults, StartZoom};
+    use noido_core::{Defaults, Paper, StartZoom};
 
     use super::*;
 
@@ -188,6 +211,7 @@ mod tests {
                 odd_left: false,
                 sidebar: true,
             },
+            paper: Paper::Sepia,
         };
         file(&dir).save(&settings).unwrap();
         assert_eq!(file(&dir).load().unwrap(), settings);
@@ -256,5 +280,39 @@ mod tests {
         let text = fs::read_to_string(file(&dir).path()).unwrap();
         assert!(text.contains("version = 1"), "{text}");
         assert!(text.contains("zoom = \"fit-width\""), "{text}");
+    }
+
+    #[test]
+    fn every_paper_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        for paper in Paper::ALL {
+            let settings = Settings {
+                paper,
+                ..Settings::default()
+            };
+            file(&dir).save(&settings).unwrap();
+            assert_eq!(file(&dir).load().unwrap().paper, paper);
+        }
+    }
+
+    #[test]
+    fn paper_is_written_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            paper: Paper::Grey,
+            ..Settings::default()
+        };
+        file(&dir).save(&settings).unwrap();
+        let text = fs::read_to_string(file(&dir).path()).unwrap();
+        assert!(text.contains("paper = \"grey\""), "{text}");
+    }
+
+    #[test]
+    fn missing_or_unknown_paper_is_white() {
+        let dir = tempfile::tempdir().unwrap();
+        for text in ["version = 1\n", "paper = \"purple\"\n"] {
+            write(&dir, text);
+            assert_eq!(file(&dir).load().unwrap().paper, Paper::White, "{text}");
+        }
     }
 }
