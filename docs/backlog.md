@@ -287,6 +287,15 @@ when it is fixed.
 
 ## Ideas and thoughts
 
+- **Dark paper with light text.** Tinting (the paper colour setting) can
+  only darken, so a dark page needs the pixels remapped: on the render
+  thread after hayro rasterises (cheap next to rasterising), or in a
+  shader. Plain inversion turns photos and colour figures into negatives;
+  zathura's "keep hue" flips only lightness, which helps but still looks
+  odd on photos. Decide what to do with images first.
+- **Paper colour per document?** It is global for now; not yet settled
+  whether a document should remember its own (a scan may want white while
+  books want sepia).
 - **Rendered previews of search hits.** Instead of (or next to) a line of
   text, each result in the sidebar shows a small rendering of the page region
   around the match, with the match highlighted, as macOS Preview can. Helps
