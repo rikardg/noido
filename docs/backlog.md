@@ -617,3 +617,12 @@ when it is fixed.
 - **`bisque_is_written_by_name`** repeats what `every_paper_round_trips`
   and `paper_is_written_by_name` already cover; fold it into one test
   over `Paper::ALL` that checks each name in the file.
+
+## Paper row clears the scrim (review minors, 2026-10-27)
+
+- **Keyboard focus on a paper square doesn't clear the scrim**; only the
+  pointer does (by the spec). Clear it while a square has focus too.
+- **Closed while the scrim was clear, the scrim fades back in on reopening**
+  over 0.15 s instead of showing at once: the animation lives in the egui
+  context, not in `settings::Page`. Cosmetic; the dialog fades in too.
+  Reset that animation id when the page opens.
