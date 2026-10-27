@@ -614,3 +614,6 @@ when it is fixed.
   `labelled_by` the label, or group them.
 - **Test helper `sepia()`** in the app tests duplicates
   `image::paper_colour(Paper::Sepia)`.
+- **`bisque_is_written_by_name`** repeats what `every_paper_round_trips`
+  and `paper_is_written_by_name` already cover; fold it into one test
+  over `Paper::ALL` that checks each name in the file.
