@@ -590,3 +590,22 @@ when it is fixed.
 - The page-keys spec and plan (2026-10-25) and the screen edge flash spec
   still say 90% / `SCREEN_OVERLAP = 0.1`; they are dated records, superseded
   by `2026-10-26-page-step-98-design.md`.
+
+## Paper colour (review minors, 2026-10-27)
+
+- **No focus ring on the swatches.** The chosen square always has its
+  2px selection frame, so tabbing onto it shows nothing new; unchosen ones
+  only brighten their outline slightly. Draw a focus stroke outside the
+  square when `response.has_focus()` (`settings.rs`, `swatch`).
+- **Other windows keep the old paper.** One process per file: choosing
+  sepia in one window leaves the others white until relaunched or their
+  settings page is opened (which rereads the file). Reread settings on
+  focus, or watch `settings.toml`.
+- **A misplaced hand edit is silently ignored.** `paper = "sepia"` written
+  after `[new_documents]` is read as `new_documents.paper` and dropped.
+  Names are case-sensitive, and `"gray"` is not accepted. Accept `gray` and
+  any case; maybe warn on stderr for an unknown name.
+- **The "Paper" label isn't tied to the squares** for screen readers:
+  `labelled_by` the label, or group them.
+- **Test helper `sepia()`** in the app tests duplicates
+  `image::paper_colour(Paper::Sepia)`.
