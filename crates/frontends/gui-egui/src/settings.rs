@@ -9,12 +9,19 @@ use crate::image::paper_colour;
 
 /// The side of a paper colour square.
 const SWATCH: f32 = 20.0;
+/// The alpha of the black that dims the document behind the page: egui's.
+const SCRIM_ALPHA: f32 = 100.0;
+/// How long the scrim takes to clear, or come back.
+const SCRIM_FADE: f32 = 0.15;
 
 /// The open settings page.
 #[derive(Default)]
 pub struct Page {
     /// Why the last change couldn't be saved.
     pub error: Option<String>,
+    /// The pointer was over the Paper row last frame: the scrim clears, so
+    /// the paper can be judged.
+    paper_hovered: bool,
 }
 
 pub struct Output {
@@ -26,7 +33,7 @@ pub struct Output {
 /// Shows the page over the window. `current` is how the open document is
 /// shown, for "Set from current view".
 pub fn show(
-    page: &Page,
+    page: &mut Page,
     ctx: &egui::Context,
     settings: &mut Settings,
     current: Option<Defaults>,
@@ -37,16 +44,22 @@ pub fn show(
     let builtin = Defaults::default();
     let on_off = |on: bool| if on { "on" } else { "off" };
     let mut close = false;
-    let response = egui::Modal::new(egui::Id::unique("settings")).show(ctx, |ui| {
+    let id = egui::Id::unique("settings");
+    let clear = ctx.animate_bool_with_time(id.with("scrim"), page.paper_hovered, SCRIM_FADE);
+    let scrim = egui::Color32::from_black_alpha((SCRIM_ALPHA * (1.0 - clear)).round() as u8);
+    let modal = egui::Modal::new(id).backdrop_color(scrim);
+    let mut paper_hovered = false;
+    let response = modal.show(ctx, |ui| {
         ui.set_width(320.0);
         ui.heading("Settings");
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        let row = ui.horizontal(|ui| {
             ui.label("Paper");
             for choice in Paper::ALL {
                 swatch(ui, paper, choice);
             }
         });
+        paper_hovered = row.response.contains_pointer();
         ui.add_space(12.0);
         ui.label("New documents open with:");
         ui.add_space(8.0);
@@ -91,6 +104,7 @@ pub fn show(
             close = ui.button("Close").clicked();
         });
     });
+    page.paper_hovered = paper_hovered;
     Output {
         changed: *settings != before,
         close: close || response.should_close(),

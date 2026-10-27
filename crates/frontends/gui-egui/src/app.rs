@@ -3832,6 +3832,29 @@ mod tests {
         assert!(tints.iter().all(|&tint| tint == sepia()), "{tints:?}");
     }
 
+    /// The dimming drawn over the whole window, if any.
+    fn scrim(h: &Harness) -> Option<Color32> {
+        let window = Rect::from_min_size(pos2(0.0, 0.0), h.size);
+        h.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(r) if r.rect == window && r.fill.a() > 0 => Some(r.fill),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn hovering_paper_row_clears_scrim() {
+        let mut h = Harness::new();
+        open_settings(&mut h);
+        h.frames(30, vec![]);
+        assert!(scrim(&h).is_some(), "no scrim to begin with");
+        let label = h.text_rect("Paper").unwrap();
+        h.frames(30, vec![Event::PointerMoved(label.center())]);
+        assert_eq!(scrim(&h), None);
+        let away = h.text_rect("Close").unwrap();
+        h.frames(30, vec![Event::PointerMoved(away.center())]);
+        assert!(scrim(&h).is_some(), "scrim not back");
+    }
+
     #[test]
     fn sidebar_draws_lowres_without_sharp() {
         let mut h = Harness::build(|app| {
