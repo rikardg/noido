@@ -11,8 +11,9 @@ use crate::image::paper_colour;
 const SWATCH: f32 = 20.0;
 /// The alpha of the black that dims the document behind the page: egui's.
 const SCRIM_ALPHA: f32 = 100.0;
-/// How long the scrim takes to clear, or come back.
-const SCRIM_FADE: f32 = 0.15;
+/// How long the scrim takes to clear or come back, and the paper colour to
+/// change.
+pub(crate) const FADE: f32 = 0.15;
 
 /// The open settings page.
 #[derive(Default)]
@@ -55,7 +56,7 @@ pub fn show(
     let on_off = |on: bool| if on { "on" } else { "off" };
     let mut close = false;
     let id = egui::Id::unique("settings");
-    let clear = ctx.animate_bool_with_time(id.with("scrim"), page.paper_hovered, SCRIM_FADE);
+    let clear = ctx.animate_bool_with_time(id.with("scrim"), page.paper_hovered, FADE);
     let scrim = egui::Color32::from_black_alpha((SCRIM_ALPHA * (1.0 - clear)).round() as u8);
     let modal = egui::Modal::new(id).backdrop_color(scrim);
     let mut paper_hovered = false;
@@ -66,8 +67,13 @@ pub fn show(
         ui.add_space(4.0);
         let row = ui.horizontal(|ui| {
             ui.label("Paper");
+            // The squares' hover areas touch: none between them, where
+            // the preview would drop back to the chosen paper.
+            let gap = ui.spacing().item_spacing.x;
+            ui.add_space(gap / 2.0);
+            ui.spacing_mut().item_spacing.x = 0.0;
             for choice in Paper::ALL {
-                if swatch(ui, paper, choice) {
+                if swatch(ui, paper, choice, gap) {
                     preview = Some(choice);
                 }
             }
@@ -125,10 +131,12 @@ pub fn show(
     }
 }
 
-/// A square of `choice`'s colour that chooses it, framed when chosen.
-/// Whether the pointer is over it.
-fn swatch(ui: &mut egui::Ui, paper: &mut Paper, choice: Paper) -> bool {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(SWATCH, SWATCH), egui::Sense::click());
+/// A square of `choice`'s colour that chooses it, framed when chosen, in a
+/// cell `gap` wider. Whether the pointer is over the cell.
+fn swatch(ui: &mut egui::Ui, paper: &mut Paper, choice: Paper, gap: f32) -> bool {
+    let cell = egui::vec2(SWATCH + gap, SWATCH);
+    let (cell, response) = ui.allocate_exact_size(cell, egui::Sense::click());
+    let rect = egui::Rect::from_center_size(cell.center(), egui::vec2(SWATCH, SWATCH));
     let chosen = *paper == choice;
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::Role::RadioButton, true, chosen, choice.name())

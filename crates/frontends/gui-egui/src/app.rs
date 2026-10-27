@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
-use eframe::egui::{self, Rect, ScrollArea, Sense, Vec2, pos2, vec2};
+use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Vec2, pos2, vec2};
 use noido_core::{
     Action, Defaults, Direction, Keep, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker,
     SidebarState, THUMBNAIL_BUDGET, View, ViewState, render_scale, window_keep, window_order,
@@ -12,7 +12,7 @@ use noido_settings::{Settings, SettingsFile};
 use noido_state::{DocState, Slot, Store};
 
 use crate::frame;
-use crate::image::{PageImage, paper_colour};
+use crate::image::PageImage;
 use crate::info;
 use crate::instance::Activation;
 use crate::links::{FLASH_SECONDS, Links};
@@ -952,7 +952,7 @@ impl NoidoApp {
 
         let painter = ui.painter();
         let hits = &self.search_state.hits;
-        let paper = paper_colour(self.paper());
+        let paper = self.paper_tint(ui.ctx());
         for page in visible {
             let Some(r) = layout.page_rect(page) else {
                 continue;
@@ -1133,7 +1133,7 @@ impl NoidoApp {
                 lowres: self.thumbnails.as_ref().map(|t| &t.textures),
                 current: self.current_page(),
                 highlighted: self.highlighted(),
-                paper: paper_colour(self.paper()),
+                paper: self.paper_tint(&ctx),
                 results: self.search_state.searched().map(|_| sidebar::Results {
                     hits: &self.search_state.hits,
                     generation: self.search_state.generation(),
@@ -1240,6 +1240,18 @@ impl NoidoApp {
             .unwrap_or(self.settings.paper)
     }
 
+    /// The tint pages are drawn with: the colour of [`Self::paper`], faded
+    /// to from the last one.
+    fn paper_tint(&self, ctx: &egui::Context) -> Color32 {
+        let id = egui::Id::unique("paper tint");
+        let channel = |i: usize, value: u8| {
+            ctx.animate_value_with_time(id.with(i), value.into(), settings::FADE)
+                .round() as u8
+        };
+        let [r, g, b] = self.paper().rgb();
+        Color32::from_rgb(channel(0, r), channel(1, g), channel(2, b))
+    }
+
     /// Shows the settings page while it is open, saving each change.
     fn settings_page(&mut self, ctx: &egui::Context) {
         let Some(page) = &mut self.settings_page else {
@@ -1316,7 +1328,7 @@ fn core_key(key: egui::Key) -> Option<Key> {
 mod tests {
     use std::sync::Arc;
 
-    use egui::{Color32, Event, Modifiers, RawInput, pos2};
+    use egui::{Event, Modifiers, RawInput, pos2};
     use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 
     use noido_core::{SidebarState, ViewState};
@@ -1325,6 +1337,7 @@ mod tests {
     use noido_state::{DocKey, DocState, Store};
 
     use super::*;
+    use crate::image::paper_colour;
     use crate::search;
 
     /// Ten Letter pages that render as a single white pixel.
@@ -3837,7 +3850,8 @@ mod tests {
         let swatch = filled_with(&h, sepia());
         assert_eq!(swatch.len(), 1, "one sepia square: {swatch:?}");
         h.click(swatch[0].center());
-        h.frames(2, vec![]);
+        // Until the fade to it has ended.
+        h.frames(30, vec![]);
         let saved = SettingsFile::at(dir.path()).load().unwrap();
         assert_eq!(saved.paper, noido_core::Paper::Sepia);
         let tints = image_tints(&h);
@@ -3853,12 +3867,13 @@ mod tests {
         open_settings(&mut h);
         h.frames(30, vec![]);
         let swatch = filled_with(&h, sepia())[0];
-        h.frames(2, vec![Event::PointerMoved(swatch.center())]);
+        // Until the fade to it has ended.
+        h.frames(30, vec![Event::PointerMoved(swatch.center())]);
         let tints = image_tints(&h);
         assert!(!tints.is_empty());
         assert!(tints.iter().all(|&tint| tint == sepia()), "{tints:?}");
         let away = h.text_rect("Close").unwrap();
-        h.frames(2, vec![Event::PointerMoved(away.center())]);
+        h.frames(30, vec![Event::PointerMoved(away.center())]);
         let tints = image_tints(&h);
         assert!(
             tints.iter().all(|&tint| tint == Color32::WHITE),
@@ -3890,6 +3905,38 @@ mod tests {
             h.frames(30, vec![]);
         }
         assert_eq!(h.app.paper(), noido_core::Paper::White);
+    }
+
+    #[test]
+    fn between_paper_squares_previews_one_of_them() {
+        let mut h = Harness::new();
+        open_settings(&mut h);
+        h.frames(30, vec![]);
+        let sepia = filled_with(&h, sepia())[0];
+        let bisque = filled_with(&h, paper_colour(noido_core::Paper::Bisque))[0];
+        assert!(sepia.max.x < bisque.min.x, "squares touch");
+        let between = pos2((sepia.max.x + bisque.min.x) / 2.0, sepia.center().y);
+        h.frames(2, vec![Event::PointerMoved(between)]);
+        let preview = h.app.paper();
+        assert!(
+            [noido_core::Paper::Sepia, noido_core::Paper::Bisque].contains(&preview),
+            "{preview:?}"
+        );
+    }
+
+    #[test]
+    fn paper_fades_to_the_hovered_one() {
+        let mut h = Harness::new();
+        h.until(|h| !images(h).is_empty());
+        open_settings(&mut h);
+        h.frames(30, vec![]);
+        let swatch = filled_with(&h, sepia())[0];
+        // A frame to see the hover, one to start the fade.
+        h.frames(3, vec![Event::PointerMoved(swatch.center())]);
+        let tint = image_tints(&h)[0];
+        assert!(tint != Color32::WHITE && tint != sepia(), "{tint:?}");
+        h.frames(30, vec![]);
+        assert_eq!(image_tints(&h)[0], sepia());
     }
 
     /// The dimming drawn over the whole window, if any.
