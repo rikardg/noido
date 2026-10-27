@@ -626,3 +626,9 @@ when it is fixed.
   over 0.15 s instead of showing at once: the animation lives in the egui
   context, not in `settings::Page`. Cosmetic; the dialog fades in too.
   Reset that animation id when the page opens.
+
+## Paper hover preview (review minors, 2026-10-27)
+
+- **No test that the sidebar thumbnails follow the preview.** The page
+  images do; the thumbnails get the same colour through
+  `sidebar::Input::paper`, untested on hover.
