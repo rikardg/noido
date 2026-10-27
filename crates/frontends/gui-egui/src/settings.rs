@@ -22,6 +22,16 @@ pub struct Page {
     /// The pointer was over the Paper row last frame: the scrim clears, so
     /// the paper can be judged.
     paper_hovered: bool,
+    /// The paper whose square the pointer was over last frame: the document
+    /// is shown on it, not yet chosen.
+    preview: Option<Paper>,
+}
+
+impl Page {
+    /// The paper to show the document on instead of the chosen one.
+    pub fn preview(&self) -> Option<Paper> {
+        self.preview
+    }
 }
 
 pub struct Output {
@@ -49,6 +59,7 @@ pub fn show(
     let scrim = egui::Color32::from_black_alpha((SCRIM_ALPHA * (1.0 - clear)).round() as u8);
     let modal = egui::Modal::new(id).backdrop_color(scrim);
     let mut paper_hovered = false;
+    let mut preview = None;
     let response = modal.show(ctx, |ui| {
         ui.set_width(320.0);
         ui.heading("Settings");
@@ -56,7 +67,9 @@ pub fn show(
         let row = ui.horizontal(|ui| {
             ui.label("Paper");
             for choice in Paper::ALL {
-                swatch(ui, paper, choice);
+                if swatch(ui, paper, choice) {
+                    preview = Some(choice);
+                }
             }
         });
         paper_hovered = row.response.contains_pointer();
@@ -105,6 +118,7 @@ pub fn show(
         });
     });
     page.paper_hovered = paper_hovered;
+    page.preview = preview;
     Output {
         changed: *settings != before,
         close: close || response.should_close(),
@@ -112,7 +126,8 @@ pub fn show(
 }
 
 /// A square of `choice`'s colour that chooses it, framed when chosen.
-fn swatch(ui: &mut egui::Ui, paper: &mut Paper, choice: Paper) {
+/// Whether the pointer is over it.
+fn swatch(ui: &mut egui::Ui, paper: &mut Paper, choice: Paper) -> bool {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(SWATCH, SWATCH), egui::Sense::click());
     let chosen = *paper == choice;
     response.widget_info(|| {
@@ -131,7 +146,9 @@ fn swatch(ui: &mut egui::Ui, paper: &mut Paper, choice: Paper) {
     let painter = ui.painter();
     painter.rect_filled(rect, 3.0, paper_colour(choice));
     painter.rect_stroke(rect, 3.0, stroke, egui::StrokeKind::Outside);
+    let hovered = response.hovered();
     response.on_hover_text(choice.name());
+    hovered
 }
 
 fn zoom_name(zoom: StartZoom) -> &'static str {

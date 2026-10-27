@@ -952,7 +952,7 @@ impl NoidoApp {
 
         let painter = ui.painter();
         let hits = &self.search_state.hits;
-        let paper = paper_colour(self.settings.paper);
+        let paper = paper_colour(self.paper());
         for page in visible {
             let Some(r) = layout.page_rect(page) else {
                 continue;
@@ -1133,7 +1133,7 @@ impl NoidoApp {
                 lowres: self.thumbnails.as_ref().map(|t| &t.textures),
                 current: self.current_page(),
                 highlighted: self.highlighted(),
-                paper: paper_colour(self.settings.paper),
+                paper: paper_colour(self.paper()),
                 results: self.search_state.searched().map(|_| sidebar::Results {
                     hits: &self.search_state.hits,
                     generation: self.search_state.generation(),
@@ -1229,6 +1229,15 @@ impl NoidoApp {
         if info::show(page, ctx, source, &sizes) {
             self.info_page = None;
         }
+    }
+
+    /// The paper the document is shown on: the chosen one, or the one
+    /// whose square on the settings page is hovered.
+    fn paper(&self) -> noido_core::Paper {
+        self.settings_page
+            .as_ref()
+            .and_then(settings::Page::preview)
+            .unwrap_or(self.settings.paper)
     }
 
     /// Shows the settings page while it is open, saving each change.
@@ -3830,6 +3839,29 @@ mod tests {
         let tints = image_tints(&h);
         assert!(!tints.is_empty());
         assert!(tints.iter().all(|&tint| tint == sepia()), "{tints:?}");
+    }
+
+    #[test]
+    fn hovering_paper_previews_it_without_saving() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = settings_in(dir.path());
+        h.until(|h| !images(h).is_empty());
+        open_settings(&mut h);
+        h.frames(30, vec![]);
+        let swatch = filled_with(&h, sepia())[0];
+        h.frames(2, vec![Event::PointerMoved(swatch.center())]);
+        let tints = image_tints(&h);
+        assert!(!tints.is_empty());
+        assert!(tints.iter().all(|&tint| tint == sepia()), "{tints:?}");
+        let away = h.text_rect("Close").unwrap();
+        h.frames(2, vec![Event::PointerMoved(away.center())]);
+        let tints = image_tints(&h);
+        assert!(
+            tints.iter().all(|&tint| tint == Color32::WHITE),
+            "{tints:?}"
+        );
+        assert_eq!(h.app.settings.paper, noido_core::Paper::White);
+        assert!(!SettingsFile::at(dir.path()).path().exists(), "saved");
     }
 
     /// The dimming drawn over the whole window, if any.
