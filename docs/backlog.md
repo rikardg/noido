@@ -28,6 +28,13 @@ when it is fixed.
   contents links go to whole pages, so the flash lands on the page's top
   line (the running head), as agreed.
 
+- **Try history by hand (user).** In the network analysis paper: follow a
+  footnote or contents link, read on a few pages, then Alt+← (and the
+  mouse's back button) returns to where you were; Alt+→ (forward button)
+  goes to where you read on to, not where the link landed. Close and
+  reopen the file: Back still works. Search for a word, step with Ctrl+G,
+  then one Back leaves the search. Back and Forward are in the menu.
+
 - **Try document info by hand (user).** Ctrl+I (or "Document info…" in
   the menu) on the network analysis paper: title, author, LuaTeX producer,
   dates with +02:00, Source Serif 4 / Caption / Subhead as three families.
@@ -256,10 +263,6 @@ when it is fixed.
   `docs/investigations/2026-10-25-text-extraction.md`. Upstream issue or PR,
   or wait for hayro; the text API should let a glyph run carry replacement
   text so this slots in later.
-- **Link history.** Back and forward after following a link (and maybe
-  after other jumps: search hits, thumbnails, go to page). Deferred from
-  links on purpose: which moves count, how scrolling after a jump affects
-  the entry, keys. Own design.
 - **Link preview.** Something on hovering an internal link: the target
   region, a footnote's text, a citation's entry? Unclear what yet.
 - **Highlight all links.** A key or button that shows every link on the
@@ -641,3 +644,21 @@ when it is fixed.
   `add_space`.
 - **Misleading assert message** in `between_paper_squares_previews_one_of_them`:
   "squares touch" sits on a check that the coloured squares are apart.
+
+## History (review minors, 2026-10-28)
+
+- **The mouse's back/forward buttons can pan the page or move the window**
+  if the mouse moves while the button is down: egui's `ScrollArea` drag
+  (`DragScroll::Always`) and the title bar's `drag_started()` react to any
+  button. Pan and move only on the primary button. The "Left drag pans"
+  comment in `app.rs` isn't what egui does.
+- **Clicking the thumbnail of the current page adds an entry.** Plausible
+  (Back returns to the mid-page spot), but repeated clicks pile up. Could
+  skip `leave_here` when the page is already current.
+- **One damaged `[[back]]`/`[[forward]]` table loses the whole state
+  entry**, view and sidebar too. Deserialize the lists leniently.
+- **`doc_state` clones the history every frame** for the save check (up to
+  200 `ViewState`s). Negligible now; a generation counter would avoid it.
+- **A link's flash keeps running after Back/Forward**, usually off screen.
+- **Alt+arrows do nothing while a non-text widget has Tab focus** (the
+  `egui_arrows` check ignores modifiers). The mouse buttons still work.
