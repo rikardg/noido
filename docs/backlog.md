@@ -9,6 +9,11 @@ when it is fixed.
 
 ## Known issues
 
+- **`ctrl_i_shows_document_info` is flaky.** It failed once under a full
+  `cargo test --workspace` (2026-10-27) and passed five times alone. It
+  probably times out: `Harness::until` gives up silently after about 1 s,
+  and the properties load on a background thread. `until` could panic
+  when the time runs out, or the test could wait longer.
 - **Try the desktop integration by hand (user).** Run `noido --install`
   from the binary you want launched, then in Nautilus: "Open With" on a
   PDF lists noido and opens it; several selected PDFs open one window
