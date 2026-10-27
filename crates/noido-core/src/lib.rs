@@ -3,6 +3,7 @@
 mod column;
 mod defaults;
 mod fonts;
+mod history;
 mod hits;
 mod keymap;
 mod layout;
@@ -17,6 +18,7 @@ mod window;
 pub use column::*;
 pub use defaults::*;
 pub use fonts::*;
+pub use history::*;
 pub use hits::*;
 pub use keymap::*;
 pub use layout::*;
