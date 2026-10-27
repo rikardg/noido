@@ -8,18 +8,21 @@ pub enum Paper {
     #[default]
     White,
     Sepia,
+    /// CSS bisque: warmer and a little darker than sepia.
+    Bisque,
     Grey,
 }
 
 impl Paper {
     /// Every paper, in the order the settings page shows them.
-    pub const ALL: [Paper; 3] = [Paper::White, Paper::Sepia, Paper::Grey];
+    pub const ALL: [Paper; 4] = [Paper::White, Paper::Sepia, Paper::Bisque, Paper::Grey];
 
     /// The colour as red, green, blue.
     pub fn rgb(self) -> [u8; 3] {
         match self {
             Paper::White => [0xFF, 0xFF, 0xFF],
             Paper::Sepia => [0xF4, 0xEC, 0xD8],
+            Paper::Bisque => [0xFF, 0xE4, 0xC4],
             // Light enough that black text keeps about 13:1 contrast.
             Paper::Grey => [0xD4, 0xD4, 0xD4],
         }
@@ -30,6 +33,7 @@ impl Paper {
         match self {
             Paper::White => "Original",
             Paper::Sepia => "Sepia",
+            Paper::Bisque => "Bisque",
             Paper::Grey => "Grey",
         }
     }
@@ -49,11 +53,12 @@ mod tests {
     fn colours() {
         assert_eq!(Paper::Sepia.rgb(), [0xF4, 0xEC, 0xD8]);
         assert_eq!(Paper::Grey.rgb(), [0xD4, 0xD4, 0xD4]);
+        assert_eq!(Paper::Bisque.rgb(), [0xFF, 0xE4, 0xC4]);
     }
 
     #[test]
     fn names() {
         let names: Vec<_> = Paper::ALL.iter().map(|p| p.name()).collect();
-        assert_eq!(names, ["Original", "Sepia", "Grey"]);
+        assert_eq!(names, ["Original", "Sepia", "Bisque", "Grey"]);
     }
 }

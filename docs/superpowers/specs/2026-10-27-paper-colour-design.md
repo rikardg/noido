@@ -6,7 +6,9 @@ Date: 2026-10-27 · Status: small change, agreed in conversation
 
 **What.** One global setting, `paper`: white (the original), sepia
 (`#F4ECD8`) or grey (`#D4D4D4`, light enough that black text keeps about
-13:1 contrast). Colours are my call, to adjust after a look.
+13:1 contrast). Colours are my call, to adjust after a look. Added the
+same day, asked for: bisque (CSS `#FFE4C4`), warmer and a little darker
+than sepia, shown after it.
 
 **How.** Pages are drawn with the paper colour as the texture tint instead
 of white: egui multiplies, so white paper takes the colour and black text

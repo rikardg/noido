@@ -106,6 +106,7 @@ fn paper_name(paper: Paper) -> &'static str {
     match paper {
         Paper::White => "white",
         Paper::Sepia => "sepia",
+        Paper::Bisque => "bisque",
         Paper::Grey => "grey",
     }
 }
@@ -293,6 +294,18 @@ mod tests {
             file(&dir).save(&settings).unwrap();
             assert_eq!(file(&dir).load().unwrap().paper, paper);
         }
+    }
+
+    #[test]
+    fn bisque_is_written_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            paper: Paper::Bisque,
+            ..Settings::default()
+        };
+        file(&dir).save(&settings).unwrap();
+        let text = fs::read_to_string(file(&dir).path()).unwrap();
+        assert!(text.contains("paper = \"bisque\""), "{text}");
     }
 
     #[test]
