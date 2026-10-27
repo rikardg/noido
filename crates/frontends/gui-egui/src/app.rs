@@ -63,6 +63,9 @@ pub struct NoidoApp {
     persistence: Option<Persistence>,
     /// Where Back and Forward go.
     history: History,
+    /// A hit was jumped to since the reader last moved: later hits, of this
+    /// search or a new one, add no history entry.
+    searched_away: bool,
     thumbnails: Option<Thumbnails>,
     /// The page at the window centre.
     focus: Option<usize>,
@@ -193,6 +196,7 @@ impl NoidoApp {
             flip_distance: 0.0,
             persistence: None,
             history: History::default(),
+            searched_away: false,
             thumbnails: None,
             focus: None,
             direction: Direction::Forward,
@@ -339,6 +343,7 @@ impl NoidoApp {
     fn reader_moved(&mut self) {
         self.chosen = None;
         self.search_state.reader_moved();
+        self.searched_away = false;
     }
 
     /// Remembers the current place before a jump, for Back.
@@ -438,8 +443,9 @@ impl NoidoApp {
         let Some(hit) = self.search_state.hits.get(index) else {
             return;
         };
-        // A search is one jump: stepping from hit to hit adds nothing.
-        if !self.search_state.at_hit
+        // A search is one jump: stepping from hit to hit, or searching
+        // again from a hit, adds nothing.
+        if !std::mem::replace(&mut self.searched_away, true)
             && let Some(here) = self.view.state()
         {
             self.history.leave(here);
@@ -5630,5 +5636,18 @@ mod tests {
         assert!(h.app.settings_page.is_some());
         mouse_button(&mut h, egui::PointerButton::Extra1);
         assert_eq!(h.centre().page, 5);
+    }
+
+    #[test]
+    fn a_new_query_without_moving_adds_no_entry() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        search_for(&mut h, "cat");
+        assert_eq!(h.app.view.centre_page(), Some(2));
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        search_for(&mut h, "cat");
+        mouse_button(&mut h, egui::PointerButton::Extra1);
+        assert_eq!(h.app.view.centre_page(), Some(0));
+        assert!(h.app.history.back_entries().is_empty());
     }
 }
