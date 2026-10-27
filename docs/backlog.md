@@ -632,3 +632,12 @@ when it is fixed.
 - **No test that the sidebar thumbnails follow the preview.** The page
   images do; the thumbnails get the same colour through
   `sidebar::Input::paper`, untested on hover.
+
+## Paper row without gaps, fading (review minors, 2026-10-27)
+
+- **The gap between "Paper" and the first square doubled**, to about two
+  item spacings: the label's spacing, `add_space(gap / 2)` and the first
+  cell's half-gap padding (`settings.rs`). Meant to stay one; drop the
+  `add_space`.
+- **Misleading assert message** in `between_paper_squares_previews_one_of_them`:
+  "squares touch" sits on a check that the coloured squares are apart.
