@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
-use noido_core::{DocPoint, SIDEBAR_DEFAULT_WIDTH, SidebarState, ViewState, ZoomMode};
+use noido_core::{DocPoint, History, SIDEBAR_DEFAULT_WIDTH, SidebarState, ViewState, ZoomMode};
 use serde::{Deserialize, Serialize};
 
 const VERSION: u32 = 1;
@@ -55,10 +55,11 @@ impl Slot {
 }
 
 /// What is remembered about a document.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DocState {
     pub view: ViewState,
     pub sidebar: SidebarState,
+    pub history: History,
 }
 
 /// The state directory and the documents' files in it.
@@ -214,6 +215,27 @@ struct Entry {
     path: String,
     /// Seconds since the Unix epoch.
     saved: u64,
+    #[serde(flatten)]
+    place: Place,
+    // Absent from files written before the sidebar existed.
+    #[serde(default)]
+    sidebar_open: bool,
+    #[serde(default = "default_sidebar_width")]
+    sidebar_width: f32,
+    /// The name of the document's window file; absent from files written
+    /// before entries named it, which use their own hash.
+    #[serde(default)]
+    window: Option<String>,
+    // Absent from files written before history existed.
+    #[serde(default)]
+    back: Vec<Place>,
+    #[serde(default)]
+    forward: Vec<Place>,
+}
+
+/// The TOML form of a [`ViewState`]: the document's own, or a history entry.
+#[derive(Serialize, Deserialize)]
+struct Place {
     zoom: Zoom,
     scale: f32,
     continuous: bool,
@@ -224,15 +246,6 @@ struct Entry {
     page: usize,
     x: f32,
     y: f32,
-    // Absent from files written before the sidebar existed.
-    #[serde(default)]
-    sidebar_open: bool,
-    #[serde(default = "default_sidebar_width")]
-    sidebar_width: f32,
-    /// The name of the document's window file; absent from files written
-    /// before entries named it, which use their own hash.
-    #[serde(default)]
-    window: Option<String>,
 }
 
 fn yes() -> bool {
@@ -251,15 +264,9 @@ enum Zoom {
     Custom,
 }
 
-impl Entry {
-    fn new(path: &Path, window: &str, doc: &DocState) -> Self {
-        let state = &doc.view;
+impl Place {
+    fn new(state: &ViewState) -> Self {
         Self {
-            version: VERSION,
-            path: path.to_string_lossy().into_owned(),
-            saved: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs()),
             zoom: match state.zoom {
                 ZoomMode::FitWidth => Zoom::FitWidth,
                 ZoomMode::FitPage => Zoom::FitPage,
@@ -272,14 +279,11 @@ impl Entry {
             page: state.centre.page,
             x: state.centre.x,
             y: state.centre.y,
-            sidebar_open: doc.sidebar.open,
-            sidebar_width: doc.sidebar.width,
-            window: Some(window.to_owned()),
         }
     }
 
-    fn state(&self) -> DocState {
-        let view = ViewState {
+    fn state(&self) -> ViewState {
+        ViewState {
             zoom: match self.zoom {
                 Zoom::FitWidth => ZoomMode::FitWidth,
                 Zoom::FitPage => ZoomMode::FitPage,
@@ -294,13 +298,37 @@ impl Entry {
                 x: self.x,
                 y: self.y,
             },
-        };
+        }
+    }
+}
+
+impl Entry {
+    fn new(path: &Path, window: &str, doc: &DocState) -> Self {
+        let places = |states: &[ViewState]| states.iter().map(Place::new).collect();
+        Self {
+            version: VERSION,
+            path: path.to_string_lossy().into_owned(),
+            saved: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+            place: Place::new(&doc.view),
+            sidebar_open: doc.sidebar.open,
+            sidebar_width: doc.sidebar.width,
+            window: Some(window.to_owned()),
+            back: places(doc.history.back_entries()),
+            forward: places(doc.history.forward_entries()),
+        }
+    }
+
+    fn state(&self) -> DocState {
+        let states = |places: &[Place]| places.iter().map(Place::state).collect();
         DocState {
-            view,
+            view: self.place.state(),
             sidebar: SidebarState {
                 open: self.sidebar_open,
                 width: self.sidebar_width,
             },
+            history: History::from_parts(states(&self.back), states(&self.forward)),
         }
     }
 }

@@ -4,8 +4,9 @@ use std::time::Duration;
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Vec2, pos2, vec2};
 use noido_core::{
-    Action, Defaults, Direction, Keep, Key, KeyPress, Keymap, MAX_RENDER_SIDE, RenderTracker,
-    SidebarState, THUMBNAIL_BUDGET, View, ViewState, render_scale, window_keep, window_order,
+    Action, Defaults, Direction, History, Keep, Key, KeyPress, Keymap, MAX_RENDER_SIDE,
+    RenderTracker, SidebarState, THUMBNAIL_BUDGET, View, ViewState, render_scale, window_keep,
+    window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
 use noido_settings::{Settings, SettingsFile};
@@ -145,14 +146,14 @@ impl Persistence {
     /// Saves `state` once it has been unchanged for [`SAVE_DELAY`] at `now`;
     /// otherwise returns how long until then.
     fn update(&mut self, state: DocState, now: f64) -> Option<f64> {
-        if self.saved == Some(state) {
+        if self.saved.as_ref() == Some(&state) {
             self.changed = None;
             return None;
         }
-        let since = match self.changed {
-            Some((changed, since)) if changed == state => since,
+        let since = match &self.changed {
+            Some((changed, since)) if *changed == state => *since,
             _ => {
-                self.changed = Some((state, now));
+                self.changed = Some((state.clone(), now));
                 now
             }
         };
@@ -555,6 +556,7 @@ impl NoidoApp {
         Some(DocState {
             view: self.view.state()?,
             sidebar: self.sidebar,
+            history: History::default(),
         })
     }
 
@@ -1092,7 +1094,7 @@ impl eframe::App for NoidoApp {
 
     fn on_exit(&mut self) {
         if let (Some(state), Some(persistence)) = (self.doc_state(), &mut self.persistence)
-            && persistence.saved != Some(state)
+            && persistence.saved.as_ref() != Some(&state)
         {
             persistence.save(state);
         }
@@ -2061,6 +2063,7 @@ mod tests {
         let restored = DocState {
             view: state,
             sidebar: SidebarState::default(),
+            history: History::default(),
         };
         let h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
@@ -2119,6 +2122,7 @@ mod tests {
                 },
             },
             sidebar: SidebarState::default(),
+            history: History::default(),
         };
         let h = Harness::build(|app| {
             app.with_settings(None, settings).with_persistence(
@@ -2167,6 +2171,7 @@ mod tests {
                 },
             },
             sidebar: SidebarState::default(),
+            history: History::default(),
         };
         let h = Harness::build(|app| {
             app.with_settings(None, settings).with_persistence(
@@ -2313,6 +2318,7 @@ mod tests {
                 open: true,
                 width: 2000.0,
             },
+            history: History::default(),
         };
         let mut h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(state))

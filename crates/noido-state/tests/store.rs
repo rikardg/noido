@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use noido_core::{DocPoint, SidebarState, ViewState, ZoomMode};
+use noido_core::{DocPoint, History, SidebarState, ViewState, ZoomMode};
 use noido_state::{DocKey, DocState, Slot, Store};
 use tempfile::TempDir;
 
@@ -21,6 +21,7 @@ fn state(page: usize) -> DocState {
             },
         },
         sidebar: SidebarState::default(),
+        history: History::default(),
     }
 }
 
@@ -306,4 +307,53 @@ fn prune_removes_named_window_file() {
     store.save(&slot, &state(1)).unwrap();
     store.prune(0);
     assert_eq!(names(&docs(&dir)), Vec::<String>::new());
+}
+
+#[test]
+fn history_is_saved_and_loaded() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let fit = ViewState {
+        zoom: ZoomMode::FitWidth,
+        scale: 0.8,
+        continuous: true,
+        dual: false,
+        odd_left: false,
+        centre: DocPoint {
+            page: 7,
+            x: 1.0,
+            y: 2.0,
+        },
+    };
+    let saved = DocState {
+        history: History::from_parts(vec![state(1).view, fit], vec![state(9).view]),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    assert_eq!(loaded(&store, &key), Some(saved));
+}
+
+#[test]
+fn a_file_without_history_loads() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    fs::create_dir_all(docs(&dir)).unwrap();
+    fs::write(
+        docs(&dir).join(format!("{}.toml", key.hex())),
+        "version = 1\npath = \"/papers/a.pdf\"\nsaved = 0\nzoom = \"custom\"\n\
+         scale = 1.5\ncontinuous = false\ndual = true\nodd_left = true\npage = 3\n\
+         x = 10.0\ny = 20.5\nsidebar_open = true\nsidebar_width = 300.0\n\
+         window = \"abc\"\n",
+    )
+    .unwrap();
+    let expected = DocState {
+        sidebar: SidebarState {
+            open: true,
+            width: 300.0,
+        },
+        ..state(3)
+    };
+    assert_eq!(loaded(&store, &key), Some(expected));
 }
