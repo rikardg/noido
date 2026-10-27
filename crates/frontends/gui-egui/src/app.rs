@@ -61,6 +61,8 @@ pub struct NoidoApp {
     /// Trackpad distance scrolled towards the next flip, positive downwards.
     flip_distance: f32,
     persistence: Option<Persistence>,
+    /// Where Back and Forward go.
+    history: History,
     thumbnails: Option<Thumbnails>,
     /// The page at the window centre.
     focus: Option<usize>,
@@ -190,6 +192,7 @@ impl NoidoApp {
             last_scroll: None,
             flip_distance: 0.0,
             persistence: None,
+            history: History::default(),
             thumbnails: None,
             focus: None,
             direction: Direction::Forward,
@@ -338,6 +341,31 @@ impl NoidoApp {
         self.search_state.reader_moved();
     }
 
+    /// Remembers the current place before a jump, for Back.
+    fn leave_here(&mut self) {
+        if let Some(here) = self.view.state() {
+            self.history.leave(here);
+        }
+    }
+
+    fn go_back(&mut self) {
+        if let Some(here) = self.view.state()
+            && let Some(to) = self.history.back(here)
+        {
+            self.view.restore(&to);
+            self.reader_moved();
+        }
+    }
+
+    fn go_forward(&mut self) {
+        if let Some(here) = self.view.state()
+            && let Some(to) = self.history.forward(here)
+        {
+            self.view.restore(&to);
+            self.reader_moved();
+        }
+    }
+
     /// Searches the field's text once it has rested, and takes in hits.
     fn update_search(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
@@ -410,6 +438,12 @@ impl NoidoApp {
         let Some(hit) = self.search_state.hits.get(index) else {
             return;
         };
+        // A search is one jump: stepping from hit to hit adds nothing.
+        if !self.search_state.at_hit
+            && let Some(here) = self.view.state()
+        {
+            self.history.leave(here);
+        }
         self.view.reveal(hit.page, &hit.text.rects);
         self.chosen = None;
         self.search_state.at_hit = true;
@@ -540,6 +574,7 @@ impl NoidoApp {
         if let Some(state) = &restored {
             self.view.restore(&state.view);
             self.sidebar = state.sidebar;
+            self.history = state.history.clone();
         }
         self.persistence = Some(Persistence {
             store,
@@ -556,7 +591,7 @@ impl NoidoApp {
         Some(DocState {
             view: self.view.state()?,
             sidebar: self.sidebar,
-            history: History::default(),
+            history: self.history.clone(),
         })
     }
 
@@ -666,6 +701,28 @@ impl NoidoApp {
                 self.apply(ctx, action);
             }
         }
+        // The mouse's back and forward buttons, also while typing.
+        let buttons: Vec<Action> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::PointerButton {
+                        button: egui::PointerButton::Extra1,
+                        pressed: true,
+                        ..
+                    } => Some(Action::Back),
+                    egui::Event::PointerButton {
+                        button: egui::PointerButton::Extra2,
+                        pressed: true,
+                        ..
+                    } => Some(Action::Forward),
+                    _ => None,
+                })
+                .collect()
+        });
+        for action in buttons {
+            self.apply(ctx, action);
+        }
         // Not elsewhere, such as over the sidebar: there the wheel scrolls
         // what is under it.
         let elsewhere = self
@@ -756,7 +813,8 @@ impl NoidoApp {
             // Not view moves: going to a hit isn't the reader moving away.
             Action::NextHit => self.step_hit(true),
             Action::PreviousHit => self.step_hit(false),
-            Action::Back | Action::Forward => {}
+            Action::Back => self.go_back(),
+            Action::Forward => self.go_forward(),
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::OpenSettings => {
                 // Another noido may have saved changes since: start from
@@ -1072,6 +1130,7 @@ impl NoidoApp {
     fn follow(&mut self, ctx: &egui::Context, link: noido_engine::Link) {
         match link.target {
             noido_engine::LinkTarget::Internal(target) => {
+                self.leave_here();
                 self.view.go_to_target(&target);
                 let last = self.view.layout().page_count().saturating_sub(1);
                 self.chosen = Some(target.page.min(last));
@@ -1146,6 +1205,7 @@ impl NoidoApp {
             };
             let output = self.sidebar_view.show(ui, &mut self.sidebar, &input);
             if let Some(page) = output.clicked {
+                self.leave_here();
                 self.view.go_to_page(page);
                 self.chosen = Some(page);
                 self.search_state.reader_moved();
@@ -5474,5 +5534,101 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Clicks `button` (the mouse's back or forward) mid-window.
+    fn mouse_button(h: &mut Harness, button: egui::PointerButton) {
+        let pos = pos2(h.size.x / 2.0, h.size.y / 2.0);
+        let event = |pressed| Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frames(1, vec![Event::PointerMoved(pos)]);
+        h.frames(1, vec![event(true)]);
+        h.frames(1, vec![event(false)]);
+        h.frames(1, vec![]);
+    }
+
+    #[test]
+    fn following_a_link_and_going_back() {
+        let mut h = linking(&link_engine());
+        click_link(&mut h, 0, 100.0, 96.0);
+        assert_eq!(h.centre().page, 5);
+        go_to(&mut h, 7);
+        h.press(egui::Key::ArrowLeft, Modifiers::ALT);
+        assert_eq!(h.centre().page, 0);
+        h.press(egui::Key::ArrowRight, Modifiers::ALT);
+        assert_eq!(h.centre().page, 7);
+    }
+
+    #[test]
+    fn thumbnail_click_adds_an_entry() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        click_thumbnail(&mut h, 2);
+        assert_eq!(h.app.current_page(), Some(2));
+        mouse_button(&mut h, egui::PointerButton::Extra1);
+        assert_eq!(h.app.current_page(), Some(0));
+        mouse_button(&mut h, egui::PointerButton::Extra2);
+        assert_eq!(h.app.current_page(), Some(2));
+    }
+
+    #[test]
+    fn a_search_is_one_entry() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        search_for(&mut h, "cat");
+        assert_eq!(h.app.view.centre_page(), Some(2));
+        h.press(egui::Key::G, Modifiers::COMMAND);
+        assert_eq!(h.app.view.centre_page(), Some(7));
+        mouse_button(&mut h, egui::PointerButton::Extra1);
+        assert_eq!(h.app.view.centre_page(), Some(0));
+        assert!(h.app.history.back_entries().is_empty());
+    }
+
+    #[test]
+    fn ctrl_g_after_reading_away_adds_an_entry() {
+        let engine = TextEngine::cats();
+        let mut h = searching(&engine);
+        search_for(&mut h, "cat");
+        go_to(&mut h, 4);
+        let read_to = h.app.view.centre_page();
+        h.press(egui::Key::G, Modifiers::COMMAND);
+        assert_eq!(h.app.view.centre_page(), Some(7));
+        mouse_button(&mut h, egui::PointerButton::Extra1);
+        assert_eq!(h.app.view.centre_page(), read_to);
+    }
+
+    #[test]
+    fn history_is_in_the_saved_state() {
+        let mut h = linking(&link_engine());
+        click_link(&mut h, 0, 100.0, 96.0);
+        let state = h.app.doc_state().unwrap();
+        assert_eq!(state.history.back_entries().len(), 1);
+        assert_eq!(state.history.back_entries()[0].centre.page, 0);
+    }
+
+    #[test]
+    fn back_after_the_file_got_shorter() {
+        let mut h = sidebar_on(Arc::new(BlankEngine30));
+        go_to(&mut h, 20);
+        wheel_sidebar(&mut h, 100_000.0);
+        click_thumbnail(&mut h, 1);
+        assert_eq!(h.app.current_page(), Some(1));
+        h.reload(Arc::new(BlankEngine), recompiled_key());
+        assert_eq!(h.app.current_page(), Some(1));
+        h.press(egui::Key::ArrowLeft, Modifiers::ALT);
+        assert_eq!(h.centre().page, 9);
+    }
+
+    #[test]
+    fn back_does_nothing_behind_the_settings() {
+        let mut h = linking(&link_engine());
+        click_link(&mut h, 0, 100.0, 96.0);
+        h.press(egui::Key::Comma, Modifiers::COMMAND);
+        assert!(h.app.settings_page.is_some());
+        mouse_button(&mut h, egui::PointerButton::Extra1);
+        assert_eq!(h.centre().page, 5);
     }
 }
