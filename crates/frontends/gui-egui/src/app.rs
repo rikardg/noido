@@ -608,6 +608,7 @@ impl NoidoApp {
                         key,
                         command: modifiers.command,
                         shift: modifiers.shift,
+                        alt: modifiers.alt,
                     }),
                     _ => None,
                 })
@@ -753,6 +754,7 @@ impl NoidoApp {
             // Not view moves: going to a hit isn't the reader moving away.
             Action::NextHit => self.step_hit(true),
             Action::PreviousHit => self.step_hit(false),
+            Action::Back | Action::Forward => {}
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::OpenSettings => {
                 // Another noido may have saved changes since: start from

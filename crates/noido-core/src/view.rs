@@ -305,6 +305,8 @@ impl View {
             | Action::FocusSearch
             | Action::NextHit
             | Action::PreviousHit
+            | Action::Back
+            | Action::Forward
             | Action::ShowDocumentInfo
             | Action::OpenSettings
             | Action::Quit => {}

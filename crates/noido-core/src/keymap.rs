@@ -33,12 +33,13 @@ impl Key {
 }
 
 /// A key with the state of the platform's primary modifier (`command`: Ctrl,
-/// or Cmd on macOS) and Shift.
+/// or Cmd on macOS), Shift and Alt (Option on macOS).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct KeyPress {
     pub key: Key,
     pub command: bool,
     pub shift: bool,
+    pub alt: bool,
 }
 
 /// Viewer actions that keys (and later menus) trigger.
@@ -62,6 +63,8 @@ pub enum Action {
     FocusSearch,
     NextHit,
     PreviousHit,
+    Back,
+    Forward,
     ShowDocumentInfo,
     OpenSettings,
     Quit,
@@ -80,6 +83,7 @@ impl Keymap {
             key,
             command: false,
             shift: false,
+            alt: false,
         };
         let command = |key| KeyPress {
             command: true,
@@ -88,6 +92,10 @@ impl Keymap {
         let shift = |press: KeyPress| KeyPress {
             shift: true,
             ..press
+        };
+        let alt = |key| KeyPress {
+            alt: true,
+            ..plain(key)
         };
         let bindings = vec![
             (plain(Key::PageUp), Action::ScrollScreenUp),
@@ -110,6 +118,8 @@ impl Keymap {
             (shift(command(Key::G)), Action::PreviousHit),
             (plain(Key::F3), Action::NextHit),
             (shift(plain(Key::F3)), Action::PreviousHit),
+            (alt(Key::ArrowLeft), Action::Back),
+            (alt(Key::ArrowRight), Action::Forward),
             (command(Key::I), Action::ShowDocumentInfo),
             (command(Key::Comma), Action::OpenSettings),
             (command(Key::Q), Action::Quit),
@@ -173,13 +183,14 @@ pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
         Key::ArrowLeft => "←",
         Key::ArrowRight => "→",
     };
-    let (shift, command) = match platform {
-        Platform::Mac => ("⇧", "⌘"),
-        Platform::Other => ("Shift+", "Ctrl+"),
+    let (shift, alt, command) = match platform {
+        Platform::Mac => ("⇧", "⌥", "⌘"),
+        Platform::Other => ("Shift+", "Alt+", "Ctrl+"),
     };
     let shift = if press.shift { shift } else { "" };
+    let alt = if press.alt { alt } else { "" };
     let command = if press.command { command } else { "" };
-    format!("{shift}{command}{key}")
+    format!("{shift}{alt}{command}{key}")
 }
 
 /// Fraction of the visible height that stays on screen when scrolling a screenful.
@@ -210,6 +221,7 @@ mod tests {
             key,
             command,
             shift: false,
+            alt: false,
         }
     }
 
@@ -218,6 +230,46 @@ mod tests {
             shift: true,
             ..press(key, command)
         }
+    }
+
+    fn alted(key: Key) -> KeyPress {
+        KeyPress {
+            alt: true,
+            ..press(key, false)
+        }
+    }
+
+    #[test]
+    fn alt_arrows_go_back_and_forward() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(alted(Key::ArrowLeft), false),
+            Some(Action::Back)
+        );
+        assert_eq!(
+            keymap.action(alted(Key::ArrowRight), false),
+            Some(Action::Forward)
+        );
+        assert_eq!(
+            keymap.action(press(Key::ArrowLeft, false), false),
+            Some(Action::ScrollLeft)
+        );
+    }
+
+    #[test]
+    fn alt_arrows_go_to_the_field_while_editing() {
+        let keymap = Keymap::native();
+        assert_eq!(keymap.action(alted(Key::ArrowLeft), true), None);
+        assert_eq!(keymap.action(alted(Key::ArrowRight), true), None);
+    }
+
+    #[test]
+    fn shortcut_label_shows_alt() {
+        assert_eq!(
+            shortcut_label(alted(Key::ArrowLeft), Platform::Other),
+            "Alt+←"
+        );
+        assert_eq!(shortcut_label(alted(Key::ArrowLeft), Platform::Mac), "⌥←");
     }
 
     #[test]
