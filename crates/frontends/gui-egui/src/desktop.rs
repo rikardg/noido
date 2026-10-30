@@ -50,12 +50,12 @@ pub fn desktop_entry(exe: &Path) -> Result<String, String> {
          Name=noido\n\
          GenericName=PDF Reader\n\
          Comment=Read PDFs and take notes\n\
-         Exec={} %f\n\
+         Exec={} %u\n\
          Icon=x-office-document\n\
          Terminal=false\n\
          StartupNotify=true\n\
          StartupWMClass=noido\n\
-         MimeType=application/pdf;\n\
+         MimeType=application/pdf;x-scheme-handler/noido;\n\
          Categories=Office;Viewer;\n",
         exec_argument(exe)
     ))
@@ -272,12 +272,12 @@ mod tests {
             "Name=noido",
             "GenericName=PDF Reader",
             "Comment=Read PDFs and take notes",
-            "Exec=/opt/noido/noido %f",
+            "Exec=/opt/noido/noido %u",
             "Icon=x-office-document",
             "Terminal=false",
             "StartupNotify=true",
             "StartupWMClass=noido",
-            "MimeType=application/pdf;",
+            "MimeType=application/pdf;x-scheme-handler/noido;",
             "Categories=Office;Viewer;",
         ] {
             assert!(lines.contains(&line), "missing {line:?} in\n{entry}");
@@ -289,7 +289,7 @@ mod tests {
         let entry = desktop_entry(Path::new("/home/a b/$x/no\"ido")).unwrap();
         // Quoted per the Exec rules, then backslashes doubled for the file.
         assert!(
-            entry.contains("Exec=\"/home/a b/\\\\$x/no\\\\\"ido\" %f\n"),
+            entry.contains("Exec=\"/home/a b/\\\\$x/no\\\\\"ido\" %u\n"),
             "{entry}"
         );
     }
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn entry_doubles_percent_signs() {
         let entry = desktop_entry(Path::new("/opt/100%/noido")).unwrap();
-        assert!(entry.contains("Exec=/opt/100%%/noido %f\n"), "{entry}");
+        assert!(entry.contains("Exec=/opt/100%%/noido %u\n"), "{entry}");
     }
 
     #[test]
