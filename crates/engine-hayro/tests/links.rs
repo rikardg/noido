@@ -214,3 +214,13 @@ fn name_tree_with_shared_kids_ends() {
         .expect("looking a name up in a tree of shared kids didn't end");
     assert_eq!(count.unwrap(), 0);
 }
+
+#[test]
+fn named_destination_lookup() {
+    let document = open(&format!("{FIXTURES}/links.pdf"));
+    let tree = document.named_destination("tree.name").unwrap();
+    assert_eq!(tree.page, 1);
+    assert_option(tree.y, Some(292.0));
+    assert_eq!(document.named_destination("OldName").unwrap().page, 1);
+    assert_eq!(document.named_destination("nope"), None);
+}

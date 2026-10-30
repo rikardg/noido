@@ -72,6 +72,10 @@ impl Document for LinkEngine {
         }
         Ok(self.links[page].clone())
     }
+
+    fn named_destination(&self, name: &str) -> Option<Destination> {
+        (name == "a").then(|| target(1, Some(50.0)))
+    }
 }
 
 fn rect(x: f32, y: f32, width: f32, height: f32) -> Rect {
@@ -126,7 +130,7 @@ fn flash_area(linker: &Linker, target: Destination) -> Option<Rect> {
             assert_eq!(got, target);
             area
         }
-        LinkReply::Links { .. } => panic!("links, not a flash"),
+        other => panic!("{other:?}, not a flash"),
     }
 }
 
@@ -139,7 +143,7 @@ fn answers_links_of_a_page() {
             assert_eq!(page, 0);
             assert_eq!(links, vec![web_link()]);
         }
-        LinkReply::Flash { .. } => panic!("a flash, not links"),
+        other => panic!("{other:?}, not links"),
     }
 }
 
@@ -152,7 +156,7 @@ fn failed_links_answer_empty() {
             assert_eq!(page, 1);
             assert!(links.is_empty());
         }
-        LinkReply::Flash { .. } => panic!("a flash, not links"),
+        other => panic!("{other:?}, not links"),
     }
 }
 
@@ -195,4 +199,22 @@ fn replies_come_in_request_order() {
     assert!(matches!(recv(&linker), LinkReply::Flash { target: t, .. } if t.page == 0));
     assert!(matches!(recv(&linker), LinkReply::Links { page: 0, .. }));
     assert!(matches!(recv(&linker), LinkReply::Flash { target: t, .. } if t.page == 2));
+}
+
+#[test]
+fn answers_a_named_place() {
+    let linker = linker();
+    linker.request_named("a".into());
+    match recv(&linker) {
+        LinkReply::Named { name, target: t } => {
+            assert_eq!(name, "a");
+            assert_eq!(t, Some(target(1, Some(50.0))));
+        }
+        other => panic!("{other:?}"),
+    }
+    linker.request_named("b".into());
+    assert!(matches!(
+        recv(&linker),
+        LinkReply::Named { target: None, .. }
+    ));
 }
