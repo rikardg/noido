@@ -15,8 +15,8 @@ use hayro::{RenderCache, RenderSettings};
 use std::cell::OnceCell;
 
 use noido_engine::{
-    Document, EngineError, Glyph, Link, PdfBytes, PdfEngine, PixelRect, Properties, Rgba8Image,
-    Size,
+    Destination, Document, EngineError, Glyph, Link, PdfBytes, PdfEngine, PixelRect, Properties,
+    Rgba8Image, Size,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -118,6 +118,11 @@ impl Document for HayroDocument {
         self.page(page)?;
         let index = self.pages.get_or_init(|| links::page_index(&self.pdf));
         Ok(links::page_links(&self.pdf, index, page))
+    }
+
+    fn named_destination(&self, name: &str) -> Option<Destination> {
+        let index = self.pages.get_or_init(|| links::page_index(&self.pdf));
+        links::named_destination(&self.pdf, index, name.as_bytes())
     }
 
     fn properties(&self) -> Properties {

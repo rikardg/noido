@@ -22,11 +22,17 @@ pub enum LinkReply {
         target: Destination,
         area: Option<Rect>,
     },
+    /// Where the place named `name` is; `None` if the document has none.
+    Named {
+        name: String,
+        target: Option<Destination>,
+    },
 }
 
 enum Command {
     Links(usize),
     Flash(Destination),
+    Named(String),
 }
 
 /// Handle to the links thread. Dropping it stops the thread.
@@ -67,6 +73,11 @@ impl Linker {
         let _ = self.commands.send(Command::Flash(target));
     }
 
+    /// Asks where the place named `name` is.
+    pub fn request_named(&self, name: String) {
+        let _ = self.commands.send(Command::Named(name));
+    }
+
     pub fn try_recv(&self) -> Option<LinkReply> {
         self.replies.try_recv().ok()
     }
@@ -87,6 +98,10 @@ fn run(
             Command::Flash(target) => LinkReply::Flash {
                 target,
                 area: flash_area(document, target),
+            },
+            Command::Named(name) => LinkReply::Named {
+                target: document.named_destination(&name),
+                name,
             },
         };
         if replies.send(reply).is_err() {

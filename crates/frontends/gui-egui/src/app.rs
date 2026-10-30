@@ -1178,7 +1178,7 @@ impl NoidoApp {
         self.come_forward(&ctx);
         self.receive_renders(&ctx);
         self.sidebar_view.receive(&ctx, self.view.layout());
-        self.links.receive(ctx.input(|i| i.time));
+        let _ = self.links.receive(ctx.input(|i| i.time));
         self.sync_from_egui();
         self.receive_reload(&ctx);
         self.handle_input(&ctx);

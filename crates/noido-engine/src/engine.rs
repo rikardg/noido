@@ -4,7 +4,7 @@ use std::sync::Arc;
 /// thread and engine.
 pub type PdfBytes = Arc<Vec<u8>>;
 
-use crate::{Glyph, Link, PixelRect, Properties, Rgba8Image, Size};
+use crate::{Destination, Glyph, Link, PixelRect, Properties, Rgba8Image, Size};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -51,6 +51,13 @@ pub trait Document {
     fn links(&self, page: usize) -> Result<Vec<Link>, EngineError> {
         let _ = page;
         Ok(Vec::new())
+    }
+
+    /// Where the destination named `name` goes. Engines that can't read
+    /// named destinations give none.
+    fn named_destination(&self, name: &str) -> Option<Destination> {
+        let _ = name;
+        None
     }
 
     /// What the document says about itself, and the fonts it uses. Slow on

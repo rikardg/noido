@@ -136,6 +136,12 @@ fn target(pdf: &Pdf, index: &PageIndex, annot: &Dict<'_>) -> Option<LinkTarget> 
     }
 }
 
+/// Where the destination named `name` goes, looked up as a link's named
+/// destination is.
+pub(crate) fn named_destination(pdf: &Pdf, index: &PageIndex, name: &[u8]) -> Option<Destination> {
+    explicit(pdf, index, &named(pdf, name)?)
+}
+
 /// Resolves a destination: an array, or a name looked up in the document.
 fn destination(pdf: &Pdf, index: &PageIndex, dest: Object<'_>) -> Option<Destination> {
     match dest {
