@@ -73,7 +73,7 @@ fn main() -> ExitCode {
 
 fn run(path: &Path) -> Result<(), String> {
     // Before reading the file: a launch on an open file only hands over.
-    let listener = match instance::claim(path) {
+    let listener = match instance::claim(path, None) {
         Claim::Running => {
             eprintln!("{}", handed_over(path));
             return Ok(());
