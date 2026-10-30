@@ -367,6 +367,8 @@ impl NoidoApp {
 
     /// The reader moved the page view: its centre is the current page again.
     fn reader_moved(&mut self) {
+        // A named place found later would pull the reader away.
+        self.links.cancel_named();
         self.chosen = None;
         self.search_state.reader_moved();
         self.searched_away = false;
@@ -390,6 +392,7 @@ impl NoidoApp {
 
     /// Remembers the current place before a jump, for Back.
     fn leave_here(&mut self) {
+        self.links.cancel_named();
         if let Some(here) = self.view.state() {
             self.history.leave(here);
         }
@@ -4558,7 +4561,8 @@ mod tests {
         rendered: Arc<std::sync::Mutex<Vec<usize>>>,
         /// Each page's links.
         links: Arc<Vec<Vec<noido_engine::Link>>>,
-        /// With a link gate, each `links` call waits until it opens.
+        /// With a link gate, each `links` and `named_destination` call waits
+        /// until it opens.
         link_gate: Option<Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>>,
         /// The named places.
         named: Arc<Vec<(String, noido_engine::Destination)>>,
@@ -4699,6 +4703,12 @@ mod tests {
             Ok(self.links[page].clone())
         }
         fn named_destination(&self, name: &str) -> Option<noido_engine::Destination> {
+            if let Some(gate) = &self.link_gate {
+                let mut open = gate.0.lock().unwrap();
+                while !*open {
+                    open = gate.1.wait(open).unwrap();
+                }
+            }
             self.named.iter().find(|(n, _)| n == name).map(|(_, t)| *t)
         }
     }
@@ -5895,6 +5905,34 @@ mod tests {
         h.until(|h| h.app.current_page() != Some(0));
         assert_eq!(h.app.current_page(), Some(0));
         assert!(h.app.history.back_entries().is_empty());
+    }
+
+    /// A harness on ten pages with a place named "sec" on page 6, opening
+    /// at it; the lookup waits until `engine.open_link_gate()`.
+    fn gated_named_place() -> (Harness, TextEngine) {
+        let engine = TextEngine::new(&[&["a line"] as &[&str]; 10])
+            .with_named("sec", 6)
+            .gated_links();
+        let linker = engine.clone();
+        let h = Harness::build_with(Arc::new(engine.clone()), move |app| {
+            app.with_linker(noido_render::Linker::start(
+                Arc::new(linker),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+            .opening_at(Some(Target::Named("sec".into())))
+        });
+        (h, engine)
+    }
+
+    #[test]
+    fn moving_drops_a_pending_named_place() {
+        let (mut h, engine) = gated_named_place();
+        go_to(&mut h, 2);
+        let page = h.centre().page;
+        engine.open_link_gate();
+        h.until(|h| h.centre().page != page);
+        assert_eq!(h.centre().page, page);
     }
 
     #[test]
