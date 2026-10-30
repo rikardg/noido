@@ -5,10 +5,14 @@ is the daily driver; macOS and Windows build but are unchecked.
 
 ## Where things are
 
-- `docs/backlog.md`: everything not done yet. "Next up", "Known issues"
-  (including things the user should try by hand), review minors per
-  feature, "Deferred features", "Ideas and thoughts". Remove an entry when
-  it is fixed; add review minors under a dated section.
+- GitHub issues (`gh`, repo `rikardg/noido`): everything not done yet.
+  Labels: `bug` (known issues), `enhancement` (deferred features),
+  `idea`, `next-up`, `try-by-hand` (things the user should check),
+  `review-minor`. Review minors: one issue per review, titled
+  `<Feature>: review minors (YYYY-MM-DD)`, a checklist in the body.
+  Close an issue when it is fixed, with `Fixes #N` in the commit message.
+- `docs/backlog.md`: the old backlog, frozen. Add nothing to it. When an
+  entry is fixed or moved to an issue, remove it; it goes once it is empty.
 - `docs/superpowers/specs/`: one design per change, `YYYY-MM-DD-<topic>-design.md`.
 - `docs/superpowers/plans/`: implementation plans for the larger ones.
 - `docs/investigations/`: write-ups of things looked into.
@@ -47,12 +51,12 @@ is the daily driver; macOS and Windows build but are unchecked.
 
 - Larger work: brainstorm → spec → plan → execute inline with a ledger in
   `.superpowers/sdd/<plan>/progress.md` (git-ignored; delete when done) →
-  final review → minors to the backlog.
+  final review → minors to an issue.
 - Small changes: a short spec, agreed with the user, then the change.
 - Always TDD: the failing test first, watched failing.
 - After a change: a review by a fresh subagent on the most capable model.
-  Critical and Important findings are fixed test-first; minors go to the
-  backlog, not into the code.
+  Critical and Important findings are fixed test-first; minors go to an
+  issue, not into the code.
 - Rebuild release after anything the user will try, and tell them what to
   check by hand.
 
@@ -61,7 +65,7 @@ is the daily driver; macOS and Windows build but are unchecked.
 - jj, colocated with git. Commit with `jj commit -m "<message>"`; the
   `main` bookmark is not moved by the agent.
 - One commit per step that stands on its own; specs and plans get their
-  own commit (`Spec: …`, `Plan: …`, `Backlog: …`).
+  own commit (`Spec: …`, `Plan: …`).
 - Messages: `Area: what changed, in plain words`, e.g. `Arrow keys: leave
   them to egui while a widget has focus or a menu is open`.
 
