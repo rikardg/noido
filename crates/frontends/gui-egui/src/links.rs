@@ -113,7 +113,6 @@ impl Links {
 
     /// Asks where the place named `name` is; [`Links::receive`] gives the
     /// answer. Replaces any name asked for before.
-    #[cfg_attr(not(test), expect(dead_code, reason = "arrivals use it next"))]
     pub fn resolve(&mut self, name: String) {
         if let Some(linker) = &self.linker {
             linker.request_named(name.clone());
@@ -122,7 +121,6 @@ impl Links {
     }
 
     /// Forgets the name asked for: its answer is no longer wanted.
-    #[cfg_attr(not(test), expect(dead_code, reason = "arrivals use it next"))]
     pub fn cancel_named(&mut self) {
         self.named = None;
     }

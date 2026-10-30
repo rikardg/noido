@@ -5,8 +5,8 @@ use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Vec2, pos2, vec2};
 use noido_core::{
     Action, Defaults, Direction, History, Keep, Key, KeyPress, Keymap, MAX_RENDER_SIDE,
-    RenderTracker, SidebarState, THUMBNAIL_BUDGET, View, ViewState, render_scale, window_keep,
-    window_order,
+    RenderTracker, SidebarState, THUMBNAIL_BUDGET, Target, View, ViewState, render_scale,
+    window_keep, window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
 use noido_settings::{Settings, SettingsFile};
@@ -16,7 +16,7 @@ use crate::frame;
 use crate::image::PageImage;
 use crate::info;
 use crate::instance::Activation;
-use crate::links::{FLASH_SECONDS, Links};
+use crate::links::{FLASH_SECONDS, Links, Named};
 use crate::search::{self, Search};
 use crate::settings;
 use crate::sidebar::{self, SidebarView};
@@ -101,6 +101,12 @@ pub struct NoidoApp {
     watcher: Option<Watcher>,
     /// Set when a later launch on the same file asks the window forward.
     activation: Option<Activation>,
+    /// Where a link asked to go, and whether to leave the place shown for
+    /// Back first; taken at the start of the next frame.
+    arrival: Option<(Target, bool)>,
+    /// Whether to leave the place shown for Back when the named place
+    /// asked for is found.
+    named_leaves: bool,
     /// Where the reader was before a reload to fewer pages moved them, and
     /// where that left them: a version cut short mid-write mustn't cost
     /// them their place, so the next reload returns there unless they moved.
@@ -213,6 +219,8 @@ impl NoidoApp {
             bar: titlebar::Rects::default(),
             watcher: None,
             activation: None,
+            arrival: None,
+            named_leaves: false,
             clamped: None,
             settings: Settings::default(),
             settings_file: None,
@@ -230,6 +238,16 @@ impl NoidoApp {
     /// Shows `name` in the title bar.
     pub fn with_name(mut self, name: String) -> Self {
         self.name = name;
+        self
+    }
+
+    /// Arrives at `target` once the window shows: a link's page or place.
+    /// Back returns to the remembered place, if there is one: call after
+    /// [`NoidoApp::with_persistence`].
+    #[cfg_attr(not(test), expect(dead_code, reason = "the command line uses it next"))]
+    pub fn opening_at(mut self, target: Option<Target>) -> Self {
+        let remembered = self.persistence.as_ref().is_some_and(|p| p.saved.is_some());
+        self.arrival = target.map(|target| (target, remembered));
         self
     }
 
@@ -479,18 +497,65 @@ impl NoidoApp {
     /// Brings the window forward if a later launch asked. On Wayland,
     /// where an app can't raise itself, the request for attention is what
     /// shows (on GNOME, a "noido is ready" notice).
-    fn come_forward(&self, ctx: &egui::Context) {
-        if self
-            .activation
-            .as_ref()
-            .and_then(Activation::take)
-            .is_some()
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
-                egui::UserAttentionType::Informational,
-            ));
+    fn come_forward(&mut self, ctx: &egui::Context) {
+        let Some(request) = self.activation.as_ref().and_then(Activation::take) else {
+            return;
+        };
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+            egui::UserAttentionType::Informational,
+        ));
+        if let Some(target) = request.target {
+            self.arrival = Some((target, true));
+        }
+    }
+
+    /// Goes where a link asked: to a page at once, like a thumbnail click;
+    /// to a named place once the links thread has found it.
+    fn arrive(&mut self) {
+        // Until the first frame has measured the window, the layout is a
+        // placeholder that a jump would be lost in.
+        let (width, height) = self.view.viewport_size();
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let Some((target, leave)) = self.arrival.take() else {
+            return;
+        };
+        self.links.cancel_named();
+        match target {
+            Target::Page(page) => {
+                if leave {
+                    self.leave_here();
+                }
+                let page = page.min(self.view.layout().page_count().saturating_sub(1));
+                self.view.go_to_page(page);
+                self.chosen = Some(page);
+                self.search_state.reader_moved();
+            }
+            Target::Named(name) => {
+                self.named_leaves = leave;
+                self.links.resolve(name);
+            }
+        }
+    }
+
+    /// Goes to the named place asked for, now that it is known.
+    fn arrive_at_named(&mut self, named: Named) {
+        match named {
+            Named::Found(target) => {
+                if self.named_leaves {
+                    self.leave_here();
+                }
+                self.view.go_to_target(&target);
+                let last = self.view.layout().page_count().saturating_sub(1);
+                self.chosen = Some(target.page.min(last));
+                self.search_state.reader_moved();
+            }
+            Named::Unknown(name) => {
+                eprintln!("noido: no place named {name:?} in the document");
+            }
         }
     }
 
@@ -1183,9 +1248,14 @@ impl NoidoApp {
         self.come_forward(&ctx);
         self.receive_renders(&ctx);
         self.sidebar_view.receive(&ctx, self.view.layout());
-        let _ = self.links.receive(ctx.input(|i| i.time));
         self.sync_from_egui();
         self.receive_reload(&ctx);
+        // After a reload, so an answer about the old version is dropped; and
+        // after egui's scrolling is taken in, which would undo a jump.
+        if let Some(named) = self.links.receive(ctx.input(|i| i.time)) {
+            self.arrive_at_named(named);
+        }
+        self.arrive();
         self.handle_input(&ctx);
         self.start_screen_edge(&ctx);
         if let Some(link) = self.clicked_link.take() {
@@ -4455,6 +4525,8 @@ mod tests {
         links: Arc<Vec<Vec<noido_engine::Link>>>,
         /// With a link gate, each `links` call waits until it opens.
         link_gate: Option<Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>>,
+        /// The named places.
+        named: Arc<Vec<(String, noido_engine::Destination)>>,
     }
 
     impl TextEngine {
@@ -4471,7 +4543,18 @@ mod tests {
                 rendered: Arc::default(),
                 links: Arc::new(vec![Vec::new(); pages.len()]),
                 link_gate: None,
+                named: Arc::default(),
             }
+        }
+
+        fn with_named(mut self, name: &str, page: usize) -> TextEngine {
+            let target = noido_engine::Destination {
+                page,
+                x: None,
+                y: None,
+            };
+            Arc::make_mut(&mut self.named).push((name.to_owned(), target));
+            self
         }
 
         fn with_links(mut self, page: usize, links: Vec<noido_engine::Link>) -> TextEngine {
@@ -4579,6 +4662,9 @@ mod tests {
                 }
             }
             Ok(self.links[page].clone())
+        }
+        fn named_destination(&self, name: &str) -> Option<noido_engine::Destination> {
+            self.named.iter().find(|(n, _)| n == name).map(|(_, t)| *t)
         }
     }
 
@@ -5654,5 +5740,144 @@ mod tests {
         mouse_button(&mut h, egui::PointerButton::Extra1);
         assert_eq!(h.app.view.centre_page(), Some(0));
         assert!(h.app.history.back_entries().is_empty());
+    }
+
+    // ---- Arriving from a link ----
+
+    fn remembered(page: usize) -> DocState {
+        DocState {
+            view: ViewState {
+                zoom: noido_core::ZoomMode::Custom,
+                scale: 0.8,
+                continuous: true,
+                dual: false,
+                odd_left: true,
+                centre: noido_core::DocPoint {
+                    page,
+                    x: 306.0,
+                    y: 400.0,
+                },
+            },
+            sidebar: SidebarState::default(),
+            history: History::default(),
+        }
+    }
+
+    #[test]
+    fn opens_at_the_linked_page() {
+        let h = Harness::build(|app| app.opening_at(Some(Target::Page(5))));
+        assert_eq!(h.centre().page, 5);
+        assert_eq!(h.app.current_page(), Some(5));
+        assert!(h.app.history.back_entries().is_empty());
+    }
+
+    #[test]
+    fn opening_past_the_end_goes_to_the_last_page() {
+        let h = Harness::build(|app| app.opening_at(Some(Target::Page(99))));
+        assert_eq!(h.app.current_page(), Some(9));
+    }
+
+    #[test]
+    fn opening_at_a_page_keeps_the_remembered_place_for_back() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = Harness::build(|app| {
+            app.with_persistence(
+                Store::at(dir.path()),
+                test_slot(dir.path()),
+                Some(remembered(7)),
+            )
+            .opening_at(Some(Target::Page(2)))
+        });
+        assert_eq!(h.app.current_page(), Some(2));
+        assert_eq!(
+            h.app.view.state().unwrap().zoom,
+            noido_core::ZoomMode::Custom
+        );
+        assert!((h.app.view.scale() - 0.8).abs() < 1e-4);
+        h.press(egui::Key::ArrowLeft, Modifiers::ALT);
+        assert_eq!(h.centre().page, 7);
+    }
+
+    #[test]
+    fn hand_over_jumps_and_back_returns() {
+        let activation = crate::instance::Activation::default();
+        let mut h = Harness::build(|app| app.with_activation(activation.clone()));
+        go_to(&mut h, 4);
+        activation.request(Some(Target::Page(8)));
+        h.frames(1, vec![]);
+        assert_eq!(h.app.current_page(), Some(8));
+        assert!(h.commands.contains(&egui::ViewportCommand::Focus));
+        h.press(egui::Key::ArrowLeft, Modifiers::ALT);
+        assert_eq!(h.centre().page, 4);
+    }
+
+    #[test]
+    fn hand_over_without_a_page_only_comes_forward() {
+        let activation = crate::instance::Activation::default();
+        let mut h = Harness::build(|app| app.with_activation(activation.clone()));
+        go_to(&mut h, 4);
+        let page = h.centre().page;
+        activation.request(None);
+        h.frames(1, vec![]);
+        assert_eq!(h.centre().page, page);
+        assert!(h.app.history.back_entries().is_empty());
+    }
+
+    /// A harness on ten pages with a place named "sec" on page 6, opening
+    /// at `target`.
+    fn named_places(target: Target) -> Harness {
+        let engine = TextEngine::new(&[&["a line"] as &[&str]; 10]).with_named("sec", 6);
+        let linker = engine.clone();
+        Harness::build_with(Arc::new(engine), move |app| {
+            app.with_linker(noido_render::Linker::start(
+                Arc::new(linker),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+            .opening_at(Some(target))
+        })
+    }
+
+    #[test]
+    fn named_place_is_followed() {
+        let mut h = named_places(Target::Named("sec".into()));
+        h.until(|h| h.app.current_page() == Some(6));
+        assert_eq!(h.app.current_page(), Some(6));
+        assert!(h.app.links.flash(h.time).is_none(), "flashed");
+    }
+
+    #[test]
+    fn unknown_named_place_stays() {
+        let mut h = named_places(Target::Named("nope".into()));
+        h.until(|h| h.app.current_page() != Some(0));
+        assert_eq!(h.app.current_page(), Some(0));
+        assert!(h.app.history.back_entries().is_empty());
+    }
+
+    #[test]
+    fn newer_arrival_drops_a_pending_named_place() {
+        let activation = crate::instance::Activation::default();
+        let engine = TextEngine::new(&[&["a line"] as &[&str]; 10])
+            .with_named("sec", 6)
+            .gated_links();
+        let linker = engine.clone();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), {
+            let activation = activation.clone();
+            move |app| {
+                app.with_linker(noido_render::Linker::start(
+                    Arc::new(linker),
+                    Arc::new(Vec::new()),
+                    Box::new(|| {}),
+                ))
+                .with_activation(activation)
+            }
+        });
+        activation.request(Some(Target::Named("sec".into())));
+        h.frames(1, vec![]);
+        activation.request(Some(Target::Page(2)));
+        h.frames(1, vec![]);
+        engine.open_link_gate();
+        h.until(|h| h.app.current_page() != Some(2));
+        assert_eq!(h.app.current_page(), Some(2));
     }
 }
