@@ -48,6 +48,10 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
             entry(Action::Forward, "Forward"),
         ],
         vec![
+            entry(Action::CopyLink, "Copy link to page"),
+            entry(Action::CopyMarkdownLink, "Copy Markdown link to page"),
+        ],
+        vec![
             entry(Action::NextHit, "Next match"),
             entry(Action::PreviousHit, "Previous match"),
         ],
@@ -78,6 +82,7 @@ mod tests {
                 vec!["Continuous", "Dual page", "Odd pages left"],
                 vec!["Show sidebar"],
                 vec!["Back", "Forward"],
+                vec!["Copy link to page", "Copy Markdown link to page"],
                 vec!["Next match", "Previous match"],
                 vec!["Document info…", "Settings…"],
                 vec!["Quit"],

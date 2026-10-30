@@ -185,6 +185,7 @@ fn run(opening: Opening) -> Result<(), String> {
     };
     let app = NoidoApp::new(renderer, info)
         .with_name(name.clone())
+        .with_link_path(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned()))
         .with_thumbnails(thumbnailer)
         .with_sidebar_renderer(sidebar_renderer)
         .with_searcher(searcher)
