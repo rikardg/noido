@@ -69,8 +69,10 @@ is the daily driver; macOS and Windows build but are unchecked.
   `main` bookmark is not moved by the agent.
 - One commit per step that stands on its own; specs and plans get their
   own commit (`Spec: …`, `Plan: …`).
-- Messages: `Area: what changed, in plain words`, e.g. `Arrow keys: leave
-  them to egui while a widget has focus or a menu is open`.
+- Messages: `Area: what changed, in plain words`, e.g. `Arrow keys: egui
+  gets them while a widget has focus or a menu is open`. The title fits in
+  72 characters; what doesn't fit goes into a body after a blank line,
+  wrapped at 72.
 
 ## Hard rules
 
