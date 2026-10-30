@@ -170,6 +170,8 @@ mod tests {
         }
     }
 
+    // These use Unix paths; on Windows a file: path has a drive letter.
+    #[cfg(unix)]
     #[test]
     fn file_uri_with_page() {
         assert_eq!(
@@ -178,6 +180,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn file_uri_without_fragment() {
         assert_eq!(
@@ -186,6 +189,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn noido_uri_is_the_same() {
         let expected = Ok(opening("/home/u/x.pdf", Some(Target::Page(2))));
@@ -194,6 +198,7 @@ mod tests {
         assert_eq!(parse("File:///home/u/x.pdf#page=3"), expected);
     }
 
+    #[cfg(unix)]
     #[test]
     fn localhost_is_local() {
         assert_eq!(
@@ -235,6 +240,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn other_host_is_an_error() {
         let error = parse("file://server/x.pdf").unwrap_err();
@@ -275,6 +281,7 @@ mod tests {
         assert_eq!(to_fragment(&Target::Page(51)), "page=52");
     }
 
+    #[cfg(unix)]
     #[test]
     fn page_link_form() {
         assert_eq!(
@@ -283,6 +290,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn parentheses_are_encoded() {
         let link = page_link(Path::new("/b/x (2).pdf"), 0).unwrap();
@@ -290,6 +298,7 @@ mod tests {
         assert!(!link.contains(['(', ')']), "{link}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn copied_links_open_the_same_file() {
         for path in [
@@ -315,6 +324,7 @@ mod tests {
         assert_eq!(page_link(Path::new("x.pdf"), 0), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn markdown_form() {
         let book = Path::new("/b/Some Book.pdf");
