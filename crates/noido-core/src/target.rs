@@ -2,7 +2,7 @@
 //! page or a named place (RFC 8118 fragments, `#page=12`).
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use percent_encoding::{AsciiSet, CONTROLS, percent_decode_str, utf8_percent_encode};
 use url::Url;
@@ -90,6 +90,36 @@ pub fn to_fragment(target: &Target) -> String {
         Target::Page(page) => format!("page={}", page + 1),
         Target::Named(name) => format!("nameddest={}", utf8_percent_encode(name, FRAGMENT_VALUE)),
     }
+}
+
+/// The `noido:` link to `page` (from 0) of the document at `canonical`;
+/// `None` for a relative path.
+pub fn page_link(canonical: &Path, page: usize) -> Option<String> {
+    let file = Url::from_file_path(canonical).ok()?;
+    // Encoded too, so the link survives as a Markdown link's target.
+    let file = file.as_str().replace('(', "%28").replace(')', "%29");
+    let rest = file.strip_prefix("file:")?;
+    Some(format!("noido:{rest}#{}", to_fragment(&Target::Page(page))))
+}
+
+/// [`page_link`] as a Markdown link labelled with `name` (the file name)
+/// and the page: `[Some Book, p. 51](noido:///…#page=51)`.
+pub fn markdown_page_link(canonical: &Path, name: &str, page: usize) -> Option<String> {
+    let link = page_link(canonical, page)?;
+    let title = match name.len().checked_sub(4) {
+        Some(end) if name.is_char_boundary(end) && name[end..].eq_ignore_ascii_case(".pdf") => {
+            &name[..end]
+        }
+        _ => name,
+    };
+    let mut label = String::new();
+    for c in title.chars() {
+        if matches!(c, '\\' | '[' | ']') {
+            label.push('\\');
+        }
+        label.push(c);
+    }
+    Some(format!("[{label}, p. {}]({link})", page + 1))
 }
 
 #[cfg(test)]
@@ -189,5 +219,61 @@ mod tests {
             assert_eq!(parse_fragment(&to_fragment(&target)), Some(target.clone()));
         }
         assert_eq!(to_fragment(&Target::Page(51)), "page=52");
+    }
+
+    #[test]
+    fn page_link_form() {
+        assert_eq!(
+            page_link(Path::new("/home/u/books/Some Book.pdf"), 50).as_deref(),
+            Some("noido:///home/u/books/Some%20Book.pdf#page=51")
+        );
+    }
+
+    #[test]
+    fn parentheses_are_encoded() {
+        let link = page_link(Path::new("/b/x (2).pdf"), 0).unwrap();
+        assert!(link.contains("x%20%282%29.pdf"), "{link}");
+        assert!(!link.contains(['(', ')']), "{link}");
+    }
+
+    #[test]
+    fn copied_links_open_the_same_file() {
+        for path in [
+            "/b/a#b.pdf",
+            "/b/100%.pdf",
+            "/b/q?.pdf",
+            "/b/(x).pdf",
+            "/b/Smörgås ö.pdf",
+            "/b/a&b=c.pdf",
+            "/b/a%20b.pdf",
+        ] {
+            let link = page_link(Path::new(path), 4).unwrap();
+            assert_eq!(
+                parse(&link),
+                Ok(opening(path, Some(Target::Page(4)))),
+                "{path} → {link}"
+            );
+        }
+    }
+
+    #[test]
+    fn relative_path_has_no_link() {
+        assert_eq!(page_link(Path::new("x.pdf"), 0), None);
+    }
+
+    #[test]
+    fn markdown_form() {
+        let book = Path::new("/b/Some Book.pdf");
+        assert_eq!(
+            markdown_page_link(book, "Some Book.pdf", 50).as_deref(),
+            Some("[Some Book, p. 51](noido:///b/Some%20Book.pdf#page=51)")
+        );
+        let label = |name| {
+            let link = markdown_page_link(book, name, 0).unwrap();
+            link[..link.find("](").unwrap() + 1].to_owned()
+        };
+        assert_eq!(label("Notes.PDF"), "[Notes, p. 1]");
+        assert_eq!(label("a.pdf.txt"), "[a.pdf.txt, p. 1]");
+        assert_eq!(label("x [draft] \\ y.pdf"), "[x \\[draft\\] \\\\ y, p. 1]");
     }
 }
