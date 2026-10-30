@@ -550,10 +550,13 @@ impl NoidoApp {
         self.links.cancel_named();
         match target {
             Target::Page(page) => {
+                let Some(last) = self.view.layout().page_count().checked_sub(1) else {
+                    return;
+                };
                 if leave {
                     self.leave_here();
                 }
-                let page = page.min(self.view.layout().page_count().saturating_sub(1));
+                let page = page.min(last);
                 self.view.go_to_page(page);
                 self.chosen = Some(page);
                 self.search_state.reader_moved();
@@ -5801,6 +5804,14 @@ mod tests {
         assert_eq!(h.centre().page, 5);
         assert_eq!(h.app.current_page(), Some(5));
         assert!(h.app.history.back_entries().is_empty());
+    }
+
+    #[test]
+    fn opening_at_a_page_of_no_pages_does_nothing() {
+        let h = Harness::build_with(Arc::new(SizedEngine::letter(0)), |app| {
+            app.opening_at(Some(Target::Page(2)))
+        });
+        assert_eq!(h.app.current_page(), None);
     }
 
     #[test]
