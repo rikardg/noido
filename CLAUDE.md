@@ -40,13 +40,13 @@ is the daily driver; macOS and Windows build but are unchecked.
 ## Build and check
 
 - Toolchain pinned in `rust-toolchain.toml`. Edition 2024.
-- `cargo test --workspace`
-- `cargo clippy --workspace --all-targets -- -D warnings` (must be clean)
-- `cargo fmt`
-- `cargo build --release`, then run `target/release/noido <file.pdf>`.
-  `~/.cargo/bin/noido` is a separate copy from `cargo install --path
-  crates/frontends/gui-egui`; building doesn't update it, so say which
-  one the user should run.
+- The `justfile` holds the commands; `just` lists them.
+- `just test` (nextest if installed), `just lint` (clippy, must be
+  clean), `just fmt`; `just check` runs all three.
+- `just release`, then run `target/release/noido <file.pdf>`;
+  `just run <file.pdf>` does both, with a scratch `XDG_STATE_HOME`.
+  `~/.cargo/bin/noido` is a separate copy from `just install`;
+  building doesn't update it, so say which one the user should run.
 - `noido --install` / `--uninstall` adds noido to the desktop's apps,
   pointing at the binary that ran it.
 
