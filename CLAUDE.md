@@ -16,8 +16,11 @@ is the daily driver; macOS and Windows build but are unchecked.
 - `docs/superpowers/specs/`: one design per change, `YYYY-MM-DD-<topic>-design.md`.
 - `docs/superpowers/plans/`: implementation plans for the larger ones.
 - `docs/investigations/`: write-ups of things looked into.
-- Test PDFs: `../testfiles/` (outside the repo; books, papers, scans).
-  Tiny generated ones in `fixtures/`.
+- Test PDFs: tiny generated ones in `fixtures/` (`make_fixtures.py`);
+  tests and examples use only these, so the repo stands on its own.
+  `../testfiles/` (outside the repo; books, papers, scans) is for trying
+  things by hand and for measuring; no test or example refers to it, and
+  docs name its files by kind ("a network analysis paper"), not by name.
 
 ## Crates
 
