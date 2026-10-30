@@ -43,7 +43,7 @@ is the daily driver; macOS and Windows build but are unchecked.
 - The `justfile` holds the commands; `just` lists them.
 - `just test` (nextest if installed), `just lint` (clippy, must be
   clean), `just fmt`; `just check` runs all three.
-- `just release`, then run `target/release/noido <file.pdf>`;
+- `just build`, then run `target/release/noido <file.pdf>`;
   `just run <file.pdf>` does both, with a scratch `XDG_STATE_HOME`.
   `~/.cargo/bin/noido` is a separate copy from `just install`;
   building doesn't update it, so say which one the user should run.
