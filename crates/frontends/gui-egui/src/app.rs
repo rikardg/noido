@@ -923,7 +923,9 @@ impl NoidoApp {
             Action::Forward => self.go_forward(),
             Action::CopyLink => self.copy_link(ctx, false),
             Action::CopyMarkdownLink => self.copy_link(ctx, true),
-            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Action::CloseWindow | Action::Quit => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close)
+            }
             Action::OpenSettings => {
                 // Another noido may have saved changes since: start from
                 // them, so saving here doesn't undo them.
@@ -2508,10 +2510,15 @@ mod tests {
     }
 
     #[test]
-    fn mod_q_sends_close() {
-        let mut h = Harness::new();
-        h.press(egui::Key::Q, Modifiers::COMMAND);
-        assert!(h.commands.contains(&egui::ViewportCommand::Close));
+    fn mod_q_and_mod_w_send_close() {
+        for key in [egui::Key::Q, egui::Key::W] {
+            let mut h = Harness::new();
+            h.press(key, Modifiers::COMMAND);
+            assert!(
+                h.commands.contains(&egui::ViewportCommand::Close),
+                "{key:?} did not close"
+            );
+        }
     }
 
     /// Puts the cursor in the search field.

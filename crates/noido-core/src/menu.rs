@@ -59,7 +59,10 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
             entry(Action::ShowDocumentInfo, "Document info…"),
             entry(Action::OpenSettings, "Settings…"),
         ],
-        vec![entry(Action::Quit, "Quit")],
+        vec![
+            entry(Action::CloseWindow, "Close window"),
+            entry(Action::Quit, "Quit"),
+        ],
     ]
 }
 
@@ -85,7 +88,7 @@ mod tests {
                 vec!["Copy link to page", "Copy Markdown link to page"],
                 vec!["Next match", "Previous match"],
                 vec!["Document info…", "Settings…"],
-                vec!["Quit"],
+                vec!["Close window", "Quit"],
             ]
         );
         let checked: Vec<&str> = menu
