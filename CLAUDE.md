@@ -69,10 +69,20 @@ is the daily driver; macOS and Windows build but are unchecked.
   `main` bookmark is not moved by the agent.
 - One commit per step that stands on its own; specs and plans get their
   own commit (`Spec: …`, `Plan: …`).
-- Messages: `Area: what changed, in plain words`, e.g. `Arrow keys: egui
-  gets them while a widget has focus or a menu is open`. The title fits in
-  72 characters; what doesn't fit goes into a body after a blank line,
+- Messages: `prefix: what changed, in plain words`, e.g. `egui: leave
+  arrow keys to egui while a widget or menu is using them`. The title fits
+  in 72 characters; what doesn't fit goes into a body after a blank line,
   wrapped at 72.
+- The prefix is the crate, by its short name in lowercase: `engine`,
+  `hayro`, `text`, `core`, `render`, `state`, `settings`, `egui` (and so
+  on for new crates). The feature goes in the words after it. A commit
+  spanning crates takes the one where its point is: logic in core with
+  wiring in a frontend is `core`; how something looks or behaves in the
+  window is the frontend's.
+- Docs and process: `Spec`, `Plan`, `Backlog`, `Investigation`, and
+  `Repo` for CLAUDE.md, crate metadata and workspace setup.
+- A fix from a review takes its crate's prefix and says "A review fix." in
+  the body.
 
 ## Hard rules
 
