@@ -480,7 +480,12 @@ impl NoidoApp {
     /// where an app can't raise itself, the request for attention is what
     /// shows (on GNOME, a "noido is ready" notice).
     fn come_forward(&self, ctx: &egui::Context) {
-        if self.activation.as_ref().is_some_and(Activation::take) {
+        if self
+            .activation
+            .as_ref()
+            .and_then(Activation::take)
+            .is_some()
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
@@ -3530,7 +3535,7 @@ mod tests {
         let mut h = Harness::build(|app| app.with_activation(activation.clone()));
         h.frames(1, vec![]);
         assert!(!h.commands.contains(&egui::ViewportCommand::Focus));
-        activation.request();
+        activation.request(None);
         h.frames(1, vec![]);
         assert!(
             h.commands
@@ -3543,7 +3548,7 @@ mod tests {
                     egui::UserAttentionType::Informational
                 ))
         );
-        assert!(!activation.take(), "left set");
+        assert!(activation.take().is_none(), "left set");
     }
 
     /// A version cut short mid-write must not cost the reader their place.

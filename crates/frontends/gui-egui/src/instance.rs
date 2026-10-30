@@ -1,14 +1,13 @@
 //! One window per file: a running noido listens on a local socket named
 //! after its file's path, and a later launch on the same file hands over to
-//! it and exits.
+//! it, with the page or place to go to, and exits.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -17,13 +16,15 @@ use interprocess::local_socket::GenericFilePath;
 #[cfg(windows)]
 use interprocess::local_socket::GenericNamespaced;
 use interprocess::local_socket::{ListenerOptions, Name, Stream, prelude::*};
+use noido_core::{Target, parse_fragment, to_fragment};
 
 use crate::watch::Waker;
 
 /// How long a launch waits for the running noido to answer.
 const TIMEOUT: Duration = Duration::from_secs(1);
 
-/// What a launch sends, and what the running noido answers.
+/// What a launch sends, then a space and the target's fragment if it has
+/// one (`activate page=52`); and what the running noido answers.
 const ACTIVATE: &str = "activate";
 const OK: &str = "ok";
 
@@ -47,40 +48,52 @@ pub enum Claim {
 /// The socket of the first noido on a file.
 pub struct Listener(interprocess::local_socket::Listener);
 
+/// What a later launch asked of the window.
+#[derive(Debug, PartialEq)]
+pub struct Request {
+    /// Where to go, besides coming forward.
+    pub target: Option<Target>,
+}
+
 /// Set when a later launch asked the window to come forward.
 #[derive(Clone, Default)]
-pub struct Activation(Arc<AtomicBool>);
+pub struct Activation(Arc<Mutex<Option<Request>>>);
 
 impl Activation {
-    /// Whether the window was asked to come forward since the last call.
-    pub fn take(&self) -> bool {
-        self.0.swap(false, Ordering::Relaxed)
+    /// What was asked since the last call, if anything.
+    pub fn take(&self) -> Option<Request> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
-    pub(crate) fn request(&self) {
-        self.0.store(true, Ordering::Relaxed);
+    /// Asks the window to come forward, and to go to `target`. A request
+    /// without a target keeps the one still waiting.
+    pub(crate) fn request(&self, target: Option<Target>) {
+        let mut waiting = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let target = target.or_else(|| waiting.take().and_then(|r| r.target));
+        *waiting = Some(Request { target });
     }
 }
 
-/// Hands over to the noido that has `path` open, if there is one; otherwise
-/// claims the file for this launch. Doesn't read the file.
-pub fn claim(path: &Path) -> Claim {
+/// Hands over to the noido that has `path` open, if there is one, asking it
+/// to go to `target`; otherwise claims the file for this launch. Doesn't
+/// read the file.
+pub fn claim(path: &Path, target: Option<&Target>) -> Claim {
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     match address(&canonical) {
-        Some(address) => claim_at(&address, TIMEOUT),
+        Some(address) => claim_at(&address, TIMEOUT, target),
         None => Claim::Unavailable,
     }
 }
 
 /// [`claim`] for the socket at `address`, waiting up to `timeout` for an
 /// answer.
-fn claim_at(address: &Address, timeout: Duration) -> Claim {
+fn claim_at(address: &Address, timeout: Duration, target: Option<&Target>) -> Claim {
     let Ok(name) = to_name(address) else {
         return Claim::Unavailable;
     };
     if let Ok(stream) = Stream::connect(name.clone()) {
         // A noido that doesn't answer can't be displaced either.
-        return if hand_over(stream, timeout) {
+        return if hand_over(stream, timeout, target) {
             Claim::Running
         } else {
             Claim::Unavailable
@@ -99,15 +112,19 @@ fn claim_at(address: &Address, timeout: Duration) -> Claim {
     }
 }
 
-/// Asks the noido at the other end of `stream` to come forward; false if it
-/// doesn't answer within `timeout`. The exchange runs on a thread of its
+/// Asks the noido at the other end of `stream` to come forward and go to
+/// `target`; false if it doesn't answer within `timeout`. The exchange runs on a thread of its
 /// own, since named pipes on Windows have no read timeout.
-fn hand_over(stream: Stream, timeout: Duration) -> bool {
+fn hand_over(stream: Stream, timeout: Duration, target: Option<&Target>) -> bool {
+    let request = match target {
+        Some(target) => format!("{ACTIVATE} {}", to_fragment(target)),
+        None => ACTIVATE.to_owned(),
+    };
     let (answered_tx, answered) = mpsc::channel();
     let exchange = move || {
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
-        let ok = writeln!(reader.get_mut(), "{ACTIVATE}").is_ok()
+        let ok = writeln!(reader.get_mut(), "{request}").is_ok()
             && reader.read_line(&mut line).is_ok()
             && line.trim_end() == OK;
         let _ = answered_tx.send(ok);
@@ -142,8 +159,8 @@ impl Listener {
                     let _ = thread::Builder::new()
                         .name("noido-answer".into())
                         .spawn(move || {
-                            answer(stream, || {
-                                requested.request();
+                            answer(stream, |target| {
+                                requested.request(target);
                                 waker();
                             });
                         });
@@ -153,18 +170,25 @@ impl Listener {
     }
 }
 
-/// Reads one request from `stream`; on "activate" calls `activate`, then
-/// answers.
-fn answer(stream: Stream, activate: impl FnOnce()) {
+/// Reads one request from `stream`; on "activate" calls `activate` with
+/// the target it names, then answers.
+fn answer(stream: Stream, activate: impl FnOnce(Option<Target>)) {
     // Unsupported on Windows; there a silent launch keeps only its own
     // thread waiting.
     let _ = stream.set_recv_timeout(Some(TIMEOUT));
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    if reader.read_line(&mut line).is_ok() && line.trim_end() == ACTIVATE {
-        activate();
-        let _ = writeln!(reader.get_mut(), "{OK}");
+    if reader.read_line(&mut line).is_err() {
+        return;
     }
+    let line = line.trim_end();
+    let target = match line.strip_prefix(ACTIVATE) {
+        Some("") => None,
+        Some(rest) if rest.starts_with(' ') => parse_fragment(&rest[1..]),
+        _ => return,
+    };
+    activate(target);
+    let _ = writeln!(reader.get_mut(), "{OK}");
 }
 
 /// A short name for `canonical`, the same for every launch on it.
@@ -222,6 +246,8 @@ mod tests {
 
     use interprocess::local_socket::{GenericFilePath, ListenerOptions, Stream};
 
+    use noido_core::Target;
+
     use super::*;
 
     fn no_waker() -> Waker {
@@ -232,25 +258,25 @@ mod tests {
     fn second_claim_hands_over() {
         let dir = tempfile::TempDir::new().unwrap();
         let address = dir.path().join("a.sock");
-        let Claim::First(listener) = claim_at(&address, TIMEOUT) else {
+        let Claim::First(listener) = claim_at(&address, TIMEOUT, None) else {
             panic!("first claim");
         };
         let activation = listener.serve(no_waker());
-        assert!(!activation.take());
-        assert!(matches!(claim_at(&address, TIMEOUT), Claim::Running));
-        assert!(activation.take());
-        assert!(!activation.take(), "taken twice");
+        assert!(activation.take().is_none());
+        assert!(matches!(claim_at(&address, TIMEOUT, None), Claim::Running));
+        assert_eq!(activation.take(), Some(Request { target: None }));
+        assert!(activation.take().is_none(), "taken twice");
     }
 
     #[test]
     fn different_path_is_first() {
         let dir = tempfile::TempDir::new().unwrap();
-        let Claim::First(a) = claim_at(&dir.path().join("a.sock"), TIMEOUT) else {
+        let Claim::First(a) = claim_at(&dir.path().join("a.sock"), TIMEOUT, None) else {
             panic!("a");
         };
         let _a = a.serve(no_waker());
         assert!(matches!(
-            claim_at(&dir.path().join("b.sock"), TIMEOUT),
+            claim_at(&dir.path().join("b.sock"), TIMEOUT, None),
             Claim::First(_)
         ));
     }
@@ -260,7 +286,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let address = dir.path().join("a.sock");
         std::fs::write(&address, "").unwrap();
-        assert!(matches!(claim_at(&address, TIMEOUT), Claim::First(_)));
+        assert!(matches!(claim_at(&address, TIMEOUT, None), Claim::First(_)));
     }
 
     #[test]
@@ -271,7 +297,7 @@ mod tests {
         // Never accepts, so a connection waits unanswered in its backlog.
         let _silent = ListenerOptions::new().name(name).create_sync().unwrap();
         let start = Instant::now();
-        let claim = claim_at(&address, Duration::from_millis(200));
+        let claim = claim_at(&address, Duration::from_millis(200), None);
         assert!(matches!(claim, Claim::Unavailable));
         let waited = start.elapsed();
         assert!(
@@ -285,14 +311,14 @@ mod tests {
     fn silent_client_does_not_block_others() {
         let dir = tempfile::TempDir::new().unwrap();
         let address = dir.path().join("a.sock");
-        let Claim::First(listener) = claim_at(&address, TIMEOUT) else {
+        let Claim::First(listener) = claim_at(&address, TIMEOUT, None) else {
             panic!("first claim");
         };
         let _activation = listener.serve(no_waker());
         let name = address.as_path().to_fs_name::<GenericFilePath>().unwrap();
         let _silent = Stream::connect(name).unwrap();
         assert!(matches!(
-            claim_at(&address, Duration::from_millis(300)),
+            claim_at(&address, Duration::from_millis(300), None),
             Claim::Running
         ));
     }
@@ -305,5 +331,54 @@ mod tests {
         assert_eq!(a, address(Path::new("/papers/a.pdf")).unwrap());
         // Unix socket paths are limited to about 100 bytes.
         assert!(a.as_os_str().len() < 100, "{a:?}");
+    }
+
+    /// What the noido on a fresh socket is asked after the launches with
+    /// `targets` hand over to it.
+    fn handed(targets: &[Option<Target>]) -> Option<Request> {
+        let dir = tempfile::TempDir::new().unwrap();
+        let address = dir.path().join("a.sock");
+        let Claim::First(listener) = claim_at(&address, TIMEOUT, None) else {
+            panic!("first claim");
+        };
+        let activation = listener.serve(no_waker());
+        for target in targets {
+            assert!(matches!(
+                claim_at(&address, TIMEOUT, target.as_ref()),
+                Claim::Running
+            ));
+        }
+        activation.take()
+    }
+
+    #[test]
+    fn hand_over_carries_the_page() {
+        assert_eq!(
+            handed(&[Some(Target::Page(51))]),
+            Some(Request {
+                target: Some(Target::Page(51))
+            })
+        );
+    }
+
+    #[test]
+    fn hand_over_carries_a_named_place() {
+        let named = Target::Named("sec 2&b".into());
+        assert_eq!(
+            handed(&[Some(named.clone())]),
+            Some(Request {
+                target: Some(named)
+            })
+        );
+    }
+
+    #[test]
+    fn last_hand_over_wins() {
+        let page = |p| Some(Target::Page(p));
+        assert_eq!(
+            handed(&[page(1), page(5)]),
+            Some(Request { target: page(5) })
+        );
+        assert_eq!(handed(&[page(5), None]), Some(Request { target: page(5) }));
     }
 }
