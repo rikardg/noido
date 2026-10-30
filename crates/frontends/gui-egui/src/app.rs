@@ -5936,6 +5936,21 @@ mod tests {
     }
 
     #[test]
+    fn a_reload_drops_the_old_versions_named_place() {
+        let (mut h, engine) = gated_named_place();
+        let page = h.centre().page;
+        // The old version's answer waits, unread, when the new one arrives.
+        engine.open_link_gate();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        h.reload(
+            Arc::new(TextEngine::new(&[&["a line"] as &[&str]; 10])),
+            recompiled_key(),
+        );
+        h.until(|h| h.centre().page != page);
+        assert_eq!(h.centre().page, page);
+    }
+
+    #[test]
     fn newer_arrival_drops_a_pending_named_place() {
         let activation = crate::instance::Activation::default();
         let engine = TextEngine::new(&[&["a line"] as &[&str]; 10])
