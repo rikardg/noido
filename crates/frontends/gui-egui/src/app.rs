@@ -244,7 +244,6 @@ impl NoidoApp {
     /// Arrives at `target` once the window shows: a link's page or place.
     /// Back returns to the remembered place, if there is one: call after
     /// [`NoidoApp::with_persistence`].
-    #[cfg_attr(not(test), expect(dead_code, reason = "the command line uses it next"))]
     pub fn opening_at(mut self, target: Option<Target>) -> Self {
         let remembered = self.persistence.as_ref().is_some_and(|p| p.saved.is_some());
         self.arrival = target.map(|target| (target, remembered));

@@ -1,4 +1,5 @@
-//! `noido <file.pdf>`: open a PDF in the egui frontend.
+//! `noido <file.pdf>`: open a PDF in the egui frontend; also
+//! `noido 'noido:///path/file.pdf#page=12'` and `noido file.pdf --page 12`.
 
 mod app;
 mod desktop;
@@ -15,13 +16,15 @@ mod sidebar;
 mod titlebar;
 mod watch;
 
-use std::path::{Path, PathBuf};
+use std::ffi::OsString;
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Parser;
 use eframe::egui;
 use engine_hayro::HayroEngine;
+use noido_core::{Opening, Target, parse_argument};
 use noido_render::{Linker, Renderer, TextSearcher, Thumbnailer};
 use noido_settings::{Settings, SettingsFile};
 use noido_state::{DocKey, Store};
@@ -43,9 +46,13 @@ const WHEEL_SCROLL_SPEED: f32 = 125.0;
 #[derive(Parser)]
 #[command(name = "noido", version, about = "PDF reader and note taker")]
 struct Args {
-    /// PDF file to open
+    /// PDF file, or a file: or noido: link, to open
     #[arg(required_unless_present_any = ["install", "uninstall"])]
-    path: Option<PathBuf>,
+    path: Option<OsString>,
+    /// Page to open at, from 1
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..),
+          conflicts_with_all = ["install", "uninstall"])]
+    page: Option<u32>,
     /// Add noido to the desktop's apps for PDFs (Linux)
     #[arg(long, conflicts_with_all = ["path", "uninstall"])]
     install: bool,
@@ -59,7 +66,7 @@ fn main() -> ExitCode {
     let result = match &args.path {
         _ if args.install => desktop::install(),
         _ if args.uninstall => desktop::uninstall(),
-        Some(path) => run(path),
+        Some(_) => opening(&args).and_then(run),
         None => unreachable!("clap requires a file without --install or --uninstall"),
     };
     match result {
@@ -71,11 +78,23 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(path: &Path) -> Result<(), String> {
+/// What the command line asks to open: `--page` wins over a link's target.
+fn opening(args: &Args) -> Result<Opening, String> {
+    let arg = args.path.as_deref().unwrap_or_default();
+    let mut opening = parse_argument(arg)?;
+    if let Some(page) = args.page {
+        opening.target = Some(Target::Page(page as usize - 1));
+    }
+    Ok(opening)
+}
+
+fn run(opening: Opening) -> Result<(), String> {
+    let path = opening.path.as_path();
+    let target = opening.target;
     // Before reading the file: a launch on an open file only hands over.
-    let listener = match instance::claim(path, None) {
+    let listener = match instance::claim(path, target.as_ref()) {
         Claim::Running => {
-            eprintln!("{}", handed_over(path));
+            eprintln!("{}", handed_over(path, target.as_ref()));
             return Ok(());
         }
         Claim::First(listener) => Some(listener),
@@ -184,6 +203,7 @@ fn run(path: &Path) -> Result<(), String> {
         Some((store, slot, restored)) => app.with_persistence(store, slot, restored),
         None => app,
     };
+    let app = app.opening_at(target);
     eframe::run_native_ext(
         "noido",
         options,
@@ -195,9 +215,14 @@ fn run(path: &Path) -> Result<(), String> {
 
 /// What a launch on an already open file prints. The running noido answered,
 /// but whether its window gets focus is up to the window manager.
-fn handed_over(path: &Path) -> String {
+fn handed_over(path: &Path, target: Option<&Target>) -> String {
+    let at = match target {
+        Some(Target::Page(page)) => format!(" at page {}", page + 1),
+        Some(Target::Named(name)) => format!(" at {name:?}"),
+        None => String::new(),
+    };
     format!(
-        "noido: {} is already open; asked its window to come forward",
+        "noido: {} is already open; asked its window to come forward{at}",
         path.display()
     )
 }
@@ -218,6 +243,8 @@ fn own_title_bar(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -232,7 +259,7 @@ mod tests {
     fn a_file_is_required_otherwise() {
         assert!(Args::try_parse_from(["noido"]).is_err());
         let open = Args::try_parse_from(["noido", "a.pdf"]).unwrap();
-        assert_eq!(open.path, Some(PathBuf::from("a.pdf")));
+        assert_eq!(open.path, Some(OsString::from("a.pdf")));
     }
 
     #[test]
@@ -245,8 +272,65 @@ mod tests {
     #[test]
     fn handover_message_names_the_file() {
         assert_eq!(
-            handed_over(Path::new("papers/a.pdf")),
+            handed_over(Path::new("papers/a.pdf"), None),
             "noido: papers/a.pdf is already open; asked its window to come forward"
         );
+    }
+
+    #[test]
+    fn handover_message_names_the_target() {
+        assert_eq!(
+            handed_over(Path::new("a.pdf"), Some(&Target::Page(50))),
+            "noido: a.pdf is already open; asked its window to come forward at page 51"
+        );
+        assert_eq!(
+            handed_over(Path::new("a.pdf"), Some(&Target::Named("x".into()))),
+            "noido: a.pdf is already open; asked its window to come forward at \"x\""
+        );
+    }
+
+    fn opening_of(args: &[&str]) -> Opening {
+        opening(&Args::try_parse_from(args).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn page_flag() {
+        assert_eq!(
+            opening_of(&["noido", "a.pdf", "--page", "3"]),
+            Opening {
+                path: PathBuf::from("a.pdf"),
+                target: Some(Target::Page(2)),
+            }
+        );
+    }
+
+    #[test]
+    fn a_link_is_read() {
+        assert_eq!(
+            opening_of(&["noido", "noido:///b/a%20b.pdf#page=9"]),
+            Opening {
+                path: PathBuf::from("/b/a b.pdf"),
+                target: Some(Target::Page(8)),
+            }
+        );
+    }
+
+    #[test]
+    fn page_flag_wins_over_the_link() {
+        assert_eq!(
+            opening_of(&["noido", "noido:///b/a.pdf#page=9", "--page", "3"]).target,
+            Some(Target::Page(2))
+        );
+    }
+
+    #[test]
+    fn page_zero_is_rejected() {
+        assert!(Args::try_parse_from(["noido", "a.pdf", "--page", "0"]).is_err());
+    }
+
+    #[test]
+    fn page_conflicts_with_install() {
+        assert!(Args::try_parse_from(["noido", "--install", "--page", "3"]).is_err());
+        assert!(Args::try_parse_from(["noido", "--uninstall", "--page", "3"]).is_err());
     }
 }
