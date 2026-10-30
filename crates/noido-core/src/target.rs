@@ -52,17 +52,38 @@ pub fn parse_argument(arg: &OsStr) -> Result<Opening, String> {
         text.get(..scheme.len())
             .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
     }) else {
+        if other_scheme(text) {
+            return Err(format!("{text}: only local files can be opened"));
+        }
         return Ok(plain());
     };
     let not_local = || format!("{text}: not a local file");
     // A noido: link is a file: link with the scheme swapped.
     let file = format!("file://{}", &text[scheme.len()..]);
     let url = Url::parse(&file).map_err(|_| not_local())?;
+    if url.query().is_some() {
+        return Err(format!(
+            "{text}: has a ?…, which a file link can't; encode ? in the file name as %3F"
+        ));
+    }
     let path = url.to_file_path().map_err(|()| not_local())?;
     Ok(Opening {
         path,
         target: url.fragment().and_then(parse_fragment),
     })
+}
+
+/// Whether `text` starts with a URI scheme and `//` (RFC 3986: a letter,
+/// then letters, digits, `+`, `-` or `.`): a link, as file names hardly
+/// ever are.
+fn other_scheme(text: &str) -> bool {
+    let Some((scheme, rest)) = text.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    rest.starts_with("//")
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
 /// The target in an RFC 8118 fragment (without the `#`); `None` when it
@@ -179,6 +200,39 @@ mod tests {
             parse("file://localhost/home/u/x.pdf"),
             Ok(opening("/home/u/x.pdf", None))
         );
+    }
+
+    #[test]
+    fn other_schemes_are_an_error() {
+        for arg in [
+            "sftp://host/x.pdf",
+            "smb://server/share/x.pdf",
+            "HTTPS://a/b.pdf",
+        ] {
+            let error = parse(arg).unwrap_err();
+            assert!(error.contains("only local files"), "{arg}: {error}");
+        }
+    }
+
+    #[test]
+    fn things_that_only_look_like_schemes_are_paths() {
+        for arg in [
+            "C:\\x.pdf",
+            "a:b.pdf",
+            "1x://y.pdf",
+            "a b://c.pdf",
+            "://x.pdf",
+        ] {
+            assert_eq!(parse(arg), Ok(opening(arg, None)), "{arg}");
+        }
+    }
+
+    #[test]
+    fn a_link_with_a_query_is_an_error() {
+        for arg in ["file:///a?b.pdf", "noido:///a?b.pdf#page=2"] {
+            let error = parse(arg).unwrap_err();
+            assert!(error.contains("%3F"), "{arg}: {error}");
+        }
     }
 
     #[test]
