@@ -6,10 +6,6 @@ use noido_engine::{
 };
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures");
-const NETWORK_PAPER: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../../testfiles/network-analysis.pdf"
-);
 
 fn open(path: &str) -> Box<dyn Document> {
     let bytes: PdfBytes = Arc::new(std::fs::read(path).unwrap());
@@ -119,10 +115,20 @@ fn unresolvable_and_other_actions_are_skipped() {
             LinkTarget::Web(_) => None,
         })
         .collect();
-    // A, B, C, D, G, H.
+    // A, B, C, D, G, H, L, M, N.
     assert_eq!(
         pages,
-        vec![Some(1), Some(1), Some(1), None, Some(2), Some(1)]
+        vec![
+            Some(1),
+            Some(1),
+            Some(1),
+            None,
+            Some(2),
+            Some(1),
+            Some(1),
+            None,
+            None
+        ]
     );
 }
 
@@ -171,27 +177,29 @@ fn links_page_out_of_range() {
     ));
 }
 
-/// Needs the test files next to the repository.
+/// hyperref's internal links: GoTo a named destination that is
+/// `[page /XYZ left top null]`.
 #[test]
-#[ignore]
-fn network_paper_links() {
-    let doc = open(NETWORK_PAPER);
-    let contents = doc.links(1).unwrap();
-    assert_eq!(contents.len(), 14);
-    let LinkTarget::Internal(first) = contents[0].target else {
-        panic!("contents entry not internal");
-    };
-    assert!(first.page > 1 && first.x.is_some());
+fn named_xyz_destination() {
+    assert_internal(
+        &fixture_links()[6],
+        Destination {
+            page: 1,
+            x: Some(90.0),
+            y: Some(92.0),
+        },
+    );
+}
 
-    let page = doc.links(15).unwrap();
-    assert_eq!(page.len(), 6);
-    let web: Vec<&LinkTarget> = page
-        .iter()
-        .map(|link| &link.target)
-        .filter(|target| matches!(target, LinkTarget::Web(_)))
-        .collect();
-    assert_eq!(web.len(), 2);
-    assert_eq!(web[0], web[1]);
+/// A web address wrapped over two lines is two links with the same address.
+#[test]
+fn wrapped_web_address_is_two_links() {
+    let links = fixture_links();
+    let wrapped = LinkTarget::Web("https://example.org/a/long/address".into());
+    assert_eq!(links[7].target, wrapped);
+    assert_eq!(links[8].target, wrapped);
+    assert_rect(links[7].areas[0], rect(72.0, 432.0, 228.0, 20.0));
+    assert_rect(links[8].areas[0], rect(72.0, 462.0, 78.0, 20.0));
 }
 
 #[test]

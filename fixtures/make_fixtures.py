@@ -28,6 +28,11 @@ links.pdf (no text):
     I  /Dest [the catalog, not a page /Fit]         Rect 72 460 172 480
     J  a /Text annotation, not a link
     K  /Dest [7 /Fit], a page number past the end   Rect 72 400 172 420
+    L  GoTo (sec.1): /Names /Dests tree, [page 1 /XYZ 90 700 null], as
+       hyperref makes them                          Rect 72 370 172 390
+    M  URI https://example.org/a/long/address, wrapped over two lines:
+       M on the first                               Rect 72 340 300 360
+    N  and N, the same URI, on the second           Rect 72 310 150 330
   page 1: 612x792 pt, no annotations
   page 2: 595x842 pt with /Rotate 90, no annotations
 
@@ -122,6 +127,11 @@ def links() -> bytes:
         b"<< /Type /Annot /Subtype /Link /Rect [72 460 172 480] /Dest [1 0 R /Fit] >>",
         b"<< /Type /Annot /Subtype /Text /Rect [72 430 92 450] /Contents (a note) >>",
         b"<< /Type /Annot /Subtype /Link /Rect [72 400 172 420] /Dest [7 /Fit] >>",
+        b"<< /Type /Annot /Subtype /Link /Rect [72 370 172 390] /A << /S /GoTo /D (sec.1) >> >>",
+        b"<< /Type /Annot /Subtype /Link /Rect [72 340 300 360]"
+        b" /A << /S /URI /URI (https://example.org/a/long/address) >> >>",
+        b"<< /Type /Annot /Subtype /Link /Rect [72 310 150 330]"
+        b" /A << /S /URI /URI (https://example.org/a/long/address) >> >>",
     ]
     return build_pdf(
         [
@@ -133,7 +143,7 @@ def links() -> bytes:
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Rotate 90 >>",
             b"<< /Kids [7 0 R] >>",
-            b"<< /Limits [(a) (z)] /Names [(tree.name) [4 0 R /FitH 500]] >>",
+            b"<< /Limits [(a) (z)] /Names [(sec.1) [4 0 R /XYZ 90 700 null] (tree.name) [4 0 R /FitH 500]] >>",
         ]
     )
 
