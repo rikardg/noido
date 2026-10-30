@@ -2,7 +2,7 @@
 //! after its file's path, and a later launch on the same file hands over to
 //! it, with the page or place to go to, and exits.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
@@ -19,6 +19,9 @@ use interprocess::local_socket::{ListenerOptions, Name, Stream, prelude::*};
 use noido_core::{Target, parse_fragment, to_fragment};
 
 use crate::watch::Waker;
+
+/// The longest request line read, in bytes.
+const MAX_REQUEST: usize = 512;
 
 /// How long a launch waits for the running noido to answer.
 const TIMEOUT: Duration = Duration::from_secs(1);
@@ -178,7 +181,10 @@ fn answer(stream: Stream, activate: impl FnOnce(Option<Target>)) {
     let _ = stream.set_recv_timeout(Some(TIMEOUT));
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    if reader.read_line(&mut line).is_err() {
+    // A whole line within the limit, or nothing: a client can't make the
+    // line grow without end.
+    let read = (&mut reader).take(MAX_REQUEST as u64).read_line(&mut line);
+    if read.is_err() || !line.ends_with('\n') {
         return;
     }
     let line = line.trim_end();
@@ -321,6 +327,24 @@ mod tests {
             claim_at(&address, Duration::from_millis(300), None),
             Claim::Running
         ));
+    }
+
+    #[test]
+    fn an_overlong_request_is_ignored() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let address = dir.path().join("a.sock");
+        let Claim::First(listener) = claim_at(&address, TIMEOUT, None) else {
+            panic!("first claim");
+        };
+        let activation = listener.serve(no_waker());
+        let name = address.as_path().to_fs_name::<GenericFilePath>().unwrap();
+        let mut reader = BufReader::new(Stream::connect(name).unwrap());
+        let long = "a".repeat(MAX_REQUEST);
+        writeln!(reader.get_mut(), "{ACTIVATE} nameddest={long}").unwrap();
+        let mut answer = String::new();
+        let _ = reader.read_line(&mut answer);
+        assert_eq!(answer, "", "answered");
+        assert!(activation.take().is_none());
     }
 
     #[test]
