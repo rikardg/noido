@@ -11,6 +11,8 @@ publish.workspace = true
 [dependencies]
 noido-engine.workspace = true
 noido-text.workspace = true
+percent-encoding.workspace = true
+url.workspace = true
 
 [lints]
 workspace = true
