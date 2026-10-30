@@ -14,6 +14,7 @@ pub enum Key {
     Q,
     G,
     I,
+    L,
     Comma,
     F3,
     F9,
@@ -65,6 +66,10 @@ pub enum Action {
     PreviousHit,
     Back,
     Forward,
+    /// Puts a link to the current page on the clipboard.
+    CopyLink,
+    /// The same as a Markdown link.
+    CopyMarkdownLink,
     ShowDocumentInfo,
     OpenSettings,
     Quit,
@@ -120,6 +125,8 @@ impl Keymap {
             (shift(plain(Key::F3)), Action::PreviousHit),
             (alt(Key::ArrowLeft), Action::Back),
             (alt(Key::ArrowRight), Action::Forward),
+            (command(Key::L), Action::CopyLink),
+            (shift(command(Key::L)), Action::CopyMarkdownLink),
             (command(Key::I), Action::ShowDocumentInfo),
             (command(Key::Comma), Action::OpenSettings),
             (command(Key::Q), Action::Quit),
@@ -175,6 +182,7 @@ pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
         Key::Q => "Q",
         Key::G => "G",
         Key::I => "I",
+        Key::L => "L",
         Key::Comma => ",",
         Key::F3 => "F3",
         Key::F9 => "F9",
@@ -346,6 +354,24 @@ mod tests {
         let keymap = Keymap::native();
         assert_eq!(keymap.action(shifted(Key::C, false), false), None);
         assert_eq!(keymap.action(shifted(Key::D, false), false), None);
+    }
+
+    #[test]
+    fn mod_l_copies_links() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::L, true), false),
+            Some(Action::CopyLink)
+        );
+        assert_eq!(
+            keymap.action(shifted(Key::L, true), false),
+            Some(Action::CopyMarkdownLink)
+        );
+        assert_eq!(keymap.action(press(Key::L, false), false), None);
+        assert_eq!(
+            shortcut_label(shifted(Key::L, true), Platform::Other),
+            "Shift+Ctrl+L"
+        );
     }
 
     #[test]

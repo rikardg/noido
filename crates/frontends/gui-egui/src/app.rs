@@ -101,6 +101,8 @@ pub struct NoidoApp {
     watcher: Option<Watcher>,
     /// Set when a later launch on the same file asks the window forward.
     activation: Option<Activation>,
+    /// The document's canonical path, for links to it.
+    link_path: Option<std::path::PathBuf>,
     /// Where a link asked to go, and whether to leave the place shown for
     /// Back first; taken at the start of the next frame.
     arrival: Option<(Target, bool)>,
@@ -219,6 +221,7 @@ impl NoidoApp {
             bar: titlebar::Rects::default(),
             watcher: None,
             activation: None,
+            link_path: None,
             arrival: None,
             named_leaves: false,
             clamped: None,
@@ -247,6 +250,12 @@ impl NoidoApp {
     pub fn opening_at(mut self, target: Option<Target>) -> Self {
         let remembered = self.persistence.as_ref().is_some_and(|p| p.saved.is_some());
         self.arrival = target.map(|target| (target, remembered));
+        self
+    }
+
+    /// Links copied from the window point at `canonical`.
+    pub fn with_link_path(mut self, canonical: std::path::PathBuf) -> Self {
+        self.link_path = Some(canonical);
         self
     }
 
@@ -361,6 +370,22 @@ impl NoidoApp {
         self.chosen = None;
         self.search_state.reader_moved();
         self.searched_away = false;
+    }
+
+    /// Puts a link to the page the title bar shows on the clipboard: bare,
+    /// or as a Markdown link labelled with the document's name.
+    fn copy_link(&self, ctx: &egui::Context, markdown: bool) {
+        let (Some(path), Some(page)) = (&self.link_path, self.view.centre_page()) else {
+            return;
+        };
+        let link = if markdown {
+            noido_core::markdown_page_link(path, &self.name, page)
+        } else {
+            noido_core::page_link(path, page)
+        };
+        if let Some(link) = link {
+            ctx.copy_text(link);
+        }
     }
 
     /// Remembers the current place before a jump, for Back.
@@ -890,6 +915,8 @@ impl NoidoApp {
             Action::PreviousHit => self.step_hit(false),
             Action::Back => self.go_back(),
             Action::Forward => self.go_forward(),
+            Action::CopyLink => self.copy_link(ctx, false),
+            Action::CopyMarkdownLink => self.copy_link(ctx, true),
             Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::OpenSettings => {
                 // Another noido may have saved changes since: start from
@@ -1457,6 +1484,7 @@ fn core_key(key: egui::Key) -> Option<Key> {
         egui::Key::Q => Some(Key::Q),
         egui::Key::G => Some(Key::G),
         egui::Key::I => Some(Key::I),
+        egui::Key::L => Some(Key::L),
         egui::Key::Comma => Some(Key::Comma),
         egui::Key::F3 => Some(Key::F3),
         egui::Key::F9 => Some(Key::F9),
@@ -1579,6 +1607,8 @@ mod tests {
         cursor: egui::CursorIcon,
         /// The URLs the app asked to open.
         opened: Vec<String>,
+        /// The text the app put on the clipboard.
+        copied: Vec<String>,
         /// Whether the window is reported as maximised.
         maximized: bool,
         /// Hands the app new versions of the document, like the watcher.
@@ -1617,6 +1647,7 @@ mod tests {
                 commands: vec![],
                 cursor: egui::CursorIcon::Default,
                 opened: vec![],
+                copied: vec![],
                 maximized: false,
                 reloads,
                 repaint_delay: Duration::MAX,
@@ -1653,8 +1684,10 @@ mod tests {
                 }
                 self.cursor = output.platform_output.cursor_icon;
                 for command in &output.platform_output.commands {
-                    if let egui::OutputCommand::OpenUrl(open) = command {
-                        self.opened.push(open.url.clone());
+                    match command {
+                        egui::OutputCommand::OpenUrl(open) => self.opened.push(open.url.clone()),
+                        egui::OutputCommand::CopyText(text) => self.copied.push(text.clone()),
+                        _ => {}
                     }
                 }
                 output.drop_without_applying_deltas();
@@ -5878,5 +5911,31 @@ mod tests {
         engine.open_link_gate();
         h.until(|h| h.app.current_page() != Some(2));
         assert_eq!(h.app.current_page(), Some(2));
+    }
+
+    #[test]
+    fn copy_link_copies_the_centre_page() {
+        let mut h = Harness::build(|app| {
+            app.with_name("Some Book.pdf".into())
+                .with_link_path("/b/Some Book.pdf".into())
+        });
+        go_to(&mut h, 4);
+        let page = h.centre().page + 1;
+        h.press(egui::Key::L, Modifiers::COMMAND);
+        h.press(egui::Key::L, Modifiers::COMMAND | Modifiers::SHIFT);
+        assert_eq!(
+            h.copied,
+            vec![
+                format!("noido:///b/Some%20Book.pdf#page={page}"),
+                format!("[Some Book, p. {page}](noido:///b/Some%20Book.pdf#page={page})"),
+            ]
+        );
+    }
+
+    #[test]
+    fn copy_without_a_path_does_nothing() {
+        let mut h = Harness::new();
+        h.press(egui::Key::L, Modifiers::COMMAND);
+        assert!(h.copied.is_empty());
     }
 }

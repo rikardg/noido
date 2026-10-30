@@ -307,6 +307,8 @@ impl View {
             | Action::PreviousHit
             | Action::Back
             | Action::Forward
+            | Action::CopyLink
+            | Action::CopyMarkdownLink
             | Action::ShowDocumentInfo
             | Action::OpenSettings
             | Action::Quit => {}
