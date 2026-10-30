@@ -311,6 +311,7 @@ impl View {
             | Action::CopyMarkdownLink
             | Action::ShowDocumentInfo
             | Action::OpenSettings
+            | Action::CloseWindow
             | Action::Quit => {}
         }
     }

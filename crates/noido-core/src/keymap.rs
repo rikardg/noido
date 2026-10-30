@@ -72,6 +72,8 @@ pub enum Action {
     CopyMarkdownLink,
     ShowDocumentInfo,
     OpenSettings,
+    /// Closes the window; for now the same as quitting.
+    CloseWindow,
     Quit,
 }
 
@@ -130,6 +132,7 @@ impl Keymap {
             (command(Key::I), Action::ShowDocumentInfo),
             (command(Key::Comma), Action::OpenSettings),
             (command(Key::Q), Action::Quit),
+            (command(Key::W), Action::CloseWindow),
         ];
         Self { bindings }
     }
@@ -491,8 +494,16 @@ mod tests {
     }
 
     #[test]
-    fn w_with_mod_does_nothing() {
-        assert_eq!(Keymap::native().action(press(Key::W, true), false), None);
+    fn mod_w_closes_the_window() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::W, true), false),
+            Some(Action::CloseWindow)
+        );
+        assert_eq!(
+            keymap.key_for(Action::CloseWindow),
+            Some(press(Key::W, true))
+        );
     }
 
     #[test]
@@ -518,10 +529,12 @@ mod tests {
 
     #[test]
     fn mod_q_quits() {
+        let keymap = Keymap::native();
         assert_eq!(
-            Keymap::native().action(press(Key::Q, true), false),
+            keymap.action(press(Key::Q, true), false),
             Some(Action::Quit)
         );
+        assert_eq!(keymap.key_for(Action::Quit), Some(press(Key::Q, true)));
     }
 
     #[test]
