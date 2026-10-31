@@ -90,10 +90,12 @@ is the daily driver; macOS and Windows build but are unchecked.
 - Docs and process: `Spec`, `Plan`, `Backlog`, `Investigation`, and
   `Repo` for CLAUDE.md, crate metadata and workspace setup.
 - A fix from a review is, first choice, a fixup commit: marked as such
-  in the title (`fixup: <crate>: what changed`), so it can be squashed
-  into the commit it corrects. A fix large or distinct enough to stand
-  on its own is a regular commit instead: its crate's prefix, and
-  "A review fix." in the body.
+  in the title (`fixup: <crate>: what changed`), so the user can follow
+  the fix as a separate commit, then squashed into the commit it
+  corrects before the work is reported done. A fixup does not belong in
+  the finished history. A fix large or distinct enough to stand on its
+  own is a regular commit instead: its crate's prefix, and "A review fix."
+  in the body.
 
 ## Hard rules
 
