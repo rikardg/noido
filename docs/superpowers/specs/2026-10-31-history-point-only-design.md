@@ -1,6 +1,6 @@
 # History entries hold only the place
 
-Date: 2026-10-31 · Status: draft for review
+Date: 2026-10-31 · Status: small change, agreed in conversation
 
 Supersedes the "an entry is a `ViewState`" rule in
 [2026-10-27-history-design.md](2026-10-27-history-design.md).
