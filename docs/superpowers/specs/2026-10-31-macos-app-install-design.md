@@ -309,7 +309,8 @@ someone else's; nothing from inside the bundle.
    and the stale-app hint.
 
 Click-to-open is complete after step 2 for a bundle built by hand, and
-after step 3 for anyone with a checkout or the formula.
+after step 3 for anyone with a noido binary (a checkout or `cargo
+install`); the formula and the downloads come with the release design.
 
 ## Left to the release design
 
@@ -336,6 +337,15 @@ What this design found that the release-job design should start from:
   is run again after an upgrade (the stale-app hint says the same).
 - Which warning a quarantined, ad-hoc signed app actually gets on
   macOS 26 is still to be seen, so the README promises the right one.
+- A bare `noido` binary offered for download is a fourth route:
+  `--install` builds the same app from it as from a local build. Fetched
+  with `curl` it is not quarantined and should be as quiet as the
+  formula. Fetched with a browser it is: the first terminal run needs
+  *Open Anyway* (or `xattr -d com.apple.quarantine`), and whether the
+  flag follows the binary into the app (Rust's `fs::copy` copies
+  extended attributes on macOS) and earns the app a second warning is
+  not measured. `--install` does not strip the flag itself: that would
+  be bypassing Gatekeeper on the user's behalf.
 
 ## Code shape
 
