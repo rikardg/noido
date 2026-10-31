@@ -58,8 +58,9 @@ is the daily driver; macOS and Windows build but are unchecked.
 - Small changes: a short spec, agreed with the user, then the change.
 - Always TDD: the failing test first, watched failing.
 - After a change: a review by a fresh subagent on the most capable model.
-  Critical and Important findings are fixed test-first; minors go to an
-  issue, not into the code.
+  Critical and Important findings are fixed test-first; minors are first
+  presented to the user in chat to determine whether they go to an issue. They
+  do not go into the code.
 - Rebuild release after anything the user will try, and tell them what to
   check by hand.
 
