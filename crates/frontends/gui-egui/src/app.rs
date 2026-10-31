@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
@@ -130,10 +131,13 @@ pub struct NoidoApp {
     /// The link clicked last frame, followed at the start of the next:
     /// the view takes egui's offset first.
     clicked_link: Option<noido_engine::Link>,
-    /// Picks a file when asked, and opens it in a new window; the real
-    /// desktop dialog and launch in the app, fakes in tests.
-    pick: Box<dyn Fn() -> Option<std::path::PathBuf>>,
-    open: Box<dyn Fn(&std::path::Path)>,
+    /// Picks a PDF when asked, handing it to [`NoidoApp::open`]; the real
+    /// dialog on a thread of its own, so the window keeps painting while
+    /// it is up. Fakes in tests.
+    pick: Box<dyn Fn(open::OnPicked)>,
+    /// Opens a picked document in a new window; `Arc` so the picker's
+    /// thread can call it. Fakes in tests.
+    open: open::OnPicked,
     /// The old view's edge after PageUp/PageDown and when its flash
     /// started: `None` while the key is still held.
     screen_edge: Option<(noido_core::DocPoint, Option<f64>)>,
@@ -239,7 +243,7 @@ impl NoidoApp {
             hovered_link: None,
             clicked_link: None,
             pick: Box::new(open::pick_pdf),
-            open: Box::new(open::open),
+            open: Arc::new(open::open),
             screen_edge: None,
             page_key_repeated: false,
         }
@@ -933,11 +937,7 @@ impl NoidoApp {
             Action::CloseWindow | Action::Quit => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close)
             }
-            Action::OpenDocument => {
-                if let Some(path) = (self.pick)() {
-                    (self.open)(&path);
-                }
-            }
+            Action::OpenDocument => (self.pick)(self.open.clone()),
             Action::OpenSettings => {
                 // Another noido may have saved changes since: start from
                 // them, so saving here doesn't undo them.
@@ -1518,7 +1518,10 @@ fn core_key(key: egui::Key) -> Option<Key> {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
+    use std::{
+        path::{Path, PathBuf},
+        sync::{Arc, Mutex},
+    };
 
     use egui::{Event, Modifiers, RawInput, pos2};
     use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
@@ -2536,13 +2539,15 @@ mod tests {
     #[test]
     fn mod_o_opens_the_picked_document() {
         let mut h = Harness::new();
-        h.app.pick = Box::new(|| Some(PathBuf::from("/tmp/picked.pdf")));
-        let opened: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
-        let sink = opened.clone();
-        h.app.open = Box::new(move |path| sink.borrow_mut().push(path.to_path_buf()));
+        let opened: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let picked = opened.clone();
+        let open: open::OnPicked =
+            Arc::new(move |path| picked.lock().unwrap().push(path.to_path_buf()));
+        h.app.open = open;
+        h.app.pick = Box::new(|on_picked| on_picked(Path::new("/tmp/picked.pdf")));
         h.press(egui::Key::O, Modifiers::COMMAND);
         assert_eq!(
-            opened.borrow().as_slice(),
+            opened.lock().unwrap().as_slice(),
             &[PathBuf::from("/tmp/picked.pdf")]
         );
     }
@@ -2550,10 +2555,12 @@ mod tests {
     #[test]
     fn menu_entry_opens_the_picked_document() {
         let mut h = Harness::new();
-        h.app.pick = Box::new(|| Some(PathBuf::from("/tmp/from-menu.pdf")));
-        let opened: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
-        let sink = opened.clone();
-        h.app.open = Box::new(move |path| sink.borrow_mut().push(path.to_path_buf()));
+        let opened: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let picked = opened.clone();
+        let open: open::OnPicked =
+            Arc::new(move |path| picked.lock().unwrap().push(path.to_path_buf()));
+        h.app.open = open;
+        h.app.pick = Box::new(|on_picked| on_picked(Path::new("/tmp/from-menu.pdf")));
         let entry = noido_core::menu()
             .into_iter()
             .flatten()
@@ -2562,7 +2569,7 @@ mod tests {
         let ctx = h.ctx.clone();
         h.app.apply(&ctx, entry.action);
         assert_eq!(
-            opened.borrow().as_slice(),
+            opened.lock().unwrap().as_slice(),
             &[PathBuf::from("/tmp/from-menu.pdf")]
         );
     }
@@ -2570,12 +2577,15 @@ mod tests {
     #[test]
     fn a_cancelled_pick_opens_nothing() {
         let mut h = Harness::new();
-        h.app.pick = Box::new(|| None);
-        let opened: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
-        let sink = opened.clone();
-        h.app.open = Box::new(move |path| sink.borrow_mut().push(path.to_path_buf()));
+        let opened: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let picked = opened.clone();
+        let open: open::OnPicked =
+            Arc::new(move |path| picked.lock().unwrap().push(path.to_path_buf()));
+        h.app.open = open;
+        // A cancelled pick hands nothing over.
+        h.app.pick = Box::new(|_| {});
         h.press(egui::Key::O, Modifiers::COMMAND);
-        assert!(opened.borrow().is_empty());
+        assert!(opened.lock().unwrap().is_empty());
     }
 
     /// Puts the cursor in the search field.
