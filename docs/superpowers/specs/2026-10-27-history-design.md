@@ -1,5 +1,9 @@
 # History: back and forward between jumps
 
+> **Superseded in part:** entries no longer carry a whole `ViewState`; a
+> history entry is a `DocPoint`. See
+> [2026-10-31-history-point-only-design.md](2026-10-31-history-point-only-design.md).
+
 ## Why
 
 Reading a paper, you follow a link to a footnote or a reference and want to
