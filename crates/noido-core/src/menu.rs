@@ -31,6 +31,7 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
         check: Some(check),
     };
     vec![
+        vec![entry(Action::OpenDocument, "Open…")],
         vec![
             entry(Action::FitWidth, "Fit width"),
             entry(Action::FitPage, "Fit page"),
@@ -59,7 +60,6 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
             entry(Action::ShowDocumentInfo, "Document info…"),
             entry(Action::OpenSettings, "Settings…"),
         ],
-        vec![entry(Action::OpenDocument, "Open…")],
         vec![
             entry(Action::CloseWindow, "Close window"),
             entry(Action::Quit, "Quit"),
@@ -82,6 +82,7 @@ mod tests {
         assert_eq!(
             labels,
             vec![
+                vec!["Open…"],
                 vec!["Fit width", "Fit page", "Zoom in", "Zoom out"],
                 vec!["Continuous", "Dual page", "Odd pages left"],
                 vec!["Show sidebar"],
@@ -89,7 +90,6 @@ mod tests {
                 vec!["Copy link to page", "Copy Markdown link to page"],
                 vec!["Next match", "Previous match"],
                 vec!["Document info…", "Settings…"],
-                vec!["Open…"],
                 vec!["Close window", "Quit"],
             ]
         );
