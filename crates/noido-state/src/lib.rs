@@ -226,14 +226,15 @@ struct Entry {
     /// before entries named it, which use their own hash.
     #[serde(default)]
     window: Option<String>,
-    // Absent from files written before history existed.
+    // Absent from files written before history existed. Old entries carry
+    // the view fields too; serde ignores them.
     #[serde(default)]
-    back: Vec<Place>,
+    back: Vec<Point>,
     #[serde(default)]
-    forward: Vec<Place>,
+    forward: Vec<Point>,
 }
 
-/// The TOML form of a [`ViewState`]: the document's own, or a history entry.
+/// The TOML form of the document's own [`ViewState`].
 #[derive(Serialize, Deserialize)]
 struct Place {
     zoom: Zoom,
@@ -302,9 +303,35 @@ impl Place {
     }
 }
 
+/// The TOML form of a history entry: the place, and nothing else.
+#[derive(Serialize, Deserialize)]
+struct Point {
+    page: usize,
+    x: f32,
+    y: f32,
+}
+
+impl Point {
+    fn new(point: &DocPoint) -> Self {
+        Self {
+            page: point.page,
+            x: point.x,
+            y: point.y,
+        }
+    }
+
+    fn state(&self) -> DocPoint {
+        DocPoint {
+            page: self.page,
+            x: self.x,
+            y: self.y,
+        }
+    }
+}
+
 impl Entry {
     fn new(path: &Path, window: &str, doc: &DocState) -> Self {
-        let places = |states: &[ViewState]| states.iter().map(Place::new).collect();
+        let places = |points: &[DocPoint]| points.iter().map(Point::new).collect();
         Self {
             version: VERSION,
             path: path.to_string_lossy().into_owned(),
@@ -321,7 +348,7 @@ impl Entry {
     }
 
     fn state(&self) -> DocState {
-        let states = |places: &[Place]| places.iter().map(Place::state).collect();
+        let states = |points: &[Point]| points.iter().map(Point::state).collect();
         DocState {
             view: self.place.state(),
             sidebar: SidebarState {

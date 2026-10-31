@@ -406,25 +406,25 @@ impl NoidoApp {
     /// Remembers the current place before a jump, for Back.
     fn leave_here(&mut self) {
         self.links.cancel_named();
-        if let Some(here) = self.view.state() {
+        if let Some(here) = self.view.place() {
             self.history.leave(here);
         }
     }
 
     fn go_back(&mut self) {
-        if let Some(here) = self.view.state()
+        if let Some(here) = self.view.place()
             && let Some(to) = self.history.back(here)
         {
-            self.view.restore(&to);
+            self.view.restore_place(&to);
             self.reader_moved();
         }
     }
 
     fn go_forward(&mut self) {
-        if let Some(here) = self.view.state()
+        if let Some(here) = self.view.place()
             && let Some(to) = self.history.forward(here)
         {
-            self.view.restore(&to);
+            self.view.restore_place(&to);
             self.reader_moved();
         }
     }
@@ -504,7 +504,7 @@ impl NoidoApp {
         // A search is one jump: stepping from hit to hit, or searching
         // again from a hit, adds nothing.
         if !std::mem::replace(&mut self.searched_away, true)
-            && let Some(here) = self.view.state()
+            && let Some(here) = self.view.place()
         {
             self.history.leave(here);
         }
@@ -5820,10 +5820,26 @@ mod tests {
         let mut h = sidebar_on(Arc::new(BlankEngine));
         click_thumbnail(&mut h, 2);
         assert_eq!(h.app.current_page(), Some(2));
+        assert_eq!(h.app.history.back_entries().len(), 1);
         mouse_button(&mut h, egui::PointerButton::Extra1);
         assert_eq!(h.app.current_page(), Some(0));
         mouse_button(&mut h, egui::PointerButton::Extra2);
         assert_eq!(h.app.current_page(), Some(2));
+    }
+
+    #[test]
+    fn back_keeps_the_zoom_and_modes() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        click_thumbnail(&mut h, 2);
+        h.press(egui::Key::Plus, Modifiers::COMMAND);
+        h.press(egui::Key::D, Modifiers::NONE);
+        let before = (h.app.view.mode(), h.app.view.scale(), h.app.view.dual());
+        mouse_button(&mut h, egui::PointerButton::Extra1);
+        assert_eq!(h.app.current_page(), Some(0));
+        assert_eq!(
+            (h.app.view.mode(), h.app.view.scale(), h.app.view.dual()),
+            before
+        );
     }
 
     #[test]
@@ -5858,7 +5874,7 @@ mod tests {
         click_link(&mut h, 0, 100.0, 96.0);
         let state = h.app.doc_state().unwrap();
         assert_eq!(state.history.back_entries().len(), 1);
-        assert_eq!(state.history.back_entries()[0].centre.page, 0);
+        assert_eq!(state.history.back_entries()[0].page, 0);
     }
 
     #[test]

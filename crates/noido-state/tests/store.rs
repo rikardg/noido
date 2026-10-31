@@ -25,6 +25,15 @@ fn state(page: usize) -> DocState {
     }
 }
 
+/// A history entry: just a place on a page.
+fn point(page: usize) -> DocPoint {
+    DocPoint {
+        page,
+        x: 10.0,
+        y: 20.5,
+    }
+}
+
 /// The state `store` has for `key`.
 fn loaded(store: &Store, key: &DocKey) -> Option<DocState> {
     store.load(key.clone()).1
@@ -314,24 +323,48 @@ fn history_is_saved_and_loaded() {
     let dir = TempDir::new().unwrap();
     let store = Store::at(dir.path());
     let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
-    let fit = ViewState {
-        zoom: ZoomMode::FitWidth,
-        scale: 0.8,
-        continuous: true,
-        dual: false,
-        odd_left: false,
-        centre: DocPoint {
-            page: 7,
-            x: 1.0,
-            y: 2.0,
-        },
-    };
     let saved = DocState {
-        history: History::from_parts(vec![state(1).view, fit], vec![state(9).view]),
+        history: History::from_parts(vec![point(1), point(7)], vec![point(9)]),
         ..state(3)
     };
     store.save(&slot(&store, &key), &saved).unwrap();
     assert_eq!(loaded(&store, &key), Some(saved));
+}
+
+#[test]
+fn an_old_history_entry_loads_as_its_point() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    fs::create_dir_all(docs(&dir)).unwrap();
+    // A `[[back]]` written before history entries were just a point: the
+    // extra view fields are ignored and only page/x/y are kept.
+    fs::write(
+        docs(&dir).join(format!("{}.toml", key.hex())),
+        "version = 1\npath = \"/papers/a.pdf\"\nsaved = 0\nzoom = \"custom\"\n\
+         scale = 1.5\ncontinuous = false\ndual = true\nodd_left = true\npage = 3\n\
+         x = 10.0\ny = 20.5\nsidebar_open = true\nsidebar_width = 300.0\n\
+         window = \"abc\"\n\
+         [[back]]\nzoom = \"fit-page\"\nscale = 1.7843966\ncontinuous = true\n\
+         dual = false\nodd_left = false\npage = 50\nx = 288.0\ny = 411.3435\n",
+    )
+    .unwrap();
+    let expected = DocState {
+        sidebar: SidebarState {
+            open: true,
+            width: 300.0,
+        },
+        history: History::from_parts(
+            vec![DocPoint {
+                page: 50,
+                x: 288.0,
+                y: 411.3435,
+            }],
+            vec![],
+        ),
+        ..state(3)
+    };
+    assert_eq!(loaded(&store, &key), Some(expected));
 }
 
 #[test]

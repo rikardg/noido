@@ -1,22 +1,23 @@
-use crate::ViewState;
+use crate::DocPoint;
 
 /// How many places Back can go to; the oldest go first.
 pub const HISTORY_LIMIT: usize = 100;
 
 /// The places the reader jumped away from, for Back and Forward. Each entry
-/// is where the reader was when they left it, not where a jump landed.
+/// is where the reader was when they left it, not where a jump landed; the
+/// document's zoom and arrangement are not part of it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct History {
     /// Oldest first.
-    back: Vec<ViewState>,
+    back: Vec<DocPoint>,
     /// The next place Forward goes to is last.
-    forward: Vec<ViewState>,
+    forward: Vec<DocPoint>,
 }
 
 impl History {
     /// Restores saved entries, keeping the newest [`HISTORY_LIMIT`] of each.
-    pub fn from_parts(back: Vec<ViewState>, forward: Vec<ViewState>) -> Self {
-        let newest = |mut entries: Vec<ViewState>| {
+    pub fn from_parts(back: Vec<DocPoint>, forward: Vec<DocPoint>) -> Self {
+        let newest = |mut entries: Vec<DocPoint>| {
             let extra = entries.len().saturating_sub(HISTORY_LIMIT);
             entries.drain(..extra);
             entries
@@ -28,7 +29,7 @@ impl History {
     }
 
     /// The reader jumps away from `here`. Forward is forgotten.
-    pub fn leave(&mut self, here: ViewState) {
+    pub fn leave(&mut self, here: DocPoint) {
         self.forward.clear();
         if self.back.last() != Some(&here) {
             self.back.push(here);
@@ -38,24 +39,24 @@ impl History {
     }
 
     /// The place before `here`, which Forward then returns to.
-    pub fn back(&mut self, here: ViewState) -> Option<ViewState> {
+    pub fn back(&mut self, here: DocPoint) -> Option<DocPoint> {
         let to = self.back.pop()?;
         self.forward.push(here);
         Some(to)
     }
 
     /// The place Back left, which Back then returns from.
-    pub fn forward(&mut self, here: ViewState) -> Option<ViewState> {
+    pub fn forward(&mut self, here: DocPoint) -> Option<DocPoint> {
         let to = self.forward.pop()?;
         self.back.push(here);
         Some(to)
     }
 
-    pub fn back_entries(&self) -> &[ViewState] {
+    pub fn back_entries(&self) -> &[DocPoint] {
         &self.back
     }
 
-    pub fn forward_entries(&self) -> &[ViewState] {
+    pub fn forward_entries(&self) -> &[DocPoint] {
         &self.forward
     }
 }
@@ -63,20 +64,13 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DocPoint, ZoomMode};
+    use crate::DocPoint;
 
-    fn at(page: usize) -> ViewState {
-        ViewState {
-            zoom: ZoomMode::FitWidth,
-            scale: 1.0,
-            continuous: true,
-            dual: false,
-            odd_left: true,
-            centre: DocPoint {
-                page,
-                x: 0.0,
-                y: 0.0,
-            },
+    fn at(page: usize) -> DocPoint {
+        DocPoint {
+            page,
+            x: 0.0,
+            y: 0.0,
         }
     }
 
