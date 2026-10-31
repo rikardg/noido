@@ -1,6 +1,6 @@
-# The macOS app, click-to-open, and Homebrew: design
+# The macOS app and click-to-open: design
 
-Date: 2026-10-31 · Status: draft, for approval
+Date: 2026-10-31, revised 2026-11-01 · Status: draft, for approval
 
 ## Intent and why
 
@@ -8,23 +8,16 @@ Clicking a PDF in Finder should open noido. Today it cannot: Finder only
 opens *apps* (bundles, never bare binaries), and it hands the file over as
 an `application:openURLs:` Apple event rather than on the command line,
 which winit 0.30 drops. `docs/investigations/2026-10-26-macos-app.md`
-worked out what that needs; this design decides how noido gets it, and how
-the result reaches a user through Homebrew.
-
-Homebrew is the distribution the release investigation already picked
-(`2026-10-26-versioning-and-releases.md`: dist, a formula, a tap). What
-that plan does not cover is the app: dist builds a formula and a tarball,
-never a `.app`. So macOS gets a bundle from noido itself, and Homebrew
-installs the command that builds and registers it.
+worked out what that needs; this design decides how noido gets it.
 
 The shape the user asked for, as VS Code and Zed ship it: one app that
 gets installed, plus a `noido` command that leads into it for terminal use.
 
-Homebrew is not how most people install an app on macOS, though: a
-`.dmg` with the app and an *Applications* shortcut is what a download
-looks like, and a zip of the app is what a cask needs. Both cost a few
-lines in the release job, so both ship; what they cannot buy is a quiet
-first launch (see Constraints).
+How the app reaches users who have no checkout (the release job's `.dmg`
+and `.zip`, a Homebrew cask) is left to the release-job design, which does
+not exist yet; see "Left to the release design" for what this design
+hands over to it. This one ends with an app that `noido --install` builds
+and registers, and a `noido --app-bundle <dir>` the release job can call.
 
 ## Goals
 
@@ -32,14 +25,12 @@ first launch (see Constraints).
   the document once noido has been chosen as the default.
 - Once noido has it, the read works as on Linux: one window per file; a
   second click on a file that is already open brings that window forward.
+  Every window noido opens or hands over to comes to the front.
+- Opening several PDFs at once from Finder opens each of them.
 - `noido <file>` from a terminal keeps working, with no separate CLI
   installation path.
-- `brew install rikardg/tap/noido` on macOS gets a user from nothing to a
-  registered app, and `brew upgrade` does not leave a stale copy behind
-  without saying so.
-- A user who does not use Homebrew gets the app from the GitHub release
-  as a `.dmg` (drag to *Applications*) or a `.zip`, built from the same
-  code as `--install`.
+- After `noido --install` from a Homebrew formula, `brew upgrade` updates
+  the app too; from anywhere else, a stale app is at least named as such.
 - Everything except the AppKit calls is plain, tested Rust: the plist, the
   bundle layout, the plan, the routing of a path that arrives from Finder.
 
@@ -47,26 +38,24 @@ first launch (see Constraints).
 
 - Making noido the default PDF viewer for the user. Finder's *Get Info →
   Open With → Change All…* stays the user's step, as on Linux.
+- Release artifacts (`.dmg`, `.zip`), a Homebrew cask, and the formula's
+  `caveats`: the release-job design.
 - Notarization and a Developer ID; signing is ad hoc.
 - A noido icon (the bundle gets Finder's generic app icon, like the
   `.desktop` file gets the theme's generic document icon).
 - Windows.
-- A styled `.dmg` (background image, icon positions, licence screen):
-  the image is a plain volume holding the app and an *Applications*
-  link.
 - A welcome window for a noido started with no document.
-- Universal binaries: the release stays Apple Silicon.
+- Universal binaries: Apple Silicon only.
 
 ## Anti-goals
 
 - **A second, divergent copy of the bundle.** The plist and the layout
-  are written once, in one function, used by both `--install` and the
-  release job.
-- **`noido` as a broken symlink into a bundle.** Measured below: a launch
-  through a symlink loses the bundle's identity. If Homebrew links the
-  command, it must be to something that survives that.
+  are written once, in one function, used by both `--install` and
+  `--app-bundle`.
+- **`noido` as a symlink into a bundle.** Measured below: a launch
+  through such a symlink loses the bundle's identity.
 - **Silently owning the default-PDF choice**, or writing anything into
-  `/Applications` (Homebrew's cask territory) without the user's y.
+  `/Applications` without the user's y.
 - **Depending on winit's launch internals where a documented seam will
   do.** Those internals change between winit versions; the release notes
   of each winit upgrade get checked against this design.
@@ -81,7 +70,7 @@ Measured on this machine (macOS 15.8, macOS 26 SDK):
   later) → `applicationDidFinishLaunching` (0.2 ms later). So the path is
   available before any window exists — but only to a delegate that
   already has the method.
-- **winit's delegate class exists only inside `run_native.`** winit 0.30.13
+- **winit's delegate class exists only inside `run_native`.** winit 0.30.13
   creates `WinitApplicationDelegate` and sets it as the app delegate in
   `EventLoop::new`, which eframe calls *within* `run_native`; there is no
   point where noido's code runs between that and the launch events being
@@ -92,23 +81,31 @@ Measured on this machine (macOS 15.8, macOS 26 SDK):
   Registered for `kCoreEventClass`/`kAEOpenDocuments` before the run
   loop, they saw nothing while the delegate route got the path. That
   door is closed.
-- **A symlinked launch loses the bundle.** A probe binary inside a fake
-  `.app`, started directly, reported `bundlePath=…/b.app id=test.probe`;
-  started through a symlink in another directory it reported
-  `bundlePath=/tmp id=nil`. Homebrew's `binary` stanza is a symlink.
-- **Quarantine decides who gets a warning, not which format is used.**
-  An app built on the user's machine is not quarantined. One that arrived
-  in a downloaded `.dmg`, `.zip` or cask is, and Gatekeeper then wants
-  *System Settings → Privacy & Security → Open Anyway* once per download
-  unless it is notarized; a Developer ID is the only way out of that.
-  Ad-hoc signing is still worth it: an unsigned bundle on current macOS
-  can be refused outright instead of offering the button. Format is
-  therefore not a Gatekeeper question at all — the `.dmg` and the cask
-  are equally affected, and a formula that installs no bundle is the
-  only route without a warning.
-- `hdiutil` and `ditto`, which build the `.dmg` and the `.zip`, ship with
-  macOS, and the release job already runs on an Apple Silicon runner for
-  the macOS target.
+- **A launch through a symlink takes the symlink's path as its own.** A
+  probe binary inside a fake `.app`, started directly, reported
+  `bundlePath=…/b.app id=test.probe`; started through a symlink in
+  another directory it reported `bundlePath=/tmp id=nil`. The bundle is
+  found from the path the process was started by, unresolved. The same
+  rule, run the other way, is what the Homebrew route below relies on:
+  a symlink *inside* the bundle should keep the bundle (to be confirmed,
+  see "To check").
+- **Activation is cooperative since macOS 14.** An app can no longer take
+  the front by itself: `activateIgnoringOtherApps:` (what winit's
+  `focus_window`, and so egui's `ViewportCommand::Focus`, calls) is
+  deprecated and mostly ignored. The active app has to yield
+  (`yieldActivationToApplication:`), or the launch has to go through
+  Launch Services with activation asked for (`NSWorkspace
+  openApplicationAtURL:configuration:` with `activates`). A process
+  started with a plain `spawn`, as `open.rs` does today, gets neither.
+  This hits the launcher's GUI, a second file opened from a running
+  noido, and the single-instance hand-over (`app.rs`, which sends
+  `Focus` and `RequestUserAttention`).
+- **AppKit can read command-line arguments as documents.** With the
+  `NSTreatUnknownArgumentsAsOpen` default left alone, a GUI started as
+  `…/MacOS/noido file.pdf` may get an open event for its own argument
+  (to be confirmed, see "To check").
+- `codesign` will not sign a bundle whose main executable is a symlink;
+  the binary keeps its own ad-hoc signature from the linker.
 - `unsafe_code` is forbidden workspace-wide. The AppKit work goes in its
   own crate that does not take the workspace lints, as the investigation
   says.
@@ -123,11 +120,12 @@ Measured on this machine (macOS 15.8, macOS 26 SDK):
 cargo-packager.
 
 1. **noido writes the bundle itself.** A function from (exe, version,
-   identifier, destination) to a plist and a layout, tested in a temp
-   dir, with the same plan/confirm/steps shape as `desktop.rs`. The
-   release job runs the same code through `noido --app-bundle <dir>`.
-   Chosen: one source of truth, no new tool in CI, and the plist is the
-   part we care about (see below) rather than something to work around.
+   identifier, destination, how the binary gets there) to a plist and a
+   layout, tested in a temp dir, with the same plan/confirm/steps shape
+   as `desktop.rs`. `noido --app-bundle <dir>` runs the same code for
+   the release job and for trying by hand. Chosen: one source of truth,
+   no new tool in CI, and the plist is the part we care about (see
+   below) rather than something to work around.
 2. cargo-packager 0.11.8. Builds `.app` and `.dmg` and signs/notarizes,
    but its `file-associations` writes the deprecated
    `CFBundleTypeExtensions` and no `LSItemContentTypes`/`LSHandlerRank`,
@@ -140,12 +138,14 @@ cargo-packager.
 
 1. **No arguments and inside a `.app`: start in launcher mode.** The
    `noido-macos` crate runs a bare `NSApplication` loop with an
-   `application:openURLs:` delegate (no winit, no egui), takes the first
-   path the launch event carries, launches `noido <path>` detached and
-   exits. Chosen: the event is caught before anything else exists, the
-   GUI's own startup is untouched, and the failure mode is a loud "no
-   document" rather than a mysteriously empty window. It is also what the
-   throwaway AppleScript droplet does today, which works.
+   `application:openURLs:` delegate (no winit, no egui), takes every URL
+   the launch event carries, starts one GUI per URL through Launch
+   Services (see Behaviour) and exits. Chosen: the event is caught before
+   anything else exists, the GUI's own startup is untouched, and the
+   failure mode is a loud "no document" rather than a mysteriously empty
+   window. It is also what the throwaway AppleScript droplet does today,
+   which works. Its cost: the Dock shows the launcher bounce and go
+   before the GUI's icon appears.
 2. Swizzle `-[NSApplication setDelegate:]` at startup so winit's delegate
    gets the method as winit installs it, then load the document inside
    eframe's app creator. One process and no launcher mode, but it changes
@@ -161,29 +161,43 @@ rather than starting a new one, so the GUI installs the same
 first frame — no timing pressure there — and drains the queue each frame
 into the existing `open` hook.
 
-**Distribution: all three routes, one bundle (picked).** They differ in
-who they serve, not in what they build:
+**How the app finds its binary: a symlink for Homebrew, a copy otherwise
+(picked, if the spike confirms the symlink).**
 
-| Route | Who | First launch |
-| --- | --- | --- |
-| `brew install rikardg/tap/noido` (formula) + `noido --install` | Homebrew users | No warning: the app is built on their machine |
-| `brew install --cask rikardg/tap/noido` | Homebrew users who want a normal app install | *Open Anyway* once, again per upgrade |
-| `.dmg` / `.zip` from the GitHub release | everyone else | *Open Anyway* once |
+1. **`Contents/MacOS/noido` is a symlink to Homebrew's stable `opt`
+   path** (`/opt/homebrew/opt/noido/bin/noido`) when the running binary
+   resolves into a Homebrew Cellar, and a copy otherwise. Chosen: `brew
+   upgrade` moves `opt` to the new version, so the app never goes stale
+   and `--install` never has to be re-run. The bundle is left unsigned
+   at bundle level (codesign refuses a symlinked main executable), which
+   a bundle built on the user's machine and never quarantined does not
+   need.
+2. Always copy, and have `--install` replace a bundle of another
+   version. Simpler, and the fallback if the symlink fails the spike;
+   but every `brew upgrade` leaves the app on the old version until the
+   user runs `noido --install` again.
 
-Downloading a `.dmg` "instead of" a cask buys nothing: both are
-quarantined. What the `.dmg` buys is not needing Homebrew. The formula is
-the only quiet route, which is why it stays the one the README leads
-with on macOS.
+**Coming to the front: whoever is in front yields (picked).** Every
+place where one noido process starts or wakes another passes activation
+along explicitly:
 
-The cask waits for its own small step rather than its own design: it is
-a cask file in the tap plus the version/`sha256` bump in the release job,
-and it needs the `.dmg`/`.zip` to have a URL to point at.
+- The launcher, and the GUI's `open` hook on macOS, start the new
+  process with `NSWorkspace openApplicationAtURL:configuration:` on the
+  bundle, with the path as its argument, `createsNewApplicationInstance`
+  and `activates` set — instead of `Command::spawn`. Outside a bundle
+  (a terminal `noido`), `open` keeps spawning as today.
+- The single-instance hand-over: the process that finds the file already
+  open yields activation to the running one before it exits, and the
+  running one calls `activate` (the cooperative one) on receipt besides
+  `Focus`. The sender needs the running process's pid for that; the IPC
+  answer is where it comes from.
 
 ## Behaviour
 
 **The bundle** — `noido.app/Contents/`:
 
-- `MacOS/noido`: the binary, COPIED, not linked (see anti-goals).
+- `MacOS/noido`: the binary, copied, or the symlink described above.
+  Nothing else in the bundle is ever a link.
 - `Info.plist`: `CFBundleExecutable=noido`, `CFBundleIdentifier=
   io.github.rikardg.noido`, `CFBundleName`/`CFBundleDisplayName=noido`,
   `CFBundleShortVersionString` = the version, `CFBundlePackageType=APPL`,
@@ -195,136 +209,181 @@ and it needs the `.dmg`/`.zip` to have a URL to point at.
   already claims.
 - No icon file, no `PkgInfo`, no `LSUIElement`.
 
+**`noido --app-bundle <dir>`** (macOS): writes the bundle with a copied
+binary to `<dir>`, signs it ad hoc (`codesign -s - --force`), and prints
+the path. For the release job and for trying by hand; never registers.
+Not compiled in on other platforms.
+
 **`noido --install`** (macOS):
 
-- Builds `~/Applications/noido.app` from the running binary (version
-  taken from this build) and prints what it will do first, in the same
-  one-line-per-step form as on Linux, asking `Proceed? [y/N]`.
-- A bundle of the same version already there: "already installed",
-  nothing to do. A different version: the step says it replaces it, so a
-  `brew upgrade` is followed by `noido --install` with a reason to say
-  yes.
-- `/Applications/noido.app` present (a Homebrew cask): says so and
-  stops; no second bundle with the same identifier.
-- Then ad-hoc signs the bundle (`codesign -s - --force`) and registers it
-  (`lsregister -f`), each a step whose failure is a note, not an error,
-  except the signing, which is a failure on Apple Silicon.
+- Builds `~/Applications/noido.app` from the running binary: a symlink
+  to the `opt` path when the binary resolves into a Homebrew Cellar, a
+  copy otherwise. Prints what it will do first, in the same
+  one-line-per-step form as on Linux, asking `Proceed? [y/N]`; the step
+  says which of the two it is.
+- A bundle already there: the same link target, or a copy of the same
+  version, is "already installed", nothing to do. Anything else: the step
+  says it replaces it and with what.
+- `/Applications/noido.app` present (a cask or a dragged copy): says so
+  and stops; no second bundle with the same identifier.
+- Then, for a copy, ad-hoc signs the bundle; and registers it
+  (`lsregister -f`). A failed registration is a note; a failed signing
+  is a failure.
 - The user is left to pick noido in Finder: the summary says that once,
   with the *Get Info → Open With → Change All…* path, and that noido does
   not touch the default itself.
-- `--uninstall` removes `~/Applications/noido.app` when its
-  `Info.plist` carries noido's identifier, and nothing otherwise.
-
-**`noido --app-bundle <dir>`** (macOS, release tooling): writes the same
-bundle to `<dir>`, signs it ad hoc, and prints the path. `--install` is
-this plus the destination and the registration. On other platforms it is
-not compiled in.
-
-**The release artifacts** (macOS leg of the release job, from that one
-bundle):
-
-- `noido.app.zip`: `ditto -c -k --keepParent noido.app`. What the cask
-  points at.
-- `noido-<version>-macos-arm64.dmg`: a staging directory holding
-  `noido.app` and a symlink to `/Applications`, packed with
-  `hdiutil create -volname noido -srcfolder … -format UDZO -ov`. What a
-  user without Homebrew downloads and drags.
-- The same `.dmg` and `.zip` attached to the GitHub release beside the
-  Linux tarballs; the signing happens before either is made, so what is
-  inside them is the ad-hoc signed app.
+- `--uninstall` unregisters and removes `~/Applications/noido.app` when
+  its `Info.plist` carries noido's identifier, and nothing otherwise.
 
 **Launch modes:**
 
-- A file argument: unchanged.
+- A file or link argument: unchanged. In a bundle, the GUI first sets
+  `NSTreatUnknownArgumentsAsOpen` to `NO` for itself, so AppKit does not
+  turn its own argument into an open event (if the spike shows it would).
+- A `-psn_…` argument, which older Launch Services passed on a Finder
+  launch, is dropped before clap sees the arguments.
 - No argument and the path noido was started by, unresolved, is inside
-  `.app/Contents/MacOS`: launcher mode. It waits for the launch event's
-  paths; the first becomes `noido <path>`, launched detached, and this
-  process exits 0. No document within two seconds (a double-click on the
-  app itself, which sends no open event): exit 0, quietly.
+  `.app/Contents/MacOS`: launcher mode. Each URL the launch event carries
+  becomes one GUI, in order: a `file:` URL as its path, any other URL
+  (`noido:`) as its text, started as under "Coming to the front". Then
+  this process exits 0. No URL by `applicationDidFinishLaunching` plus a
+  short grace (a double-click on the app itself, which sends no open
+  event): exit 0, quietly. The grace is set from the spike's timings,
+  well under a second.
 - No argument, otherwise: the clap error, as now. The unresolved path is
-  the test: a Homebrew `binary` symlink started from a terminal keeps the
-  symlink's path, so plain `noido` there is the clap error rather than a
-  process waiting for a document no one will send (see Constraints).
-- A path queue that is non-empty during a normal run: each path goes to
+  the test: a symlink started from a terminal keeps the symlink's path,
+  so plain `noido` there is the clap error rather than a process waiting
+  for a document no one will send.
+- A path queue that is non-empty during a normal run: each URL goes to
   the `open` hook, exactly as a picked file does today, so an already
   open file hands over and a new one gets a window.
 
+## To check on a Mac, before the plan is written
+
+A throwaway spike, outside the repo: probe bundles with their own
+identifier, opened with `open -a <probe>.app <file>` (Launch Services'
+own route, the same event Finder sends), each unregistered with
+`lsregister -u` as soon as it has been tried.
+
+- Whether Launch Services, with the app already running, starts the
+  bundle again or sends the open event to the running process; and with
+  several instances of the bundle running, which one gets it.
+- Whether a GUI started through `openApplicationAtURL:configuration:`
+  with `activates` comes to the front over Finder, and whether one
+  started with a plain spawn does not (the problem this design assumes).
+- Whether `yieldActivationToApplication:` from a process that is about
+  to exit lets the other one come forward with `activate`.
+- Whether AppKit turns a bundled GUI's argument into an open event, and
+  whether `NSTreatUnknownArgumentsAsOpen = NO` stops it.
+- Whether a symlinked `Contents/MacOS/noido` keeps the bundle's identity
+  and its document types when Launch Services starts it, and whether an
+  unsigned bundle of that shape launches from `~/Applications`.
+- Whether `LSItemContentTypes` alone is enough for *Open With*, or
+  `CFBundleTypeExtensions = [pdf]` is still needed beside it.
+- How long after `applicationDidFinishLaunching` an open event can still
+  arrive, to set the launcher's grace.
+
+The answers may move picks above: the symlink falls back to a copy, and
+if a running instance always gets the open event, the launcher only ever
+handles a cold start.
+
 ## Order of work
 
-1. **`noido --app-bundle`, and ad-hoc signing plus registration.** The
-   pure part of everything else; testable without a Mac's Finder, and it
-   gives the harness for step 2 by hand.
-2. **Launcher mode and the later-opens handler** (`noido-macos` crate,
-   objc2). This is the part that only a Mac can check; it lands with the
-   hand-testing list below.
-3. **`noido --install` / `--uninstall` on macOS**, around step 1's code,
-   sharing the plist and layout.
-4. **The release artifacts:** the macOS leg of the release job runs
-   `--app-bundle`, then builds `noido.app.zip` and the `.dmg` from it and
-   attaches both to the release; dist's formula gains a `caveats` line for
-   `noido --install`; the README says which route to take and what each
-   one's first launch looks like.
-5. **The tap's cask:** `noido` with `app` and `binary` stanzas, plus the
-   version/`sha256` bump in the release job, once step 4 has published
-   something for it to point at.
+1. **`noido --app-bundle`**: the plist, the layout, the ad-hoc signing.
+   The pure part of everything else; testable without a Mac's Finder,
+   and it gives the bundle that step 2 is tried with by hand.
+2. **Launcher mode, the later-opens handler, and coming to the front**
+   (`noido-macos` crate, objc2), including the macOS `open` hook and the
+   hand-over's yield. This is the part that only a Mac can check; it
+   lands with the hand-testing list below.
+3. **`noido --install` / `--uninstall` on macOS**, around step 1's code:
+   the symlink-or-copy choice, the plans, registration.
 
 Click-to-open is complete after step 2 for a bundle built by hand, and
-after step 3 for everyone else. Step 4 is what makes it reachable without
-a checkout; nothing before it depends on Homebrew, and step 5 depends on
-step 4 only for its URL.
+after step 3 for anyone with a checkout or the formula.
+
+## Left to the release design
+
+What this design found that the release-job design should start from:
+
+- `noido --app-bundle <dir>` is the seam: the release job builds the app
+  with it, then `ditto -c -k --keepParent noido.app noido.app.zip` (what
+  a cask points at) and a `.dmg` from a staging directory holding the app
+  and a symlink to `/Applications` (`hdiutil create -volname noido
+  -srcfolder … -format UDZO -ov`). Both tools ship with macOS.
+- **Quarantine decides who gets a warning, not which format is used.** A
+  downloaded `.dmg`, `.zip` or cask is quarantined, and Gatekeeper then
+  wants *System Settings → Privacy & Security → Open Anyway* once per
+  download unless it is notarized. Ad-hoc signing is still needed: an
+  unsigned bundle can be refused outright instead of offering the
+  button. The formula plus `noido --install` is the only quiet route,
+  which is why the README should lead with it.
+- A cask and a formula both called `noido` in one tap both install a
+  `noido` command: the cask needs `conflicts_with formula: "noido"`, and
+  `noido --install` already stops when `/Applications/noido.app` exists.
+- The formula's `caveats` should name `noido --install`.
+- Which warning a quarantined, ad-hoc signed app actually gets on
+  macOS 26 is still to be seen, so the README promises the right one.
 
 ## Code shape
 
 - `crates/noido-macos/`: new, macOS-only dependencies (`objc2`,
   `objc2-app-kit`, `objc2-foundation`), `unsafe_code = "deny"` with
-  narrow `allow`s, and no workspace lints. Two entry points:
-  `run_launcher(&exe) -> !`-ish for launch mode, and
-  `install_open_urls(handler)` for the GUI, plus the path queue behind a
-  `Mutex`.
+  narrow `allow`s, and no workspace lints. Entry points:
+  `run_launcher(&bundle) -> !`-ish for launch mode,
+  `install_open_urls()` plus the URL queue behind a `Mutex` for the GUI,
+  `launch_in_bundle(&bundle, arg)` for starting a GUI with activation,
+  and `yield_to(pid)` / `activate()` for the hand-over.
 - `crates/frontends/gui-egui/src/app_bundle.rs`: the plist text, the
-  layout, the plan/steps/`carry_out` shape borrowed from `desktop.rs`,
-  the `--app-bundle`/`--install`/`--uninstall` entry points, and the
-  decision "is this a Finder launch?" as a pure function. Compiled on
+  layout, the symlink-or-copy decision (from the resolved exe path to the
+  `opt` path, or none), the plan/steps/`carry_out` shape borrowed from
+  `desktop.rs`, the `--app-bundle`/`--install`/`--uninstall` entry
+  points, and "is this a Finder launch?" as a pure function. Compiled on
   every platform; only the entry points are macOS-only, so CI's Linux leg
   still tests the plist and the plans.
-- `gui-egui/src/main.rs`: the launch-mode branch before clap's
-  required-file rule (an argument-less, bundled start is not an error);
-  clap gains `--app-bundle <dir>`.
+- `gui-egui/src/main.rs`: dropping `-psn_…`, then the launch-mode branch
+  before clap's required-file rule (an argument-less, bundled start is
+  not an error); clap gains `--app-bundle <dir>`.
 - `gui-egui/src/app.rs`: one `receive_open_files()` step in `show()`,
   beside `receive_renders` and `receive_reload`, feeding the existing
-  `open` hook.
+  `open` hook; the hand-over activates as well as focusing.
+- `gui-egui/src/open.rs`: on macOS inside a bundle, `open` starts the
+  new window through `launch_in_bundle`.
+- `gui-egui/src/instance.rs`: the answer to "activate" carries the
+  running process's pid.
 - `gui-egui/src/desktop.rs`: unchanged; `--install` dispatches on
   `cfg!(target_os = "macos")`.
-- `justfile`: `app` (build the release binary with `--app-bundle` into a
-  scratch dir), and `dmg`/`zip` recipes wrapping `hdiutil` and `ditto`
-  so they can be tried by hand before the release job runs them; `run`
-  unchanged.
+- `justfile`: `app`, building the release binary and running
+  `--app-bundle` into a scratch dir; `run` unchanged.
 
 ## Testing
 
 - `app_bundle`: the plist parses and carries the UTI declarations, the
   identifier, the version and the URL scheme; the layout of a bundle
   written into a temp dir (binary present and executable, plist where
-  Finder expects it); plans for fresh install, same version, other
-  version, `/Applications` present, uninstall with and without ours
-  there.
+  Finder expects it); the symlink-or-copy decision for a Cellar path, an
+  `opt` path, a `target/release` path; plans for fresh install, same
+  link, other link, same version, other version, `/Applications`
+  present, uninstall with and without ours there.
 - The Finder-launch decision: no argument inside a bundle is a launcher
   run; no argument outside one, or through a symlink, is the clap error;
-  an argument is never a launcher run.
+  an argument is never a launcher run; `-psn_…` is dropped.
+- The launcher's URL routing, as a pure function: several `file:` URLs
+  give several paths in order; a `noido:` URL gives its text.
+- `instance`: the "activate" answer carries a pid.
 - Harness (GUI): a path in the queue during a frame reaches the `open`
   hook; two paths do too, in order; an empty queue does nothing.
-- By hand on a Mac, and only that: the launch event is caught by the
-  launcher mode; Finder's *Open With* lists the bundle; a double-click
-  after *Change All* opens the PDF; a second click on the same PDF brings
-  the window forward; a click on a different one while noido runs opens a
-  second window; `noido --version` and `noido <file>` from a terminal
-  behave, and the Dock shows the app's name; `codesign -dv` says ad hoc;
-  `brew uninstall`/`--uninstall` leave nothing behind.
-- By hand, the artifacts: the `.dmg` opens with the app and the
-  *Applications* link in it, and dragging the app across lands a working
-  copy that *Open With* sees; the `.dmg` and the `.zip` both come out of a
-  fresh `just dmg`/`just zip`; `spctl -a -vv` and a first launch from a
-  quarantined copy show the warning the README promises, not a worse one.
+- By hand on a Mac, and only that, each window checked to be *in front*:
+  Finder's *Open With* lists the bundle; a double-click after *Change
+  All* opens the PDF; three PDFs opened at once give three windows; a
+  second click on the same PDF brings its window forward; a click on a
+  different one while noido runs opens a second window; a `noido:` link
+  opens; double-clicking the app itself exits quietly and quickly;
+  `noido --version` and `noido <file>` from a terminal behave; the Dock
+  shows the app's name, and the launcher's bounce is tolerable;
+  `codesign -dv` says ad hoc for a copied bundle; after `brew upgrade`
+  the symlinked app runs the new version; `--uninstall` leaves nothing
+  behind.
 - State during hand testing: on macOS it is
   `~/Library/Application Support/noido` whatever `XDG_STATE_HOME` says,
   so a hand run touches the real one; use a scratch `HOME` for anything
@@ -337,20 +396,6 @@ step 4 only for its URL.
   unregistered (`lsregister -u <path>`) as soon as it has been tried, and
   never shares noido's own bundle identifier.
 
-## To check on a Mac, before the plan is written
-
-- Whether Launch Services, with the app already running, starts the
-  bundle again or sends the open event to the running process. The design
-  handles both, but which one happens decides whether the launcher mode
-  runs on every click.
-- Whether `LSItemContentTypes` alone is enough for *Open With*, or
-  `CFBundleTypeExtensions = [pdf]` is still needed beside it.
-- Whether ad-hoc signing the bundle is needed at all for it to launch
-  from `~/Applications`, or only for Gatekeeper to offer *Open Anyway*
-  instead of refusing a quarantined copy.
-- Which warning a quarantined, ad-hoc signed `.dmg` app actually gets on
-  macOS 26, so the README can promise the right one.
-
 ## Sources
 
 - `docs/investigations/2026-10-26-macos-app.md`,
@@ -358,12 +403,14 @@ step 4 only for its URL.
   `2026-10-26-desktop-install-design.md`,
   `2026-10-31-open-file-dialog-design.md`
 - winit 0.30.13: `src/platform_impl/macos/app_state.rs` (`declare_class!`
-  for `WinitApplicationDelegate`), `event_loop.rs` (`EventLoop::new`)
+  for `WinitApplicationDelegate`), `event_loop.rs` (`EventLoop::new`),
+  `window_delegate.rs` (`focus_window`)
 - eframe 0.37.0: `src/native/run.rs` (`with_event_loop`, `create_event_loop`)
 - cargo-packager `crates/packager/src/package/app/mod.rs` (`create_info_plist`,
   `file_associations`), `config/mod.rs`
-- dist config reference: https://axodotdev.github.io/cargo-dist/book/reference/config.html
-  (Homebrew installer; no cask support)
+- Apple: `NSApplication.yieldActivation(to:)`, `activate()`,
+  `NSWorkspace.OpenConfiguration` (`activates`,
+  `createsNewApplicationInstance`, `arguments`)
 - Homebrew cask `binary` and `app` stanzas, as used by
   `zed` (`Contents/MacOS/cli`) and `visual-studio-code`
   (`Contents/Resources/app/bin/code`)
