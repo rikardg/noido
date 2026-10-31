@@ -89,8 +89,11 @@ is the daily driver; macOS and Windows build but are unchecked.
   window is the frontend's.
 - Docs and process: `Spec`, `Plan`, `Backlog`, `Investigation`, and
   `Repo` for CLAUDE.md, crate metadata and workspace setup.
-- A fix from a review takes its crate's prefix and says "A review fix." in
-  the body.
+- A fix from a review is, first choice, a fixup commit: marked as such
+  in the title (`fixup: <crate>: what changed`), so it can be squashed
+  into the commit it corrects. A fix large or distinct enough to stand
+  on its own is a regular commit instead: its crate's prefix, and
+  "A review fix." in the body.
 
 ## Hard rules
 
