@@ -150,26 +150,32 @@ impl View {
 
     /// The page at the viewport centre; `None` with zero pages.
     pub fn centre_page(&self) -> Option<usize> {
-        self.state().map(|state| state.centre.page)
+        self.place().map(|point| point.page)
     }
 
-    /// A snapshot to restore in a later run; `None` with zero pages.
-    pub fn state(&self) -> Option<ViewState> {
+    /// The document point at the viewport centre; `None` with zero pages.
+    pub fn place(&self) -> Option<DocPoint> {
         if self.layout.page_count() == 0 {
             return None;
         }
         let (cx, cy) = self.centre();
-        let centre = self
-            .pending
-            .or_else(|| {
-                self.layout
-                    .doc_point(self.offset.0 + cx, self.offset.1 + cy)
-            })
-            .unwrap_or(DocPoint {
-                page: 0,
-                x: 0.0,
-                y: 0.0,
-            });
+        Some(
+            self.pending
+                .or_else(|| {
+                    self.layout
+                        .doc_point(self.offset.0 + cx, self.offset.1 + cy)
+                })
+                .unwrap_or(DocPoint {
+                    page: 0,
+                    x: 0.0,
+                    y: 0.0,
+                }),
+        )
+    }
+
+    /// A snapshot to restore in a later run; `None` with zero pages.
+    pub fn state(&self) -> Option<ViewState> {
+        let centre = self.place()?;
         Some(ViewState {
             zoom: self.mode,
             scale: self.scale(),
@@ -183,39 +189,14 @@ impl View {
     /// Restores a snapshot from [`View::state`], clamped to this document.
     /// The centre point is placed now, or on the first non-empty viewport.
     pub fn restore(&mut self, state: &ViewState) {
-        let count = self.layout.page_count();
-        if count == 0 {
+        if self.layout.page_count() == 0 {
             return;
         }
-        let page = state.centre.page.min(count - 1);
-        let size = self.layout.page_size(page).unwrap_or(Size {
-            width: 0.0,
-            height: 0.0,
-        });
-        // A hand-edited or damaged value must not move the view off the page.
-        let on_page = |v: f32, length: f32| {
-            if v.is_finite() {
-                v.clamp(0.0, length.max(0.0))
-            } else {
-                0.0
-            }
-        };
-        let centre = DocPoint {
-            page,
-            x: on_page(state.centre.x, size.width),
-            y: on_page(state.centre.y, size.height),
-        };
-        let (dual, odd_left) = (state.dual, state.odd_left);
         self.layout.set_mode(LayoutMode {
-            dual,
-            odd_left,
-            paged: None,
-        });
-        let paged = (!state.continuous).then(|| self.layout.spread_of(centre.page));
-        self.layout.set_mode(LayoutMode {
-            dual,
-            odd_left,
-            paged,
+            dual: state.dual,
+            odd_left: state.odd_left,
+            // A placeholder to mark paged; `restore_place` picks the spread.
+            paged: (!state.continuous).then_some(0),
         });
         self.mode = state.zoom;
         if state.zoom == ZoomMode::Custom {
@@ -226,10 +207,53 @@ impl View {
             };
             self.layout.arrange(scale, self.viewport.0, self.viewport.1);
         }
+        self.restore_place(&state.centre);
+    }
+
+    /// Restores just the place, keeping the current zoom and arrangement.
+    /// The point is clamped as [`View::restore`] clamps one, and placed now,
+    /// or on the first non-empty viewport.
+    pub fn restore_place(&mut self, point: &DocPoint) {
+        let Some(centre) = self.clamped_point(point) else {
+            return;
+        };
+        if let Some(spread) = (!self.continuous()).then(|| self.layout.spread_of(centre.page)) {
+            self.layout.set_mode(LayoutMode {
+                paged: Some(spread),
+                ..self.layout.mode()
+            });
+        }
         self.pending = Some(centre);
         if self.viewport.0 > 0.0 && self.viewport.1 > 0.0 {
             self.place_pending();
         }
+    }
+
+    /// `point` clamped to this document: the page to the page count, x and y
+    /// to the page, non-finite values to 0. `None` with zero pages. A
+    /// hand-edited or damaged value must not move the view off the page.
+    fn clamped_point(&self, point: &DocPoint) -> Option<DocPoint> {
+        let count = self.layout.page_count();
+        if count == 0 {
+            return None;
+        }
+        let page = point.page.min(count - 1);
+        let size = self.layout.page_size(page).unwrap_or(Size {
+            width: 0.0,
+            height: 0.0,
+        });
+        let on_page = |v: f32, length: f32| {
+            if v.is_finite() {
+                v.clamp(0.0, length.max(0.0))
+            } else {
+                0.0
+            }
+        };
+        Some(DocPoint {
+            page,
+            x: on_page(point.x, size.width),
+            y: on_page(point.y, size.height),
+        })
     }
 
     /// Fits the view and puts the pending restored point at the centre.
@@ -1586,6 +1610,101 @@ mod tests {
         view.set_viewport_size(636.0, 800.0);
         assert!(view.state().is_none());
         assert!(view.continuous());
+        assert_eq!(view.offset(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn place_is_the_viewport_centre() {
+        let mut view = letter_view();
+        view.scrolled_to(0.0, 3000.0);
+        assert_eq!(view.place(), Some(doc_at(&view, (318.0, 400.0))));
+        assert_eq!(View::new(vec![]).place(), None);
+    }
+
+    #[test]
+    fn restore_place_keeps_zoom_and_modes() {
+        let mut view = letter_view();
+        view.apply(Action::ZoomIn);
+        view.apply(Action::ToggleDual);
+        view.apply(Action::ToggleContinuous);
+        let before = (view.mode(), view.scale(), view.dual(), view.continuous());
+        view.restore_place(&DocPoint {
+            page: 5,
+            x: 100.0,
+            y: 200.0,
+        });
+        assert_eq!(
+            (view.mode(), view.scale(), view.dual(), view.continuous()),
+            before
+        );
+        assert_eq!(view.centre_page(), Some(5));
+    }
+
+    #[test]
+    fn restore_place_paged_shows_target_spread() {
+        let mut view = letter_view();
+        view.apply(Action::ToggleContinuous);
+        assert!(!view.continuous());
+        view.restore_place(&DocPoint {
+            page: 5,
+            x: 10.0,
+            y: 20.0,
+        });
+        assert_eq!(view.current_spread(), Some(5));
+    }
+
+    #[test]
+    fn restore_place_clamps_a_stale_page() {
+        let mut view = letter_view();
+        view.restore_place(&DocPoint {
+            page: 99,
+            x: 100.0,
+            y: 200.0,
+        });
+        assert_eq!(view.place().unwrap().page, 9);
+    }
+
+    #[test]
+    fn restore_place_clamps_a_point_to_its_page() {
+        let mut edge = letter_view();
+        edge.restore_place(&DocPoint {
+            page: 4,
+            x: 612.0,
+            y: 792.0,
+        });
+        let mut past = letter_view();
+        past.restore_place(&DocPoint {
+            page: 4,
+            x: 1e9,
+            y: 1e9,
+        });
+        assert_eq!(past.place(), edge.place());
+        assert_eq!(past.offset(), edge.offset());
+    }
+
+    #[test]
+    fn restore_place_ignores_non_finite_values() {
+        let mut view = letter_view();
+        view.restore_place(&DocPoint {
+            page: 4,
+            x: f32::NAN,
+            y: f32::INFINITY,
+        });
+        let placed = view.place().unwrap();
+        assert!(placed.x.is_finite() && placed.y.is_finite());
+        assert_eq!(placed.page, 4);
+    }
+
+    #[test]
+    fn restore_place_with_zero_pages_does_nothing() {
+        let mut view = View::new(vec![]);
+        view.restore_place(&DocPoint {
+            page: 3,
+            x: 10.0,
+            y: 20.0,
+        });
+        view.set_viewport_size(636.0, 800.0);
+        assert!(view.place().is_none());
         assert_eq!(view.offset(), (0.0, 0.0));
     }
 
