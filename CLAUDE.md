@@ -15,7 +15,8 @@ is the daily driver; macOS and Windows build but are unchecked.
   entry is fixed or moved to an issue, remove it; it goes once it is empty.
 - `docs/superpowers/specs/`: one design per change, `YYYY-MM-DD-<topic>-design.md`.
 - `docs/superpowers/plans/`: implementation plans for the larger ones.
-- `docs/investigations/`: write-ups of things looked into.
+- `docs/investigations/`: write-ups of things looked into, once the
+  user has made the exploration a task (see "How work goes").
 - Test PDFs: tiny generated ones in `fixtures/` (`make_fixtures.py`);
   tests and examples use only these, so the repo stands on its own.
   `../testfiles/` (outside the repo; books, papers, scans) is for trying
@@ -52,6 +53,12 @@ is the daily driver; macOS and Windows build but are unchecked.
 
 ## How work goes
 
+- **A question is not a task.** Talk, hunches and exploration happen in chat
+  and leave no files. No investigation, spec, plan or other document is
+  opened until the user says the thing is a task ("let's start on this",
+  "make it a task"); for a question, the chat answer is the deliverable. If
+  an answer looks worth keeping, say so and wait for the go-ahead before
+  writing it down.
 - Larger work: brainstorm → spec → plan → execute inline with a ledger in
   `.superpowers/sdd/<plan>/progress.md` (git-ignored; delete when done) →
   final review → minors to an issue.
