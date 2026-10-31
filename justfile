@@ -6,25 +6,29 @@ default:
 test:
     #!/usr/bin/env sh
     if cargo nextest --version >/dev/null 2>&1; then
-        cargo nextest run --workspace
+        cargo nextest run --workspace --locked
     else
-        cargo test --workspace
+        cargo test --workspace --locked
     fi
 
 # clippy
 lint:
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --locked --workspace --all-targets -- -D warnings
 
-# formatter
+# format in place: the fix for `fmt-check`
 fmt:
-    cargo fmt
+    cargo fmt --all
+
+# check formatting without rewriting any file
+fmt-check:
+    cargo fmt --all -- --check
 
 # fmt, lint, test: what has to pass before a commit
-check: fmt lint test
+check: fmt-check lint test
 
 # release build
 build:
-    cargo build --release
+    cargo build --release --locked
 
 # run the release build with a scratch state dir
 run file: build
