@@ -32,6 +32,9 @@ const PREFETCH_BUDGET: usize = 10;
 /// Spreads on each side of the current one whose full renders are kept; more
 /// than the window reaches ahead, so moving back and forth doesn't re-render.
 const KEEP: usize = 8;
+/// How many places on each side of the history are kept rendered: the next
+/// Back and the next Forward target.
+const HISTORY_KEEP: usize = 1;
 /// Trackpad scroll distance, in UI points, that flips one page in paged mode
 /// (about one mouse wheel step).
 const TRACKPAD_FLIP_DISTANCE: f32 = 125.0;
@@ -1087,6 +1090,37 @@ impl NoidoApp {
         let mut ahead: Vec<usize> = Vec::new();
         for page in hit_pages {
             for page in layout.spread_pages(layout.spread_of(page)) {
+                if !visible.contains(&page) && !ahead.contains(&page) {
+                    ahead.push(page);
+                }
+            }
+        }
+        // The places Back and Forward would go to: kept sharp so a jump there
+        // is never a thumbnail. The stacks change only on a jump, so
+        // recomputing them each frame refreshes the targets then and leaves
+        // them be while reading on.
+        for point in self
+            .history
+            .back_entries()
+            .iter()
+            .rev()
+            .take(HISTORY_KEEP)
+            .chain(
+                self.history
+                    .forward_entries()
+                    .iter()
+                    .rev()
+                    .take(HISTORY_KEEP),
+            )
+        {
+            // A saved history entry may be past the end of a shorter version.
+            // Layout clamping already keeps out-of-range pages out; this also
+            // skips a stale entry whose spread would otherwise keep an
+            // in-range neighbour in dual mode.
+            if point.page >= layout.page_count() {
+                continue;
+            }
+            for page in layout.spread_pages(layout.spread_of(point.page)) {
                 if !visible.contains(&page) && !ahead.contains(&page) {
                     ahead.push(page);
                 }
@@ -5381,6 +5415,100 @@ mod tests {
         });
         let rendered = engine.rendered.lock().unwrap();
         assert!(spread.clone().all(|p| rendered.contains(&p)), "{spread:?}");
+    }
+
+    /// 200 pages; a link on page 0 jumps to page 150.
+    fn far_link_engine() -> TextEngine {
+        let mut pages: Vec<&[&str]> = vec![&["a dog"]; 200];
+        pages[0] = &["first line", "second line"];
+        TextEngine::new(&pages).with_links(
+            0,
+            vec![internal(
+                vec![area(72.0, 90.0, 60.0, 12.0)],
+                150,
+                Some(300.0),
+            )],
+        )
+    }
+
+    #[test]
+    fn history_target_kept_after_a_far_jump() {
+        let engine = far_link_engine();
+        let mut h = linking(&engine);
+        h.until(|h| h.app.textures.contains_key(&0));
+        click_link(&mut h, 0, 100.0, 96.0);
+        assert_eq!(h.app.view.centre_page(), Some(150));
+        go_to(&mut h, 155);
+        h.frames(5, vec![]);
+        assert!(
+            h.app.textures.contains_key(&0),
+            "page 0 dropped: {:?}",
+            h.app.textures.keys().collect::<Vec<_>>()
+        );
+        h.press(egui::Key::ArrowLeft, Modifiers::ALT);
+        assert_eq!(h.app.view.centre_page(), Some(0));
+    }
+
+    #[test]
+    fn forward_target_kept_after_going_back() {
+        let engine = far_link_engine();
+        let mut h = linking(&engine);
+        h.until(|h| h.app.textures.contains_key(&0));
+        click_link(&mut h, 0, 100.0, 96.0);
+        h.until(|h| h.app.textures.contains_key(&150));
+        h.press(egui::Key::ArrowLeft, Modifiers::ALT);
+        assert_eq!(h.app.view.centre_page(), Some(0));
+        h.frames(5, vec![]);
+        assert!(
+            h.app.textures.contains_key(&150),
+            "page 150 dropped: {:?}",
+            h.app.textures.keys().collect::<Vec<_>>()
+        );
+        h.press(egui::Key::ArrowRight, Modifiers::ALT);
+        assert_eq!(h.app.view.centre_page(), Some(150));
+    }
+
+    #[test]
+    fn dual_mode_keeps_the_history_targets_spread() {
+        let engine = far_link_engine();
+        let mut h = linking(&engine);
+        h.press(egui::Key::D, Modifiers::NONE);
+        h.frames(2, vec![]);
+        h.until(|h| {
+            let layout = h.app.view.layout();
+            let spread = layout.spread_pages(layout.spread_of(0));
+            spread
+                .clone()
+                .all(|page| h.app.textures.contains_key(&page))
+        });
+        click_link(&mut h, 0, 100.0, 96.0);
+        go_to(&mut h, 155);
+        h.frames(5, vec![]);
+        let layout = h.app.view.layout();
+        let spread = layout.spread_pages(layout.spread_of(0));
+        assert!(
+            spread
+                .clone()
+                .all(|page| h.app.textures.contains_key(&page)),
+            "{spread:?} dropped: {:?}",
+            h.app.textures.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn stale_history_entry_survives_a_shorter_reload() {
+        // An end-to-end guard on the reload-and-history path: the layout clamps
+        // the stale page's spread, so the guard in `pages()` is not what makes
+        // this pass. Its only extra effect is the dual/odd-left-false neighbour.
+        let mut h = linking(&link_engine());
+        click_link(&mut h, 0, 100.0, 96.0);
+        assert_eq!(h.app.view.centre_page(), Some(5));
+        h.press(egui::Key::ArrowLeft, Modifiers::ALT);
+        assert_eq!(h.app.view.centre_page(), Some(0));
+        // A version with four pages: the Forward target, page 5, is gone.
+        h.reload(Arc::new(SizedEngine::letter(4)), recompiled_key());
+        h.frames(5, vec![]);
+        assert_eq!(h.app.view.centre_page(), Some(0));
     }
 
     #[test]
