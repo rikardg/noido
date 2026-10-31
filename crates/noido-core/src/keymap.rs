@@ -70,6 +70,8 @@ pub enum Action {
     CopyLink,
     /// The same as a Markdown link.
     CopyMarkdownLink,
+    /// Opens another document, picked in the desktop's file dialog.
+    OpenDocument,
     ShowDocumentInfo,
     OpenSettings,
     /// Closes the window; for now the same as quitting.
@@ -131,6 +133,7 @@ impl Keymap {
             (shift(command(Key::L)), Action::CopyMarkdownLink),
             (command(Key::I), Action::ShowDocumentInfo),
             (command(Key::Comma), Action::OpenSettings),
+            (command(Key::O), Action::OpenDocument),
             (command(Key::Q), Action::Quit),
             (command(Key::W), Action::CloseWindow),
         ];
@@ -311,6 +314,20 @@ mod tests {
         );
         assert_eq!(keymap.action(press(Key::O, false), true), None);
         assert_eq!(shortcut_label(press(Key::O, false), Platform::Other), "O");
+    }
+
+    #[test]
+    fn mod_o_opens_a_document() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::O, true), false),
+            Some(Action::OpenDocument)
+        );
+        // Also while a text field has focus, like every Mod key.
+        assert_eq!(
+            keymap.action(press(Key::O, true), true),
+            Some(Action::OpenDocument)
+        );
     }
 
     #[test]
