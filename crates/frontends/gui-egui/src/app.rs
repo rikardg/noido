@@ -131,10 +131,11 @@ pub struct NoidoApp {
     /// The link clicked last frame, followed at the start of the next:
     /// the view takes egui's offset first.
     clicked_link: Option<noido_engine::Link>,
-    /// Picks a PDF when asked, handing it to [`NoidoApp::open`]; the real
+    /// Picks a PDF when asked, in the desktop's own dialog, handing it to
+    /// [`NoidoApp::open`] with the window as the dialog's parent: the real
     /// dialog on a thread of its own, so the window keeps painting while
     /// it is up. Fakes in tests.
-    pick: Box<dyn Fn(open::OnPicked)>,
+    pick: open::Pick,
     /// Opens a picked document in a new window; `Arc` so the picker's
     /// thread can call it. Fakes in tests.
     open: open::OnPicked,
@@ -741,7 +742,7 @@ impl NoidoApp {
         }
     }
 
-    fn handle_input(&mut self, ctx: &egui::Context) {
+    fn handle_input(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
         // The settings and info pages are modal: the document doesn't move
         // behind them.
         if self.settings_page.is_some() || self.info_page.is_some() {
@@ -815,7 +816,7 @@ impl NoidoApp {
                 continue;
             }
             if let Some(action) = self.keymap.action(press, editing) {
-                self.apply(ctx, action);
+                self.apply(ctx, parent, action);
             }
         }
         // The mouse's back and forward buttons, also while typing.
@@ -838,7 +839,7 @@ impl NoidoApp {
                 .collect()
         });
         for action in buttons {
-            self.apply(ctx, action);
+            self.apply(ctx, parent, action);
         }
         // Not elsewhere, such as over the sidebar: there the wheel scrolls
         // what is under it.
@@ -867,7 +868,7 @@ impl NoidoApp {
     }
 
     /// Draws the title bar and acts on what the reader did in it.
-    fn title_bar(&mut self, ui: &mut egui::Ui) {
+    fn title_bar(&mut self, ui: &mut egui::Ui, parent: Option<&eframe::Frame>) {
         let status = match self.view.centre_page() {
             Some(page) => {
                 let count = self.view.layout().page_count();
@@ -915,12 +916,13 @@ impl NoidoApp {
         }
         let ctx = ui.ctx().clone();
         for action in output.actions {
-            self.apply(&ctx, action);
+            self.apply(&ctx, parent, action);
         }
     }
 
-    /// Carries out `action`, from a key or the menu.
-    fn apply(&mut self, ctx: &egui::Context, action: Action) {
+    /// Carries out `action`, from a key or the menu. `parent` is the
+    /// window, for dialogs that ask for it.
+    fn apply(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>, action: Action) {
         match action {
             Action::ToggleSidebar => {
                 self.sidebar.open = !self.sidebar.open;
@@ -937,7 +939,7 @@ impl NoidoApp {
             Action::CloseWindow | Action::Quit => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close)
             }
-            Action::OpenDocument => (self.pick)(self.open.clone()),
+            Action::OpenDocument => (self.pick)(parent, self.open.clone()),
             Action::OpenSettings => {
                 // Another noido may have saved changes since: start from
                 // them, so saving here doesn't undo them.
@@ -1269,8 +1271,8 @@ impl NoidoApp {
 }
 
 impl eframe::App for NoidoApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.show(ui);
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.show(ui, Some(&*frame));
     }
 
     fn on_exit(&mut self) {
@@ -1289,7 +1291,7 @@ impl eframe::App for NoidoApp {
 
 impl NoidoApp {
     /// One frame of the viewer.
-    fn show(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ui: &mut egui::Ui, parent: Option<&eframe::Frame>) {
         let ctx = ui.ctx().clone();
         self.come_forward(&ctx);
         self.receive_renders(&ctx);
@@ -1302,7 +1304,7 @@ impl NoidoApp {
             self.arrive_at_named(named);
         }
         self.arrive();
-        self.handle_input(&ctx);
+        self.handle_input(&ctx, parent);
         self.start_screen_edge(&ctx);
         if let Some(link) = self.clicked_link.take() {
             self.follow(&ctx, link);
@@ -1315,7 +1317,7 @@ impl NoidoApp {
             // starting a drag of the page.
             frame::resize_edges(&ctx);
         }
-        self.title_bar(ui);
+        self.title_bar(ui, parent);
         self.update_search(&ctx);
         if self.sidebar.open {
             let input = sidebar::Input {
@@ -1699,7 +1701,7 @@ mod tests {
                 };
                 self.time += 1.0 / 60.0;
                 let app = &mut self.app;
-                let output = self.ctx.run_ui(input, |ui| app.show(ui));
+                let output = self.ctx.run_ui(input, |ui| app.show(ui, None));
                 self.shapes = output.shapes.clone();
                 if let Some(viewport) = output.viewport_output.get(&egui::ViewportId::ROOT) {
                     self.commands.extend(viewport.commands.iter().cloned());
@@ -2544,7 +2546,8 @@ mod tests {
         let open: open::OnPicked =
             Arc::new(move |path| picked.lock().unwrap().push(path.to_path_buf()));
         h.app.open = open;
-        h.app.pick = Box::new(|on_picked| on_picked(Path::new("/tmp/picked.pdf")));
+        // The window comes along as the dialog's parent; `None` only in tests.
+        h.app.pick = Box::new(|_, on_picked| on_picked(Path::new("/tmp/picked.pdf")));
         h.press(egui::Key::O, Modifiers::COMMAND);
         assert_eq!(
             opened.lock().unwrap().as_slice(),
@@ -2560,14 +2563,14 @@ mod tests {
         let open: open::OnPicked =
             Arc::new(move |path| picked.lock().unwrap().push(path.to_path_buf()));
         h.app.open = open;
-        h.app.pick = Box::new(|on_picked| on_picked(Path::new("/tmp/from-menu.pdf")));
+        h.app.pick = Box::new(|_, on_picked| on_picked(Path::new("/tmp/from-menu.pdf")));
         let entry = noido_core::menu()
             .into_iter()
             .flatten()
             .find(|entry| entry.label == "Open…")
             .unwrap();
         let ctx = h.ctx.clone();
-        h.app.apply(&ctx, entry.action);
+        h.app.apply(&ctx, None, entry.action);
         assert_eq!(
             opened.lock().unwrap().as_slice(),
             &[PathBuf::from("/tmp/from-menu.pdf")]
@@ -2583,7 +2586,7 @@ mod tests {
             Arc::new(move |path| picked.lock().unwrap().push(path.to_path_buf()));
         h.app.open = open;
         // A cancelled pick hands nothing over.
-        h.app.pick = Box::new(|_| {});
+        h.app.pick = Box::new(|_, _| {});
         h.press(egui::Key::O, Modifiers::COMMAND);
         assert!(opened.lock().unwrap().is_empty());
     }
@@ -2616,7 +2619,7 @@ mod tests {
             .find(|entry| entry.label == "Settings…")
             .unwrap();
         let ctx = h.ctx.clone();
-        h.app.apply(&ctx, entry.action);
+        h.app.apply(&ctx, None, entry.action);
         assert!(h.app.settings_page.is_some());
     }
 
@@ -2879,7 +2882,7 @@ mod tests {
             .find(|entry| entry.label == "Dual page")
             .unwrap();
         let ctx = h.ctx.clone();
-        h.app.apply(&ctx, entry.action);
+        h.app.apply(&ctx, None, entry.action);
         assert!(h.app.view.dual());
     }
 
@@ -3225,7 +3228,7 @@ mod tests {
             .find(|entry| entry.label == "Document info…")
             .unwrap();
         let ctx = h.ctx.clone();
-        h.app.apply(&ctx, entry.action);
+        h.app.apply(&ctx, None, entry.action);
         h.until(|h| h.text_rect("Info Title").is_some());
         assert!(h.text_rect("Info Title").is_some());
     }
