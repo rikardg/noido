@@ -1,0 +1,47 @@
+name: CI
+
+on:
+    push:
+    pull_request:
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+# The event name is part of the group so a pull request run can never
+# cancel the push run for the same commit; it would then skip and leave
+# nothing checked. Pushes to one branch still cancel their predecessor.
+concurrency:
+    group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+    cancel-in-progress: true
+
+env:
+    CARGO_TERM_COLOR: always
+
+jobs:
+    check:
+        name: check (${{ matrix.os }})
+        runs-on: ${{ matrix.os }}
+        # A same-repo pull request is already covered by the push run on the
+        # same commit, and a job skipped here allocates no runner at all, so
+        # the duplicate doesn't allocate a runner.
+        if: >-
+            github.event_name != 'pull_request'
+            || github.event.pull_request.head.repo.full_name != github.repository
+        strategy:
+            fail-fast: false
+            matrix:
+                # ubuntu-latest currently provides x86_64 Linux; macos-26 is
+                # pinned by name so the macOS leg stays Apple Silicon.
+                os: [ubuntu-latest, macos-26]
+        steps:
+            - uses: actions/checkout@v4
+            # setup-rust-toolchain caches via Swatinem/rust-cache by default.
+            - uses: actions-rust-lang/setup-rust-toolchain@v1
+            - uses: taiki-e/install-action@v2
+              with:
+                  tool: just
+            - run: just fmt-check
+            - run: just lint
+            - run: just test
+            - run: just build
