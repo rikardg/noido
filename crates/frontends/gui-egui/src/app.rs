@@ -17,6 +17,7 @@ use crate::image::PageImage;
 use crate::info;
 use crate::instance::Activation;
 use crate::links::{FLASH_SECONDS, Links, Named};
+use crate::open;
 use crate::search::{self, Search};
 use crate::settings;
 use crate::sidebar::{self, SidebarView};
@@ -129,6 +130,10 @@ pub struct NoidoApp {
     /// The link clicked last frame, followed at the start of the next:
     /// the view takes egui's offset first.
     clicked_link: Option<noido_engine::Link>,
+    /// Picks a file when asked, and opens it in a new window; the real
+    /// desktop dialog and launch in the app, fakes in tests.
+    pick: Box<dyn Fn() -> Option<std::path::PathBuf>>,
+    open: Box<dyn Fn(&std::path::Path)>,
     /// The old view's edge after PageUp/PageDown and when its flash
     /// started: `None` while the key is still held.
     screen_edge: Option<(noido_core::DocPoint, Option<f64>)>,
@@ -233,6 +238,8 @@ impl NoidoApp {
             links: Links::new(page_count),
             hovered_link: None,
             clicked_link: None,
+            pick: Box::new(open::pick_pdf),
+            open: Box::new(open::open),
             screen_edge: None,
             page_key_repeated: false,
         }
@@ -926,6 +933,11 @@ impl NoidoApp {
             Action::CloseWindow | Action::Quit => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close)
             }
+            Action::OpenDocument => {
+                if let Some(path) = (self.pick)() {
+                    (self.open)(&path);
+                }
+            }
             Action::OpenSettings => {
                 // Another noido may have saved changes since: start from
                 // them, so saving here doesn't undo them.
@@ -1506,7 +1518,7 @@ fn core_key(key: egui::Key) -> Option<Key> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
 
     use egui::{Event, Modifiers, RawInput, pos2};
     use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
@@ -2519,6 +2531,51 @@ mod tests {
                 "{key:?} did not close"
             );
         }
+    }
+
+    #[test]
+    fn mod_o_opens_the_picked_document() {
+        let mut h = Harness::new();
+        h.app.pick = Box::new(|| Some(PathBuf::from("/tmp/picked.pdf")));
+        let opened: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = opened.clone();
+        h.app.open = Box::new(move |path| sink.borrow_mut().push(path.to_path_buf()));
+        h.press(egui::Key::O, Modifiers::COMMAND);
+        assert_eq!(
+            opened.borrow().as_slice(),
+            &[PathBuf::from("/tmp/picked.pdf")]
+        );
+    }
+
+    #[test]
+    fn menu_entry_opens_the_picked_document() {
+        let mut h = Harness::new();
+        h.app.pick = Box::new(|| Some(PathBuf::from("/tmp/from-menu.pdf")));
+        let opened: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = opened.clone();
+        h.app.open = Box::new(move |path| sink.borrow_mut().push(path.to_path_buf()));
+        let entry = noido_core::menu()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.label == "Open…")
+            .unwrap();
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, entry.action);
+        assert_eq!(
+            opened.borrow().as_slice(),
+            &[PathBuf::from("/tmp/from-menu.pdf")]
+        );
+    }
+
+    #[test]
+    fn a_cancelled_pick_opens_nothing() {
+        let mut h = Harness::new();
+        h.app.pick = Box::new(|| None);
+        let opened: Rc<RefCell<Vec<PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = opened.clone();
+        h.app.open = Box::new(move |path| sink.borrow_mut().push(path.to_path_buf()));
+        h.press(egui::Key::O, Modifiers::COMMAND);
+        assert!(opened.borrow().is_empty());
     }
 
     /// Puts the cursor in the search field.
