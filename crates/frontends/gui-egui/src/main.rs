@@ -10,6 +10,7 @@ mod instance;
 mod interrupt;
 mod links;
 mod load;
+mod open;
 mod search;
 mod settings;
 mod sidebar;

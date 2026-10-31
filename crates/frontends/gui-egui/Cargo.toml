@@ -20,6 +20,7 @@ noido-core.workspace = true
 noido-state.workspace = true
 noido-settings.workspace = true
 eframe.workspace = true
+rfd.workspace = true
 clap.workspace = true
 ctrlc.workspace = true
 notify.workspace = true

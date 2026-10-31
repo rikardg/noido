@@ -39,6 +39,7 @@ tempfile = "3"
 ctrlc = { version = "3", features = ["termination"] }
 notify = "8"
 percent-encoding = "2.3"
+rfd = "0.17"
 url = "2.5"
 interprocess = "2"
 unicode-normalization = "0.1"
