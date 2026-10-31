@@ -5,8 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Picks a PDF in the desktop's own dialog: noido's window goes along
-/// as the dialog's parent, and a picked file is handed to [`OnPicked`].
-pub type Pick = Box<dyn Fn(Option<&eframe::Frame>, OnPicked)>;
+/// as the dialog's parent, the dialog opens in the directory of the
+/// open document when there is one, and a picked file is handed to
+/// [`OnPicked`].
+pub type Pick = Box<dyn Fn(Option<&eframe::Frame>, Option<PathBuf>, OnPicked)>;
 
 /// What a picked file opens in: a new window.
 pub type OnPicked = Arc<dyn Fn(&Path) + Send + Sync>;
@@ -22,7 +24,7 @@ pub type OnPicked = Arc<dyn Fn(&Path) + Send + Sync>;
 /// The call blocks its thread until the desktop answers, so it runs on a
 /// thread of its own: Mod+O returns to the window at once, and the
 /// window keeps painting while the dialog is up.
-pub fn pick_pdf(frame: Option<&eframe::Frame>, on_picked: OnPicked) {
+pub fn pick_pdf(frame: Option<&eframe::Frame>, directory: Option<PathBuf>, on_picked: OnPicked) {
     // Built before the thread: borrowing the window ends here. macOS
     // builds its own inside instead — its raw window handle isn't
     // `Send`, so the dialog can't cross threads.
@@ -32,11 +34,20 @@ pub fn pick_pdf(frame: Option<&eframe::Frame>, on_picked: OnPicked) {
     if let Some(frame) = frame {
         dialog = dialog.set_parent(frame);
     }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(directory) = &directory {
+        dialog = dialog.set_directory(directory);
+    }
     #[cfg(target_os = "macos")]
     let _ = frame;
     std::thread::spawn(move || {
         #[cfg(target_os = "macos")]
         let dialog = rfd::FileDialog::new().add_filter("PDF document", &["pdf"]);
+        #[cfg(target_os = "macos")]
+        let dialog = match directory {
+            Some(directory) => dialog.set_directory(directory),
+            None => dialog,
+        };
         let picked = dialog.pick_file();
         if let Some(path) = picked {
             on_picked(&path);

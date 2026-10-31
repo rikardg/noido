@@ -132,7 +132,8 @@ pub struct NoidoApp {
     /// the view takes egui's offset first.
     clicked_link: Option<noido_engine::Link>,
     /// Picks a PDF when asked, in the desktop's own dialog, handing it to
-    /// [`NoidoApp::open`] with the window as the dialog's parent: the real
+    /// [`NoidoApp::open`] with the window as the dialog's parent and the
+    /// open document's directory as the dialog's starting point: the real
     /// dialog on a thread of its own, so the window keeps painting while
     /// it is up. Fakes in tests.
     pick: open::Pick,
@@ -939,7 +940,16 @@ impl NoidoApp {
             Action::CloseWindow | Action::Quit => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close)
             }
-            Action::OpenDocument => (self.pick)(parent, self.open.clone()),
+            Action::OpenDocument => {
+                // The dialog opens where the open document lives, if its
+                // path is known; otherwise the desktop's default.
+                let directory = self
+                    .link_path
+                    .as_deref()
+                    .and_then(std::path::Path::parent)
+                    .map(std::path::Path::to_path_buf);
+                (self.pick)(parent, directory, self.open.clone());
+            }
             Action::OpenSettings => {
                 // Another noido may have saved changes since: start from
                 // them, so saving here doesn't undo them.
@@ -2547,7 +2557,7 @@ mod tests {
             Arc::new(move |path| picked.lock().unwrap().push(path.to_path_buf()));
         h.app.open = open;
         // The window comes along as the dialog's parent; `None` only in tests.
-        h.app.pick = Box::new(|_, on_picked| on_picked(Path::new("/tmp/picked.pdf")));
+        h.app.pick = Box::new(|_, _, on_picked| on_picked(Path::new("/tmp/picked.pdf")));
         h.press(egui::Key::O, Modifiers::COMMAND);
         assert_eq!(
             opened.lock().unwrap().as_slice(),
@@ -2563,7 +2573,7 @@ mod tests {
         let open: open::OnPicked =
             Arc::new(move |path| picked.lock().unwrap().push(path.to_path_buf()));
         h.app.open = open;
-        h.app.pick = Box::new(|_, on_picked| on_picked(Path::new("/tmp/from-menu.pdf")));
+        h.app.pick = Box::new(|_, _, on_picked| on_picked(Path::new("/tmp/from-menu.pdf")));
         let entry = noido_core::menu()
             .into_iter()
             .flatten()
@@ -2586,9 +2596,32 @@ mod tests {
             Arc::new(move |path| picked.lock().unwrap().push(path.to_path_buf()));
         h.app.open = open;
         // A cancelled pick hands nothing over.
-        h.app.pick = Box::new(|_, _| {});
+        h.app.pick = Box::new(|_, _, _| {});
         h.press(egui::Key::O, Modifiers::COMMAND);
         assert!(opened.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn open_dialog_starts_in_the_documents_directory() {
+        let mut h = Harness::build(|app| app.with_link_path("/docs/paper.pdf".into()));
+        let dirs: Arc<Mutex<Vec<Option<PathBuf>>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = dirs.clone();
+        h.app.pick = Box::new(move |_, directory, _| seen.lock().unwrap().push(directory));
+        h.press(egui::Key::O, Modifiers::COMMAND);
+        assert_eq!(
+            dirs.lock().unwrap().as_slice(),
+            &[Some(PathBuf::from("/docs"))]
+        );
+    }
+
+    #[test]
+    fn open_dialog_without_a_document_starts_in_the_default_directory() {
+        let mut h = Harness::new();
+        let dirs: Arc<Mutex<Vec<Option<PathBuf>>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = dirs.clone();
+        h.app.pick = Box::new(move |_, directory, _| seen.lock().unwrap().push(directory));
+        h.press(egui::Key::O, Modifiers::COMMAND);
+        assert_eq!(dirs.lock().unwrap().as_slice(), &[None]);
     }
 
     /// Puts the cursor in the search field.
