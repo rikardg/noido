@@ -54,7 +54,12 @@ pub fn show(page: &mut Page, ctx: &egui::Context, source: &Source, sizes: &[Size
     let max_height = ctx.content_rect().height() * 0.7;
     // The frame has no right margin, so the scroll bar runs along the
     // page's edge; everything else keeps the margin itself.
-    let frame = egui::Frame::popup(&ctx.global_style());
+    let theme = crate::theme::Theme::current(ctx);
+    let frame = theme.frame(
+        ctx.theme(),
+        crate::theme::Surface::Dialog,
+        &ctx.global_style(),
+    );
     let margin = frame.inner_margin.right;
     let frame = frame.inner_margin(egui::Margin {
         right: 0,
@@ -71,23 +76,25 @@ pub fn show(page: &mut Page, ctx: &egui::Context, source: &Source, sizes: &[Size
     let response = egui::Modal::new(egui::Id::unique("document-info"))
         .frame(frame)
         .show(ctx, |ui| {
-            ui.set_width(WIDTH + f32::from(margin));
-            right(ui, &mut |ui| {
-                ui.heading("Document info");
-            });
-            ui.add_space(4.0);
-            egui::ScrollArea::vertical()
-                .max_height(max_height)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    right(ui, &mut |ui| contents(ui, page, source, sizes))
+            crate::theme::scope(ui, crate::theme::Role::Dialog, |ui| {
+                ui.set_width(WIDTH + f32::from(margin));
+                right(ui, &mut |ui| {
+                    ui.heading("Document info");
                 });
-            ui.add_space(8.0);
-            right(ui, &mut |ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    close = ui.button("Close").clicked();
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .max_height(max_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        right(ui, &mut |ui| contents(ui, page, source, sizes))
+                    });
+                ui.add_space(8.0);
+                right(ui, &mut |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        close = ui.button("Close").clicked();
+                    });
                 });
-            });
+            })
         });
     close || response.should_close()
 }
@@ -156,8 +163,10 @@ fn contents(ui: &mut egui::Ui, page: &Page, source: &Source, sizes: &[Size]) {
                     .iter()
                     .flat_map(|s| s.raw.iter().map(String::as_str))
                     .collect();
-                ui.add(egui::Label::new(egui::RichText::new(&family.name).strong()))
-                    .on_hover_text(raw.join("\n"));
+                crate::theme::hover_text(
+                    ui.add(egui::Label::new(egui::RichText::new(&family.name).strong())),
+                    raw.join("\n"),
+                );
                 ui.indent(&family.name, |ui| {
                     ui.add(egui::Label::new(styles.join(", ")).wrap());
                 });

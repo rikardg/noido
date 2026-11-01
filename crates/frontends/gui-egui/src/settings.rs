@@ -58,71 +58,79 @@ pub fn show(
     let id = egui::Id::unique("settings");
     let clear = ctx.animate_bool_with_time(id.with("scrim"), page.paper_hovered, FADE);
     let scrim = egui::Color32::from_black_alpha((SCRIM_ALPHA * (1.0 - clear)).round() as u8);
-    let modal = egui::Modal::new(id).backdrop_color(scrim);
+    let theme = crate::theme::Theme::current(ctx);
+    let frame = theme.frame(
+        ctx.theme(),
+        crate::theme::Surface::Dialog,
+        &ctx.global_style(),
+    );
+    let modal = egui::Modal::new(id).backdrop_color(scrim).frame(frame);
     let mut paper_hovered = false;
     let mut preview = None;
     let response = modal.show(ctx, |ui| {
-        ui.set_width(320.0);
-        ui.heading("Settings");
-        ui.add_space(4.0);
-        let row = ui.horizontal(|ui| {
-            ui.label("Paper");
-            // The squares' hover areas touch: none between them, where
-            // the preview would drop back to the chosen paper.
-            let gap = ui.spacing().item_spacing.x;
-            ui.add_space(gap / 2.0);
-            ui.spacing_mut().item_spacing.x = 0.0;
-            for choice in Paper::ALL {
-                if swatch(ui, paper, choice, gap) {
-                    preview = Some(choice);
-                }
-            }
-        });
-        paper_hovered = row.response.contains_pointer();
-        ui.add_space(12.0);
-        ui.label("New documents open with:");
-        ui.add_space(8.0);
-
-        ui.label(format!("Zoom (default: {})", zoom_name(builtin.zoom)));
-        ui.indent("zoom", |ui| {
-            ui.radio_value(&mut new.zoom, StartZoom::FitWidth, "Fit width");
-            ui.radio_value(&mut new.zoom, StartZoom::FitPage, "Fit page");
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut new.zoom, StartZoom::Fixed, "Fixed");
-                ui.add_enabled(
-                    new.zoom == StartZoom::Fixed,
-                    egui::DragValue::new(&mut new.zoom_percent)
-                        .range(MIN_ZOOM_PERCENT..=MAX_ZOOM_PERCENT)
-                        .suffix(" %"),
-                );
-            });
-        });
-        ui.add_space(4.0);
-        let label = |name: &str, on: bool| format!("{name} (default: {})", on_off(on));
-        ui.checkbox(&mut new.continuous, label("Continuous", builtin.continuous));
-        ui.checkbox(&mut new.dual, label("Dual page", builtin.dual));
-        ui.checkbox(&mut new.odd_left, label("Odd pages left", builtin.odd_left));
-        ui.checkbox(&mut new.gapless, label("Gapless mode", builtin.gapless));
-        ui.checkbox(&mut new.sidebar, label("Show sidebar", builtin.sidebar));
-        ui.add_space(8.0);
-
-        let from_view = ui.add_enabled(
-            current.is_some(),
-            egui::Button::new("Set from current view"),
-        );
-        if from_view.clicked()
-            && let Some(current) = current
-        {
-            *new = current;
-        }
-        if let Some(error) = &page.error {
+        crate::theme::scope(ui, crate::theme::Role::Dialog, |ui| {
+            ui.set_width(320.0);
+            ui.heading("Settings");
             ui.add_space(4.0);
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
-        ui.add_space(8.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            close = ui.button("Close").clicked();
-        });
+            let row = ui.horizontal(|ui| {
+                ui.label("Paper");
+                // The squares' hover areas touch: none between them, where
+                // the preview would drop back to the chosen paper.
+                let gap = ui.spacing().item_spacing.x;
+                ui.add_space(gap / 2.0);
+                ui.spacing_mut().item_spacing.x = 0.0;
+                for choice in Paper::ALL {
+                    if swatch(ui, paper, choice, gap) {
+                        preview = Some(choice);
+                    }
+                }
+            });
+            paper_hovered = row.response.contains_pointer();
+            ui.add_space(12.0);
+            ui.label("New documents open with:");
+            ui.add_space(8.0);
+
+            ui.label(format!("Zoom (default: {})", zoom_name(builtin.zoom)));
+            ui.indent("zoom", |ui| {
+                ui.radio_value(&mut new.zoom, StartZoom::FitWidth, "Fit width");
+                ui.radio_value(&mut new.zoom, StartZoom::FitPage, "Fit page");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut new.zoom, StartZoom::Fixed, "Fixed");
+                    ui.add_enabled(
+                        new.zoom == StartZoom::Fixed,
+                        egui::DragValue::new(&mut new.zoom_percent)
+                            .range(MIN_ZOOM_PERCENT..=MAX_ZOOM_PERCENT)
+                            .suffix(" %"),
+                    );
+                });
+            });
+            ui.add_space(4.0);
+            let label = |name: &str, on: bool| format!("{name} (default: {})", on_off(on));
+            ui.checkbox(&mut new.continuous, label("Continuous", builtin.continuous));
+            ui.checkbox(&mut new.dual, label("Dual page", builtin.dual));
+            ui.checkbox(&mut new.odd_left, label("Odd pages left", builtin.odd_left));
+            ui.checkbox(&mut new.gapless, label("Gapless mode", builtin.gapless));
+            ui.checkbox(&mut new.sidebar, label("Show sidebar", builtin.sidebar));
+            ui.add_space(8.0);
+
+            let from_view = ui.add_enabled(
+                current.is_some(),
+                egui::Button::new("Set from current view"),
+            );
+            if from_view.clicked()
+                && let Some(current) = current
+            {
+                *new = current;
+            }
+            if let Some(error) = &page.error {
+                ui.add_space(4.0);
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            ui.add_space(8.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                close = ui.button("Close").clicked();
+            });
+        })
     });
     page.paper_hovered = paper_hovered;
     page.preview = preview;
@@ -156,7 +164,7 @@ fn swatch(ui: &mut egui::Ui, paper: &mut Paper, choice: Paper, gap: f32) -> bool
     painter.rect_filled(rect, 3.0, paper_colour(choice));
     painter.rect_stroke(rect, 3.0, stroke, egui::StrokeKind::Outside);
     let hovered = response.hovered();
-    response.on_hover_text(choice.name());
+    crate::theme::hover_text(response, choice.name());
     hovered
 }
 
