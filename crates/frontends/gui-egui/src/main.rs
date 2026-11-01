@@ -242,6 +242,14 @@ fn run(opening: Opening) -> Result<(), String> {
         Some((store, slot, restored)) => app.with_persistence(store, slot, restored),
         None => app,
     };
+    #[cfg(target_os = "macos")]
+    let app = app.with_incoming(app::Incoming {
+        start: Some(Box::new(|ctx| {
+            let ctx = ctx.clone();
+            noido_macos::install_open_urls(move || ctx.request_repaint());
+        })),
+        take: Box::new(noido_macos::take_opened),
+    });
     let app = app.opening_at(target);
     eframe::run_native_ext(
         "noido",

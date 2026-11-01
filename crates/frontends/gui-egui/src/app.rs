@@ -56,6 +56,18 @@ struct ScrollState {
     offset: Vec2,
 }
 
+/// Runs once with the context to wake.
+pub type Start = Box<dyn FnOnce(&egui::Context)>;
+
+/// Documents that arrive while the app runs, from outside the window (on
+/// macOS, Finder's opens). Tests use fakes.
+pub struct Incoming {
+    /// Runs once, in the first frame, with the context to wake.
+    pub start: Option<Start>,
+    /// Drains what has arrived: links or paths, in arrival order.
+    pub take: Box<dyn FnMut() -> Vec<std::ffi::OsString>>,
+}
+
 pub struct NoidoApp {
     renderer: Renderer,
     view: View,
@@ -148,6 +160,8 @@ pub struct NoidoApp {
     screen_edge: Option<(noido_core::DocPoint, Option<f64>)>,
     /// Whether PageUp or PageDown repeated while held: no flash then.
     page_key_repeated: bool,
+    /// Documents sent to the running app; see [`Incoming`].
+    incoming: Option<Incoming>,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -251,6 +265,7 @@ impl NoidoApp {
             open: Arc::new(open::open),
             screen_edge: None,
             page_key_repeated: false,
+            incoming: None,
         }
     }
 
@@ -531,6 +546,13 @@ impl NoidoApp {
         self
     }
 
+    /// Opens the documents `incoming` brings, each in a new window.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn with_incoming(mut self, incoming: Incoming) -> Self {
+        self.incoming = Some(incoming);
+        self
+    }
+
     /// Comes forward when `activation` is set.
     pub fn with_activation(mut self, activation: Activation) -> Self {
         self.activation = Some(activation);
@@ -614,6 +636,20 @@ impl NoidoApp {
         };
         if let Some(reload) = watcher.try_recv() {
             self.reload(reload, ctx);
+        }
+    }
+
+    /// Starts the incoming source on the first frame, then opens what it
+    /// has taken in, in order.
+    fn receive_open_files(&mut self, ctx: &egui::Context) {
+        let Some(incoming) = &mut self.incoming else {
+            return;
+        };
+        if let Some(start) = incoming.start.take() {
+            start(ctx);
+        }
+        for arg in (incoming.take)() {
+            (self.open)(std::path::Path::new(&arg));
         }
     }
 
@@ -1315,6 +1351,10 @@ impl NoidoApp {
 }
 
 impl eframe::App for NoidoApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.logic_pass(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.show(ui, Some(&*frame));
     }
@@ -1334,6 +1374,12 @@ impl eframe::App for NoidoApp {
 }
 
 impl NoidoApp {
+    /// What runs every pass, also while the window is hidden or minimized
+    /// and `ui` is skipped.
+    fn logic_pass(&mut self, ctx: &egui::Context) {
+        self.receive_open_files(ctx);
+    }
+
     /// One frame of the viewer.
     fn show(&mut self, ui: &mut egui::Ui, parent: Option<&eframe::Frame>) {
         let ctx = ui.ctx().clone();
@@ -1745,7 +1791,10 @@ mod tests {
                 };
                 self.time += 1.0 / 60.0;
                 let app = &mut self.app;
-                let output = self.ctx.run_ui(input, |ui| app.show(ui, None));
+                let output = self.ctx.run_ui(input, |ui| {
+                    app.logic_pass(ui.ctx());
+                    app.show(ui, None)
+                });
                 self.shapes = output.shapes.clone();
                 if let Some(viewport) = output.viewport_output.get(&egui::ViewportId::ROOT) {
                     self.commands.extend(viewport.commands.iter().cloned());
@@ -2580,6 +2629,85 @@ mod tests {
                 "{key:?} did not close"
             );
         }
+    }
+
+    /// What the incoming fixture shares with the app.
+    struct IncomingProbe {
+        queue: Arc<Mutex<Vec<std::ffi::OsString>>>,
+        opened: Arc<Mutex<Vec<PathBuf>>>,
+        started: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl IncomingProbe {
+        fn new() -> Self {
+            Self {
+                queue: Arc::default(),
+                opened: Arc::default(),
+                started: Arc::default(),
+            }
+        }
+
+        /// Makes `open` record into `opened`, and the incoming documents
+        /// come from `queue`.
+        fn setup(&self) -> impl FnOnce(NoidoApp) -> NoidoApp + use<> {
+            let (queue, opened, started) = (
+                self.queue.clone(),
+                self.opened.clone(),
+                self.started.clone(),
+            );
+            move |mut app: NoidoApp| {
+                app.open = Arc::new(move |path| opened.lock().unwrap().push(path.to_path_buf()));
+                app.with_incoming(Incoming {
+                    start: Some(Box::new(move |_| {
+                        started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    })),
+                    take: Box::new(move || std::mem::take(&mut *queue.lock().unwrap())),
+                })
+            }
+        }
+    }
+
+    #[test]
+    fn incoming_documents_reach_the_open_hook_in_order() {
+        let probe = IncomingProbe::new();
+        probe.queue.lock().unwrap().extend([
+            std::ffi::OsString::from("file:///a.pdf"),
+            std::ffi::OsString::from("noido:///b.pdf#page=2"),
+        ]);
+        let _h = Harness::build(probe.setup());
+        assert_eq!(
+            probe.opened.lock().unwrap().as_slice(),
+            &[
+                PathBuf::from("file:///a.pdf"),
+                PathBuf::from("noido:///b.pdf#page=2")
+            ]
+        );
+    }
+
+    #[test]
+    fn incoming_documents_open_in_the_logic_pass_without_a_ui_pass() {
+        let probe = IncomingProbe::new();
+        let mut h = Harness::build(probe.setup());
+        probe
+            .queue
+            .lock()
+            .unwrap()
+            .push(std::ffi::OsString::from("file:///hidden.pdf"));
+        let ctx = h.ctx.clone();
+        h.app.logic_pass(&ctx);
+        assert_eq!(
+            probe.opened.lock().unwrap().as_slice(),
+            &[PathBuf::from("file:///hidden.pdf")]
+        );
+    }
+
+    #[test]
+    fn incoming_starts_once_and_an_empty_queue_opens_nothing() {
+        let probe = IncomingProbe::new();
+        let mut h = Harness::build(probe.setup());
+        h.frames(3, vec![]);
+        assert_eq!(probe.started.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(probe.opened.lock().unwrap().is_empty());
     }
 
     #[test]

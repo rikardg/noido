@@ -143,6 +143,7 @@ pub fn run_launcher(app: &Path) -> ! {
     let application = NSApplication::sharedApplication(mtm);
     // Keeps the launcher out of the Dock; it is gone within moments.
     application.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    // AppKit holds its delegate weakly: this binding must outlive `run()`.
     let delegate = Delegate::new(mtm, app.to_owned());
     application.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     application.run();
