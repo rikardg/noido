@@ -3,8 +3,6 @@
 
 mod app;
 mod app_bundle;
-// The Linux install; on macOS only `ask_to_proceed` is used.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 mod desktop;
 mod frame;
 mod image;
