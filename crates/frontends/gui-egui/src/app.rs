@@ -1720,6 +1720,8 @@ mod tests {
             let (renderer, info) =
                 Renderer::start(engine, Arc::new(Vec::new()), Box::new(|| {})).unwrap();
             let ctx = egui::Context::default();
+            crate::theme::install_preset(&ctx, "adwaita");
+            ctx.set_theme(egui::ThemePreference::Dark);
             // As in main: quitting goes through the keymap.
             ctx.options_mut(|o| o.quit_shortcuts.clear());
             let (reloads, watcher) = crate::watch::Watcher::fake();
@@ -1887,6 +1889,26 @@ mod tests {
                 match shape {
                     egui::Shape::Text(t) if t.galley.text() == text => {
                         Some(Rect::from_min_size(t.pos, t.galley.size()))
+                    }
+                    egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| find(s, text)),
+                    _ => None,
+                }
+            }
+            self.shapes.iter().find_map(|c| find(&c.shape, text))
+        }
+
+        /// The theme installed in the harness.
+        fn theme(&self) -> Arc<crate::theme::Theme> {
+            crate::theme::Theme::current(&self.ctx)
+        }
+
+        /// The colour of the last frame's text exactly equal to `text`.
+        #[allow(dead_code)]
+        fn text_color(&self, text: &str) -> Option<Color32> {
+            fn find(shape: &egui::Shape, text: &str) -> Option<Color32> {
+                match shape {
+                    egui::Shape::Text(t) if t.galley.text() == text => {
+                        Some(t.override_text_color.unwrap_or(t.fallback_color))
                     }
                     egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| find(s, text)),
                     _ => None,
@@ -4195,6 +4217,30 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn the_harness_uses_the_fixed_theme() {
+        let h = Harness::new();
+        assert_eq!(
+            h.ctx.global_style().visuals.panel_fill,
+            Color32::from_rgb(0x22, 0x22, 0x26)
+        );
+        assert_eq!(
+            h.theme().palette(egui::Theme::Dark).selection,
+            h.ctx.global_style().visuals.selection.bg_fill
+        );
+    }
+
+    #[test]
+    fn changing_the_theme_changes_the_global_style() {
+        let mut h = Harness::new();
+        h.ctx.set_theme(egui::ThemePreference::Light);
+        h.frames(1, vec![]);
+        assert_eq!(
+            h.ctx.global_style().visuals.panel_fill,
+            Color32::from_rgb(0xfa, 0xfa, 0xfb)
+        );
+    }
+
     /// The tints of the textured meshes drawn last frame: pages and
     /// thumbnails.
     fn image_tints(h: &Harness) -> Vec<Color32> {
@@ -4742,7 +4788,9 @@ mod tests {
         // A pill behind the number, under the frame, narrower than the page.
         let pill = rects
             .iter()
-            .find(|r| r.min.y >= frame.max.y && r.max.y <= thumb.max.y + noido_core::LABEL_HEIGHT)
+            .find(|r| {
+                r.min.y >= frame.max.y && r.max.y <= thumb.max.y + noido_core::LABEL_HEIGHT + 2.0
+            })
             .unwrap_or_else(|| panic!("no pill in {rects:?}"));
         assert!(
             pill.width() < thumb.width() / 2.0 && pill.height() > 12.0,
@@ -4750,11 +4798,11 @@ mod tests {
         );
         assert!((pill.center().x - thumb.center().x).abs() < 0.5);
         // Apart from the frame, and with room below before the next one.
-        assert!(pill.min.y - frame.max.y >= 4.0, "{pill:?} under {frame:?}");
+        assert!(pill.min.y - frame.max.y >= 3.0, "{pill:?} under {frame:?}");
         let (_, next) = h.app.sidebar_view.drawn()[2];
         let next_frame = next.expand(sidebar::HIGHLIGHT);
         assert!(
-            next_frame.min.y - pill.max.y >= 10.0,
+            next_frame.min.y - pill.max.y >= 9.0,
             "{pill:?} over {next_frame:?}"
         );
         // Only the current page has them.

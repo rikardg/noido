@@ -131,6 +131,9 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         } else {
             SEARCH_HIDDEN_WIDTH
         };
+        // The native input height is taller than the compact title bar allows.
+        ui.spacing_mut().interact_size.y = SEARCH_HEIGHT;
+        ui.spacing_mut().button_padding.y = 2.0;
         let field = ui.add(
             egui::TextEdit::singleline(search)
                 .hint_text("Search")
