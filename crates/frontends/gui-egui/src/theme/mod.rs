@@ -20,6 +20,34 @@ struct Layout {
     window_margin: Option<f32>,
 }
 
+/// A native widget definition applied to a subtree.
+// Used by the surface tasks after the role layer lands.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Button,
+    Input,
+    Menu,
+    Dialog,
+    Sidebar,
+    Tooltip,
+    Separator,
+    Scrollbar,
+}
+
+/// A surface with its own native frame.
+// Used by the surface tasks after the role layer lands.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    TitleBar,
+    Dialog,
+    Menu,
+    Tooltip,
+    Sidebar,
+    Central,
+}
+
 /// The parts of the theme the custom-painted chrome needs.
 // Used by the surfaces in the tasks after the global style lands.
 #[allow(dead_code)]
@@ -114,6 +142,17 @@ impl Theme {
         style::global(self.variant(mode), &self.layout, mode)
     }
 
+    /// Applies one role's definition to a style, for a scoped subtree.
+    pub fn apply_role(&self, mode: egui::Theme, style: &mut egui::Style, role: Role) {
+        style::role(self.variant(mode), style, role);
+    }
+
+    /// The frame for a surface with its own padding, radius or fill.
+    #[allow(dead_code)]
+    pub fn frame(&self, mode: egui::Theme, surface: Surface, style: &egui::Style) -> egui::Frame {
+        style::frame(self.variant(mode), surface, style)
+    }
+
     /// The values custom-painted UI reads.
     #[allow(dead_code)]
     pub fn palette(&self, mode: egui::Theme) -> Palette {
@@ -151,9 +190,56 @@ impl Theme {
     }
 }
 
+/// Runs `add` with one native role's style.
+#[allow(dead_code)]
+pub fn scope<R>(ui: &mut egui::Ui, role: Role, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let theme = Theme::current(ui.ctx());
+    let mode = ui.ctx().theme();
+    ui.scope(|ui| {
+        let mut style = (**ui.style()).clone();
+        theme.apply_role(mode, &mut style, role);
+        ui.set_style(style);
+        add(ui)
+    })
+    .inner
+}
+
+/// Shows `text` over `response` with the tooltip role.
+#[allow(dead_code)]
+pub fn hover_text(response: egui::Response, text: impl Into<egui::WidgetText>) -> egui::Response {
+    tooltip(response, text.into(), false)
+}
+
+/// Shows `text` at the pointer with the tooltip role.
+#[allow(dead_code)]
+pub fn hover_text_at_pointer(
+    response: egui::Response,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    tooltip(response, text.into(), true)
+}
+
+#[allow(dead_code)]
+fn tooltip(response: egui::Response, text: egui::WidgetText, at_pointer: bool) -> egui::Response {
+    let ctx = response.ctx.clone();
+    let theme = Theme::current(&ctx);
+    let mode = ctx.theme();
+    let mut tooltip = egui::Tooltip::for_enabled(&response);
+    if at_pointer {
+        tooltip = tooltip.at_pointer();
+    }
+    tooltip.popup = tooltip.popup.style(move |style: &mut egui::Style| {
+        theme.apply_role(mode, style, Role::Tooltip);
+    });
+    tooltip.show(|ui| {
+        ui.label(text);
+    });
+    response
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Theme;
+    use super::{Role, Theme, scope};
     use eframe::egui::{self, Color32, ThemePreference};
 
     #[test]
@@ -174,6 +260,24 @@ mod tests {
             Theme::current(&ctx).palette(egui::Theme::Dark).panel,
             Color32::from_rgb(0x22, 0x22, 0x26)
         );
+    }
+
+    #[test]
+    fn a_role_scope_restores_the_outer_style() {
+        let ctx = egui::Context::default();
+        let theme = Theme::preset("adwaita").expect("adwaita");
+        theme.install(&ctx);
+        let mut inside = None;
+        let mut outside = None;
+        let output = ctx.run_ui(Default::default(), |ui| {
+            outside = Some(ui.visuals().panel_fill);
+            scope(ui, Role::Sidebar, |ui| {
+                inside = Some(ui.visuals().panel_fill)
+            });
+        });
+        output.drop_without_applying_deltas();
+        assert_ne!(inside, outside);
+        assert_eq!(outside, Some(Color32::from_rgb(0x22, 0x22, 0x26)));
     }
 
     #[test]

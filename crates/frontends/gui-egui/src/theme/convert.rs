@@ -35,3 +35,15 @@ pub(crate) fn margin(
         bottom: side(bottom, fallback.bottom),
     }
 }
+
+pub(crate) fn shadow(
+    mut base: eframe::egui::Shadow,
+    enabled: bool,
+    value: Rgba,
+) -> eframe::egui::Shadow {
+    if !enabled {
+        return eframe::egui::Shadow::NONE;
+    }
+    base.color = color(value);
+    base
+}
