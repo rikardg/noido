@@ -14,7 +14,7 @@
 
 - Dependency: `native-theme = { version = "0.7", default-features = false, features = ["native", "watch", "system-fonts"] }`. The lockfile pins the exact patch.
 - `native_theme` types must not appear outside `crates/frontends/gui-egui/src/theme/`.
-- The app installs both `egui::Theme::Light` and `Dark` with `Context::set_style_of`; the real app keeps `ThemePreference::System`, the headless harness pins dark.
+- The app installs both `egui::Theme::Light` and `Dark` with `Context::set_style_of` and selects the mode native-theme reports with `Context::set_theme`; the headless harness pins dark. (Revised after review: egui cannot read the OS mode on Linux.)
 - Tests must not read the live desktop theme or system fonts; they use the bundled `adwaita` preset and egui's own font faces.
 - Keep noido's structural constants where native metrics fight the compact UI: title-bar height, icon-button size, traffic-light inset, search-field compactness, sidebar and page layout.
 - `just check` must be clean after every task; commit each task with `jj commit -m "egui: ..."`.

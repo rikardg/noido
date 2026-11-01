@@ -104,6 +104,8 @@ pub struct NoidoApp {
     bar: titlebar::Rects,
     /// Brings new versions of the document when its file changes.
     watcher: Option<Watcher>,
+    /// Re-reads the OS theme while the app runs.
+    theme_live: Option<crate::theme::Live>,
     /// Set when a later launch on the same file asks the window forward.
     activation: Option<Activation>,
     /// The document's canonical path, for links to it.
@@ -234,6 +236,7 @@ impl NoidoApp {
             search_state: Search::new(),
             bar: titlebar::Rects::default(),
             watcher: None,
+            theme_live: None,
             activation: None,
             link_path: None,
             arrival: None,
@@ -523,6 +526,12 @@ impl NoidoApp {
                 .as_ref()
                 .and_then(|thumbnails| thumbnails.textures.get(&page))
         })
+    }
+
+    /// Follows the OS theme while the app runs.
+    pub fn with_theme(mut self, live: crate::theme::Live) -> Self {
+        self.theme_live = Some(live);
+        self
     }
 
     /// Shows the new versions of the document that `watcher` brings.
@@ -1357,6 +1366,11 @@ impl NoidoApp {
     /// One frame of the viewer.
     fn show(&mut self, ui: &mut egui::Ui, parent: Option<&eframe::Frame>) {
         let ctx = ui.ctx().clone();
+        if let Some(live) = &mut self.theme_live
+            && live.poll(&ctx)
+        {
+            ctx.request_repaint();
+        }
         self.come_forward(&ctx);
         self.receive_renders(&ctx);
         self.sidebar_view.receive(&ctx, self.view.layout());
@@ -1912,7 +1926,6 @@ mod tests {
         }
 
         /// The colour of the last frame's text exactly equal to `text`.
-        #[allow(dead_code)]
         fn text_color(&self, text: &str) -> Option<Color32> {
             fn find(shape: &egui::Shape, text: &str) -> Option<Color32> {
                 match shape {
@@ -4329,6 +4342,47 @@ mod tests {
         let palette = h.theme().palette(egui::Theme::Dark);
         h.frames(1, vec![Event::PointerMoved(h.app.bar.close.center())]);
         assert!(!filled_with(&h, palette.danger).is_empty());
+    }
+
+    #[test]
+    fn a_queued_theme_requests_a_repaint() {
+        let (live, tx) = crate::theme::Live::for_test();
+        let mut h = Harness::build(move |app| app.with_theme(live));
+        tx.send(crate::theme::Theme::preset("adwaita").unwrap())
+            .unwrap();
+        h.frames(1, vec![]);
+        assert_eq!(h.repaint_delay, Duration::ZERO);
+    }
+
+    #[test]
+    fn changing_the_theme_repaints_without_restarting() {
+        let mut h = Harness::new();
+        let dark = h.theme().palette(egui::Theme::Dark).title_text;
+        h.ctx.set_theme(egui::ThemePreference::Light);
+        h.frames(1, vec![]);
+        let light = h.theme().palette(egui::Theme::Light).title_text;
+        assert_ne!(dark, light);
+        h.app.name = "test.pdf".into();
+        h.frames(1, vec![]);
+        assert_eq!(h.text_color("test.pdf"), Some(light));
+    }
+
+    #[test]
+    fn a_theme_change_reaches_an_open_dialog() {
+        let mut h = Harness::new();
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, None, Action::OpenSettings);
+        h.frames(30, vec![]);
+        h.ctx.set_theme(egui::ThemePreference::Light);
+        h.frames(30, vec![]);
+        let light = h.theme().palette(egui::Theme::Light).dialog_fill;
+        let dialog = egui::CornerRadius::same(18);
+        assert!(
+            filled_rects_deep(&h, light)
+                .iter()
+                .any(|r| r.corner_radius == dialog),
+            "open settings did not repaint with the light dialog"
+        );
     }
 
     #[test]
