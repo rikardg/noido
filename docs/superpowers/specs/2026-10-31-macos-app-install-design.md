@@ -1,7 +1,6 @@
 # The macOS app and click-to-open: design
 
-Date: 2026-10-31, revised 2026-11-01 after a spike · Status: draft, for
-approval
+Date: 2026-10-31, revised 2026-11-01 after a spike · Status: approved
 
 ## Intent and why
 
