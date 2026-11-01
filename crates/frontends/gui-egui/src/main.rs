@@ -46,7 +46,11 @@ const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 300.0];
 const WHEEL_SCROLL_SPEED: f32 = 125.0;
 
 #[derive(Parser)]
-#[command(name = "noido", version, about = "PDF reader and note taker")]
+#[command(
+    name = "noido",
+    version = env!("NOIDO_VERSION"),
+    about = "PDF reader and note taker"
+)]
 struct Args {
     /// PDF file, or a file: or noido: link, to open
     #[arg(required_unless_present_any = ["install", "uninstall"])]
@@ -252,7 +256,31 @@ fn own_title_bar(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
 mod tests {
     use std::path::PathBuf;
 
+    use clap::CommandFactory;
+
     use super::*;
+
+    #[test]
+    fn version_is_the_package_version_and_the_commit() {
+        let (version, commit) = env!("NOIDO_VERSION")
+            .split_once('+')
+            .expect("the version carries its commit after a +");
+        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+        let known = commit == "unknown";
+        assert!(
+            known || (commit.len() == 8 && commit.chars().all(|c| c.is_ascii_hexdigit())),
+            "{commit} is neither a shortened commit nor unknown"
+        );
+    }
+
+    #[test]
+    fn the_parser_shows_the_stamped_version() {
+        assert_eq!(
+            Args::command().get_version(),
+            Some(env!("NOIDO_VERSION")),
+            "--version shows what the build script stamped"
+        );
+    }
 
     #[test]
     fn install_and_uninstall_take_no_file() {
