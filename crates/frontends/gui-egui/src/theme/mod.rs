@@ -5,6 +5,7 @@
 //! offers scoped roles for widgets egui's single global style cannot express.
 
 mod convert;
+mod fonts;
 mod style;
 
 use std::sync::Arc;
@@ -82,6 +83,7 @@ pub struct Theme {
     light: ResolvedTheme,
     dark: ResolvedTheme,
     layout: Layout,
+    fonts: fonts::Fonts,
 }
 
 impl Theme {
@@ -94,6 +96,7 @@ impl Theme {
             light,
             dark,
             layout: Layout::default(),
+            fonts: fonts::Fonts::default(),
         })
     }
 
@@ -106,14 +109,21 @@ impl Theme {
 
     fn from_system_result(result: Result<native_theme::SystemTheme, String>) -> Self {
         match result {
-            Ok(system) => Self {
-                light: system.light,
-                dark: system.dark,
-                layout: Layout {
-                    widget_gap: system.layout.widget_gap,
-                    window_margin: system.layout.window_margin,
-                },
-            },
+            Ok(system) => {
+                let fonts = match system.mode {
+                    native_theme::ColorMode::Dark => fonts::Fonts::load(&system.dark),
+                    _ => fonts::Fonts::load(&system.light),
+                };
+                Self {
+                    light: system.light,
+                    dark: system.dark,
+                    layout: Layout {
+                        widget_gap: system.layout.widget_gap,
+                        window_margin: system.layout.window_margin,
+                    },
+                    fonts,
+                }
+            }
             Err(error) => {
                 eprintln!("noido: cannot read the system theme ({error}); using Adwaita");
                 Self::preset("adwaita").expect("the bundled Adwaita preset exists")
@@ -130,6 +140,7 @@ impl Theme {
 
     /// Installs both variants and remembers this theme for custom painting.
     pub fn install(&self, ctx: &egui::Context) {
+        fonts::install(ctx, &self.fonts);
         ctx.set_style_of(egui::Theme::Light, self.style(egui::Theme::Light));
         ctx.set_style_of(egui::Theme::Dark, self.style(egui::Theme::Dark));
         ctx.data_mut(|data| {
@@ -139,7 +150,7 @@ impl Theme {
 
     /// The egui style for one variant.
     pub fn style(&self, mode: egui::Theme) -> egui::Style {
-        style::global(self.variant(mode), &self.layout, mode)
+        style::global(self.variant(mode), &self.layout, &self.fonts, mode)
     }
 
     /// Applies one role's definition to a style, for a scoped subtree.
