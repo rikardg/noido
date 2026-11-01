@@ -3,6 +3,8 @@
 pub enum Key {
     PageUp,
     PageDown,
+    Home,
+    End,
     Plus,
     Equals,
     Minus,
@@ -74,6 +76,10 @@ pub enum Action {
     OpenDocument,
     ShowDocumentInfo,
     OpenSettings,
+    /// Shows the first page.
+    FirstPage,
+    /// Shows the last page.
+    LastPage,
     /// Closes the window; for now the same as quitting.
     CloseWindow,
     Quit,
@@ -109,6 +115,8 @@ impl Keymap {
         let bindings = vec![
             (plain(Key::PageUp), Action::ScrollScreenUp),
             (plain(Key::PageDown), Action::ScrollScreenDown),
+            (plain(Key::Home), Action::FirstPage),
+            (plain(Key::End), Action::LastPage),
             (plain(Key::ArrowUp), Action::ScrollUp),
             (plain(Key::ArrowDown), Action::ScrollDown),
             (plain(Key::ArrowLeft), Action::ScrollLeft),
@@ -177,6 +185,8 @@ pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
     let key = match press.key {
         Key::PageUp => "Page Up",
         Key::PageDown => "Page Down",
+        Key::Home => "Home",
+        Key::End => "End",
         Key::Plus => "+",
         Key::Equals => "=",
         Key::Minus => "-",
@@ -405,6 +415,27 @@ mod tests {
             shortcut_label(shifted(Key::F3, false), Platform::Other),
             "Shift+F3"
         );
+    }
+
+    #[test]
+    fn home_and_end_go_to_the_ends_of_the_document() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::Home, false), false),
+            Some(Action::FirstPage)
+        );
+        assert_eq!(
+            keymap.action(press(Key::End, false), false),
+            Some(Action::LastPage)
+        );
+        // While typing they move the caret, like the arrows.
+        assert_eq!(keymap.action(press(Key::Home, false), true), None);
+        assert_eq!(keymap.action(press(Key::End, false), true), None);
+        assert_eq!(
+            shortcut_label(press(Key::Home, false), Platform::Other),
+            "Home"
+        );
+        assert_eq!(shortcut_label(press(Key::End, false), Platform::Mac), "End");
     }
 
     #[test]

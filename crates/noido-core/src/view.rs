@@ -324,6 +324,8 @@ impl View {
             Action::ScrollDown => self.scrolled_to(self.offset.0, self.offset.1 + SCROLL_STEP),
             Action::ScrollLeft => self.scrolled_to(self.offset.0 - SCROLL_STEP, self.offset.1),
             Action::ScrollRight => self.scrolled_to(self.offset.0 + SCROLL_STEP, self.offset.1),
+            Action::FirstPage => self.go_to_page(0),
+            Action::LastPage => self.go_to_page(self.layout.page_count().saturating_sub(1)),
             // Not about the page view; frontends handle these.
             Action::ToggleSidebar
             | Action::FocusSearch
@@ -818,6 +820,49 @@ mod tests {
         assert_eq!(view.scale(), MAX_ZOOM);
         view.set_viewport_size(10.0, 10.0);
         assert_eq!(view.scale(), MIN_ZOOM);
+    }
+
+    #[test]
+    fn home_shows_the_first_page() {
+        let mut view = letter_view();
+        view.scrolled_to(0.0, 3000.0);
+        view.apply(Action::FirstPage);
+        assert_eq!(view.offset(), (0.0, 0.0));
+        assert_eq!(view.centre_page(), Some(0));
+    }
+
+    #[test]
+    fn end_shows_the_last_page() {
+        let mut view = letter_view();
+        view.apply(Action::LastPage);
+        let rect = view.layout().page_rect(9).unwrap();
+        assert_eq!(view.offset().1, rect.y - MARGIN);
+        assert_eq!(view.centre_page(), Some(9));
+    }
+
+    #[test]
+    fn end_shows_a_tall_last_page_from_its_top() {
+        let mut view = letter_view();
+        view.apply(Action::ZoomIn);
+        view.apply(Action::ZoomIn);
+        view.apply(Action::LastPage);
+        let rect = view.layout().page_rect(9).unwrap();
+        assert_eq!(view.offset().1, rect.y - MARGIN);
+        assert_eq!(view.centre_page(), Some(9));
+    }
+
+    #[test]
+    fn paged_page_ends_show_the_first_and_last_spread() {
+        let mut view = paged_view();
+        view.apply(Action::LastPage);
+        assert_eq!(
+            view.current_spread(),
+            Some(view.layout().spread_count() - 1)
+        );
+        assert_eq!(view.offset().1, 0.0);
+        view.apply(Action::FirstPage);
+        assert_eq!(view.current_spread(), Some(0));
+        assert_eq!(view.offset().1, 0.0);
     }
 
     #[test]
@@ -1397,6 +1442,8 @@ mod tests {
             Action::FitPage,
             Action::ScrollScreenDown,
             Action::ScrollScreenUp,
+            Action::FirstPage,
+            Action::LastPage,
             Action::ToggleContinuous,
             Action::ScrollScreenDown,
             Action::ScrollScreenUp,

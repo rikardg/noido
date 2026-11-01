@@ -963,6 +963,18 @@ impl NoidoApp {
                 ctx.memory_mut(|m| m.stop_text_input());
                 self.settings_page = Some(settings::Page::default());
             }
+            // Jumps, like a thumbnail click: Back returns to where the reader
+            // was; a press that moves nothing leaves no entry.
+            Action::FirstPage | Action::LastPage => {
+                let before = self.view.place();
+                self.view.apply(action);
+                if self.view.place() != before {
+                    if let Some(here) = before {
+                        self.history.leave(here);
+                    }
+                    self.reader_moved();
+                }
+            }
             Action::ShowDocumentInfo => {
                 if let Some(source) = &self.source {
                     // So Esc closes the page, not the search behind it.
@@ -1539,6 +1551,8 @@ fn core_key(key: egui::Key) -> Option<Key> {
     match key {
         egui::Key::PageUp => Some(Key::PageUp),
         egui::Key::PageDown => Some(Key::PageDown),
+        egui::Key::Home => Some(Key::Home),
+        egui::Key::End => Some(Key::End),
         egui::Key::Plus => Some(Key::Plus),
         egui::Key::Equals => Some(Key::Equals),
         egui::Key::Minus => Some(Key::Minus),
@@ -5953,6 +5967,28 @@ mod tests {
         assert_eq!(h.app.current_page(), Some(0));
         mouse_button(&mut h, egui::PointerButton::Extra2);
         assert_eq!(h.app.current_page(), Some(2));
+    }
+
+    #[test]
+    fn home_and_end_jump_pages_and_come_back() {
+        let mut h = Harness::new();
+        go_to(&mut h, 5);
+        let read_to = h.centre();
+        h.press(egui::Key::Home, Modifiers::NONE);
+        assert_eq!(h.centre().page, 0);
+        assert_eq!(h.app.view.offset().1, 0.0);
+        h.press(egui::Key::Home, Modifiers::NONE);
+        assert_eq!(
+            h.app.history.back_entries().len(),
+            1,
+            "a press that moves nothing adds no entry"
+        );
+        h.press(egui::Key::ArrowLeft, Modifiers::ALT);
+        assert!(h.distance_from_centre(read_to) < 1.0);
+        h.press(egui::Key::End, Modifiers::NONE);
+        assert_eq!(h.centre().page, 9);
+        h.press(egui::Key::ArrowLeft, Modifiers::ALT);
+        assert_eq!(h.centre().page, 5);
     }
 
     #[test]
