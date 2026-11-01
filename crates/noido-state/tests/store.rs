@@ -14,6 +14,7 @@ fn state(page: usize) -> DocState {
             continuous: false,
             dual: true,
             odd_left: true,
+            gapless: false,
             centre: DocPoint {
                 page,
                 x: 10.0,
@@ -70,6 +71,31 @@ fn save_then_load() {
     let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
     store.save(&slot(&store, &key), &state(3)).unwrap();
     assert_eq!(loaded(&store, &key), Some(state(3)));
+}
+
+#[test]
+fn gapless_round_trips() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let mut doc = state(3);
+    doc.view.gapless = true;
+    store.save(&slot(&store, &key), &doc).unwrap();
+    assert!(loaded(&store, &key).unwrap().view.gapless);
+}
+
+#[test]
+fn entries_without_gapless_open_with_gaps() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(2)).unwrap();
+    let path = docs(&dir).join(format!("{}.toml", key.hex()));
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("gapless = false"), "{text}");
+    let text = text.replace("gapless = false\n", "");
+    fs::write(&path, text).unwrap();
+    assert!(!loaded(&store, &key).unwrap().view.gapless);
 }
 
 #[test]

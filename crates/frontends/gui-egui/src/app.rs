@@ -887,6 +887,7 @@ impl NoidoApp {
             continuous: self.view.continuous(),
             dual: self.view.dual(),
             odd_left: self.view.odd_left(),
+            gapless: self.view.gapless(),
             keymap: &self.keymap,
             counter: self.search_state.counter(),
         };
@@ -1534,6 +1535,7 @@ fn same_place(a: &ViewState, b: &ViewState) -> bool {
         && a.continuous == b.continuous
         && a.dual == b.dual
         && a.odd_left == b.odd_left
+        && a.gapless == b.gapless
 }
 
 /// The parts of a mouse wheel event that decide whether it flips a page.
@@ -2310,6 +2312,7 @@ mod tests {
             continuous: true,
             dual: false,
             odd_left: true,
+            gapless: false,
             centre: noido_core::DocPoint {
                 page: 6,
                 x: 306.0,
@@ -2371,6 +2374,7 @@ mod tests {
                 continuous: true,
                 dual: false,
                 odd_left: true,
+                gapless: false,
                 centre: noido_core::DocPoint {
                     page: 0,
                     x: 306.0,
@@ -2411,6 +2415,7 @@ mod tests {
             continuous: false,
             dual: true,
             odd_left: false,
+            gapless: false,
             sidebar: true,
         });
         let restored = DocState {
@@ -2420,6 +2425,7 @@ mod tests {
                 continuous: true,
                 dual: false,
                 odd_left: true,
+                gapless: false,
                 centre: noido_core::DocPoint {
                     page: 2,
                     x: 306.0,
@@ -2564,6 +2570,7 @@ mod tests {
                 continuous: true,
                 dual: false,
                 odd_left: true,
+                gapless: false,
                 centre: noido_core::DocPoint {
                     page: 0,
                     x: 306.0,
@@ -2716,6 +2723,7 @@ mod tests {
             "Continuous (default: on)",
             "Dual page (default: off)",
             "Odd pages left (default: on)",
+            "Gapless mode (default: off)",
             "Show sidebar (default: off)",
             "Set from current view",
         ] {
@@ -2802,6 +2810,7 @@ mod tests {
         let mut h = settings_in(dir.path());
         h.press(egui::Key::Equals, Modifiers::COMMAND);
         h.press(egui::Key::C, Modifiers::NONE);
+        h.press(egui::Key::G, Modifiers::NONE);
         h.press(egui::Key::F9, Modifiers::NONE);
         h.frames(2, vec![]);
         let percent = (h.app.view.scale() * 100.0).round() as u32;
@@ -2812,7 +2821,35 @@ mod tests {
         assert_eq!(saved.zoom, noido_core::StartZoom::Fixed);
         assert_eq!(saved.zoom_percent, percent);
         assert!(!saved.continuous);
+        assert!(saved.gapless);
         assert!(saved.sidebar);
+    }
+
+    #[test]
+    fn gapless_row_saves() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = settings_in(dir.path());
+        open_settings(&mut h);
+        h.click_text("Gapless mode (default: off)");
+        h.frames(2, vec![]);
+        let saved = SettingsFile::at(dir.path()).load().unwrap();
+        assert!(saved.new_documents.gapless);
+        assert!(!h.app.view.gapless(), "the open document changed");
+    }
+
+    #[test]
+    fn new_document_opens_gapless() {
+        let settings = with_new_documents(noido_core::Defaults {
+            dual: true,
+            gapless: true,
+            ..Default::default()
+        });
+        let h = Harness::build(|app| app.with_settings(None, settings));
+        assert!(h.app.view.gapless());
+        assert_eq!(
+            h.app.view.layout().page_rect(1).unwrap().x,
+            h.app.view.layout().page_rect(0).unwrap().x + 612.0 * h.app.view.scale()
+        );
     }
 
     #[test]
@@ -2952,6 +2989,40 @@ mod tests {
         h.frames(3, vec![]);
         let menu = h.app.bar.menu;
         assert!(menu.min.x >= 0.0 && menu.max.x <= 480.0, "{menu:?}");
+    }
+
+    #[test]
+    fn g_toggles_gapless() {
+        let mut h = Harness::new();
+        assert!(!h.app.view.gapless());
+        h.press(egui::Key::G, Modifiers::NONE);
+        assert!(h.app.view.gapless());
+        h.frames(2, vec![]);
+        h.press(egui::Key::G, Modifiers::NONE);
+        assert!(!h.app.view.gapless());
+    }
+
+    #[test]
+    fn menu_gapless_matches_key() {
+        let mut h = Harness::new();
+        let entry = noido_core::menu()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.label == "Gapless mode")
+            .unwrap();
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, None, entry.action);
+        assert!(h.app.view.gapless());
+    }
+
+    #[test]
+    fn reload_keeps_gapless() {
+        let mut h = Harness::new();
+        h.press(egui::Key::G, Modifiers::NONE);
+        h.frames(3, vec![]);
+        h.reload(Arc::new(SizedEngine::letter(12)), recompiled_key());
+        h.frames(3, vec![]);
+        assert!(h.app.view.gapless());
     }
 
     #[test]
@@ -6087,6 +6158,7 @@ mod tests {
                 continuous: true,
                 dual: false,
                 odd_left: true,
+                gapless: false,
                 centre: noido_core::DocPoint {
                     page,
                     x: 306.0,

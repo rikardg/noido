@@ -132,6 +132,7 @@ struct NewDocuments {
     continuous: bool,
     dual: bool,
     odd_left: bool,
+    gapless: bool,
     sidebar: bool,
 }
 
@@ -154,6 +155,7 @@ impl From<&Defaults> for NewDocuments {
             continuous: defaults.continuous,
             dual: defaults.dual,
             odd_left: defaults.odd_left,
+            gapless: defaults.gapless,
             sidebar: defaults.sidebar,
         }
     }
@@ -172,6 +174,7 @@ impl NewDocuments {
             continuous: self.continuous,
             dual: self.dual,
             odd_left: self.odd_left,
+            gapless: self.gapless,
             sidebar: self.sidebar,
         }
         .clamped()
@@ -210,12 +213,35 @@ mod tests {
                 continuous: false,
                 dual: true,
                 odd_left: false,
+                gapless: true,
                 sidebar: true,
             },
             paper: Paper::Sepia,
         };
         file(&dir).save(&settings).unwrap();
         assert_eq!(file(&dir).load().unwrap(), settings);
+    }
+
+    #[test]
+    fn missing_gapless_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir, "version = 1\n[new_documents]\ndual = true\n");
+        assert!(!file(&dir).load().unwrap().new_documents.gapless);
+    }
+
+    #[test]
+    fn gapless_is_written_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            new_documents: Defaults {
+                gapless: true,
+                ..Defaults::default()
+            },
+            ..Settings::default()
+        };
+        file(&dir).save(&settings).unwrap();
+        let text = fs::read_to_string(file(&dir).path()).unwrap();
+        assert!(text.contains("gapless = true"), "{text}");
     }
 
     #[test]

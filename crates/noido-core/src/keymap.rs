@@ -62,6 +62,7 @@ pub enum Action {
     ToggleContinuous,
     ToggleDual,
     ToggleOddLeft,
+    ToggleGapless,
     ToggleSidebar,
     FocusSearch,
     NextHit,
@@ -129,6 +130,7 @@ impl Keymap {
             (plain(Key::C), Action::ToggleContinuous),
             (plain(Key::D), Action::ToggleDual),
             (plain(Key::O), Action::ToggleOddLeft),
+            (plain(Key::G), Action::ToggleGapless),
             (plain(Key::F9), Action::ToggleSidebar),
             (command(Key::F), Action::FocusSearch),
             (command(Key::G), Action::NextHit),
@@ -324,6 +326,17 @@ mod tests {
         );
         assert_eq!(keymap.action(press(Key::O, false), true), None);
         assert_eq!(shortcut_label(press(Key::O, false), Platform::Other), "O");
+    }
+
+    #[test]
+    fn g_toggles_gapless() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::G, false), false),
+            Some(Action::ToggleGapless)
+        );
+        assert_eq!(keymap.action(press(Key::G, false), true), None);
+        assert_eq!(shortcut_label(press(Key::G, false), Platform::Other), "G");
     }
 
     #[test]

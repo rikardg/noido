@@ -25,6 +25,8 @@ pub struct Defaults {
     pub continuous: bool,
     pub dual: bool,
     pub odd_left: bool,
+    /// No gap between pages.
+    pub gapless: bool,
     /// Whether the sidebar is shown.
     pub sidebar: bool,
 }
@@ -37,6 +39,7 @@ impl Default for Defaults {
             continuous: true,
             dual: false,
             odd_left: true,
+            gapless: false,
             sidebar: false,
         }
     }
@@ -66,6 +69,7 @@ impl Defaults {
             continuous: state.continuous,
             dual: state.dual,
             odd_left: state.odd_left,
+            gapless: state.gapless,
             sidebar,
         }
         .clamped()
@@ -89,6 +93,7 @@ mod tests {
             continuous: false,
             dual: true,
             odd_left: false,
+            gapless: false,
             centre: DocPoint {
                 page: 3,
                 x: 0.0,
@@ -107,6 +112,7 @@ mod tests {
                 continuous: true,
                 dual: false,
                 odd_left: true,
+                gapless: false,
                 sidebar: false,
             }
         );
@@ -134,11 +140,19 @@ mod tests {
                 continuous: false,
                 dual: true,
                 odd_left: false,
+                gapless: false,
                 sidebar: true,
             }
         );
         let defaults = Defaults::from_view(&state(ZoomMode::FitWidth, 0.7), false);
         assert_eq!(defaults.zoom, StartZoom::FitWidth);
+    }
+
+    #[test]
+    fn from_view_copies_gapless() {
+        let mut state = state(ZoomMode::FitWidth, 1.0);
+        state.gapless = true;
+        assert!(Defaults::from_view(&state, false).gapless);
     }
 
     #[test]
