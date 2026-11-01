@@ -100,7 +100,11 @@ fn main() -> ExitCode {
         _ if args.install => desktop::install(),
         #[cfg(not(target_os = "macos"))]
         _ if args.uninstall => desktop::uninstall(),
-        Some(_) => opening(&args).and_then(run),
+        Some(_) => opening(&args).and_then(|opening| {
+            #[cfg(target_os = "macos")]
+            hint_if_stale();
+            run(opening)
+        }),
         None => unreachable!("clap requires a file without --install or --uninstall"),
     };
     match result {
@@ -109,6 +113,24 @@ fn main() -> ExitCode {
             eprintln!("noido: {message}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// From a terminal, says when the installed noido.app is another version.
+#[cfg(target_os = "macos")]
+fn hint_if_stale() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    if app_bundle::bundle_of(&exe).is_some() {
+        return;
+    }
+    let Some(home) = std::env::home_dir() else {
+        return;
+    };
+    let installed = app_bundle::read_identity(&home.join("Applications/noido.app"));
+    if let Some(hint) = app_bundle::stale_hint(installed.as_ref(), env!("CARGO_PKG_VERSION")) {
+        eprintln!("noido: {hint}");
     }
 }
 

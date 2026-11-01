@@ -58,7 +58,12 @@ pub struct Identity {
 /// The identifier and version in a plist's top-level dict; `None` when it
 /// is not XML or lacks either.
 pub fn identity(plist_xml: &str) -> Option<Identity> {
-    let doc = roxmltree::Document::parse(plist_xml).ok()?;
+    // Tools that rewrite a plist add a DOCTYPE.
+    let options = roxmltree::ParsingOptions {
+        allow_dtd: true,
+        ..Default::default()
+    };
+    let doc = roxmltree::Document::parse_with_options(plist_xml, options).ok()?;
     let dict = doc
         .root_element()
         .children()
@@ -82,6 +87,17 @@ pub fn identity(plist_xml: &str) -> Option<Identity> {
 /// The identity of the bundle at `app`, `None` when its plist is unreadable.
 pub fn read_identity(app: &Path) -> Option<Identity> {
     identity(&std::fs::read_to_string(app.join("Contents/Info.plist")).ok()?)
+}
+
+/// The hint for a terminal `noido` when the installed noido.app is noido's
+/// at another version than `this_version`.
+pub fn stale_hint(installed: Option<&Identity>, this_version: &str) -> Option<String> {
+    let installed =
+        installed.filter(|i| i.identifier == IDENTIFIER && i.version != this_version)?;
+    Some(format!(
+        "noido.app in ~/Applications is version {}, this is {this_version}; noido --install updates it",
+        installed.version
+    ))
 }
 
 /// Writes the bundle at `app`, replacing whatever is there: the plist and
@@ -400,6 +416,45 @@ pub fn uninstall() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_reads_a_plist_with_a_doctype() {
+        // What `plutil -replace` and Xcode write.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>a.b</string>
+<key>CFBundleShortVersionString</key><string>1.2</string>
+</dict></plist>"#;
+        assert_eq!(
+            identity(xml),
+            Some(Identity {
+                identifier: "a.b".into(),
+                version: "1.2".into()
+            })
+        );
+    }
+
+    #[test]
+    fn stale_hint_only_for_our_other_version() {
+        let id = |identifier: &str, version: &str| Identity {
+            identifier: identifier.into(),
+            version: version.into(),
+        };
+        assert_eq!(stale_hint(None, "0.2.0"), None);
+        let current = id(IDENTIFIER, env!("CARGO_PKG_VERSION"));
+        assert_eq!(stale_hint(Some(&current), env!("CARGO_PKG_VERSION")), None);
+        assert_eq!(
+            stale_hint(Some(&id("com.example.other", "0.0.1")), "0.2.0"),
+            None
+        );
+        assert_eq!(
+            stale_hint(Some(&id(IDENTIFIER, "0.0.1")), "0.2.0").as_deref(),
+            Some(
+                "noido.app in ~/Applications is version 0.0.1, this is 0.2.0; noido --install updates it"
+            )
+        );
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
