@@ -32,6 +32,9 @@ roxmltree.workspace = true
 [build-dependencies]
 resvg.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+noido-macos.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 

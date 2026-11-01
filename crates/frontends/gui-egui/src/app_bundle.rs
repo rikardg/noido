@@ -114,7 +114,6 @@ pub fn write_bundle(exe: &Path, app: &Path, version: &str) -> Result<(), String>
 
 /// The `X.app` when `exe` is `X.app/Contents/MacOS/<name>`, judged by the
 /// path's components alone.
-#[allow(dead_code)]
 pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
