@@ -16,7 +16,7 @@ use noido_core::{
 use noido_render::{RenderRequest, Renderer};
 
 use crate::image::PageImage;
-use crate::search::HIGHLIGHT_FILL;
+use crate::theme;
 
 /// How far the current page's highlight reaches around its thumbnail, and
 /// its corner radius, in points.
@@ -181,7 +181,11 @@ impl SidebarView {
     pub fn show(&mut self, ui: &mut egui::Ui, state: &mut SidebarState, input: &Input) -> Output {
         let window = ui.max_rect().width();
         let max = max_width(window);
-        let frame = egui::Frame::side_top_panel(ui.style()).inner_margin(0.0);
+        let frame = theme::Theme::current(ui.ctx()).frame(
+            ui.ctx().theme(),
+            theme::Surface::Sidebar,
+            ui.style(),
+        );
         if input.results.is_some() {
             // The thumbnails are out of sight: no sharp renders for them.
             self.closed();
@@ -194,12 +198,14 @@ impl SidebarView {
             .frame(frame)
             .default_size(state.clamped(window).width)
             .size_range(SIDEBAR_MIN_WIDTH..=max)
-            .show(ui, |ui| match &input.results {
-                Some(results) => Output {
-                    hit: self.results(ui, results),
-                    ..Output::default()
-                },
-                None => self.scrolled(ui, input),
+            .show(ui, |ui| {
+                theme::scope(ui, theme::Role::Sidebar, |ui| match &input.results {
+                    Some(results) => Output {
+                        hit: self.results(ui, results),
+                        ..Output::default()
+                    },
+                    None => self.scrolled(ui, input),
+                })
             });
         state.width = response.response.rect.width();
         self.shown = true;
@@ -237,8 +243,9 @@ impl SidebarView {
         if let Some(target) = target {
             area = area.vertical_scroll_offset(target);
         }
-        let shown =
-            area.show_viewport(ui, |ui, viewport| self.column(ui, viewport, &column, input));
+        let shown = theme::scope(ui, theme::Role::Scrollbar, |ui| {
+            area.show_viewport(ui, |ui, viewport| self.column(ui, viewport, &column, input))
+        });
         let offset = shown.state.clamped_offset().y;
         let scrolled = target.is_none() && !resized && (offset - self.offset).abs() > 0.5;
         self.offset = offset;
@@ -466,7 +473,7 @@ impl SidebarView {
             &part(bold.clone()),
             0.0,
             TextFormat {
-                background: HIGHLIGHT_FILL,
+                background: crate::search::highlight_fill(ui.visuals().warn_fg_color),
                 ..format(if current {
                     text
                 } else {
