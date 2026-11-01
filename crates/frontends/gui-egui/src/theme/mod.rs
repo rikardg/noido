@@ -18,6 +18,14 @@ pub use live::Live;
 
 const THEME_ID: &str = "noido-theme";
 
+/// How far the desk sits below a light theme's background, in OKLab
+/// lightness.
+const DESK_STEP: f32 = 0.12;
+
+/// The OKLab lightness above which a background counts as light, and so gets
+/// a desk of its own.
+const LIGHT_BACKGROUND: f32 = 0.5;
+
 #[derive(Clone, Copy, Default)]
 struct Layout {
     widget_gap: Option<f32>,
@@ -216,6 +224,17 @@ impl Theme {
     }
 }
 
+/// The colour behind the pages for a window background: a light background
+/// is stepped down in OKLab so paper stands out from it, and a dark one is
+/// its own desk.
+pub(super) fn desk(background: Color32) -> Color32 {
+    if convert::lightness(background) > LIGHT_BACKGROUND {
+        convert::darken(background, DESK_STEP)
+    } else {
+        background
+    }
+}
+
 /// Installs a bundled preset; for tests and the fixed harness baseline.
 #[cfg(test)]
 pub fn install_preset(ctx: &egui::Context, name: &str) {
@@ -269,7 +288,7 @@ fn tooltip(response: egui::Response, text: egui::WidgetText, at_pointer: bool) -
 
 #[cfg(test)]
 mod tests {
-    use super::{Role, Theme, scope};
+    use super::{Role, Theme, desk, scope};
     use eframe::egui::{self, Color32, ThemePreference};
 
     #[test]
@@ -325,6 +344,43 @@ mod tests {
         let theme = Theme::from_system_result(Err("no portal".into()));
         assert_eq!(
             theme.palette(egui::Theme::Dark).panel,
+            Color32::from_rgb(0x22, 0x22, 0x26)
+        );
+    }
+
+    /// The WCAG contrast ratio of two opaque colours.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        fn luminance(colour: Color32) -> f32 {
+            let channel = |value: u8| {
+                let value = value as f32 / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(colour.r())
+                + 0.7152 * channel(colour.g())
+                + 0.0722 * channel(colour.b())
+        }
+        let (dark, light) = {
+            let (a, b) = (luminance(a), luminance(b));
+            if a < b { (a, b) } else { (b, a) }
+        };
+        (light + 0.05) / (dark + 0.05)
+    }
+
+    #[test]
+    fn a_light_background_gets_a_darker_desk() {
+        let desk = desk(Color32::from_rgb(0xfa, 0xfa, 0xfb));
+        assert_eq!(desk, Color32::from_rgb(0xd2, 0xd2, 0xd3));
+        assert!(contrast(desk, Color32::WHITE) >= 1.35, "{desk:?}");
+    }
+
+    #[test]
+    fn a_dark_background_is_its_own_desk() {
+        assert_eq!(
+            desk(Color32::from_rgb(0x22, 0x22, 0x26)),
             Color32::from_rgb(0x22, 0x22, 0x26)
         );
     }
