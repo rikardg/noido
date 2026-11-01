@@ -26,6 +26,7 @@ ctrlc.workspace = true
 notify.workspace = true
 interprocess.workspace = true
 blake3.workspace = true
+roxmltree.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

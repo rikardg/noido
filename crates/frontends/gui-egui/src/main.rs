@@ -2,6 +2,7 @@
 //! `noido 'noido:///path/file.pdf#page=12'` and `noido file.pdf --page 12`.
 
 mod app;
+mod app_bundle;
 mod desktop;
 mod frame;
 mod image;
