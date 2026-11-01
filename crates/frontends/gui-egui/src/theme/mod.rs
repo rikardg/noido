@@ -201,6 +201,14 @@ impl Theme {
     }
 }
 
+/// Installs a bundled preset; for tests and the fixed harness baseline.
+#[cfg(test)]
+pub fn install_preset(ctx: &egui::Context, name: &str) {
+    Theme::preset(name)
+        .expect("the bundled preset exists")
+        .install(ctx);
+}
+
 /// Runs `add` with one native role's style.
 #[allow(dead_code)]
 pub fn scope<R>(ui: &mut egui::Ui, role: Role, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
