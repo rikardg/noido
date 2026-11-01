@@ -3,6 +3,8 @@
 
 mod app;
 mod app_bundle;
+// The Linux install; on macOS only `ask_to_proceed` is used.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 mod desktop;
 mod frame;
 mod image;
@@ -55,7 +57,7 @@ struct Args {
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..),
           conflicts_with_all = ["install", "uninstall", "app_bundle"])]
     page: Option<u32>,
-    /// Add noido to the desktop's apps for PDFs (Linux)
+    /// Add noido to the desktop's apps for PDFs
     #[arg(long, conflicts_with_all = ["path", "uninstall", "app_bundle"])]
     install: bool,
     /// Remove what --install added
@@ -92,7 +94,13 @@ fn main() -> ExitCode {
     let args = Args::parse_from(args);
     let result = match &args.path {
         _ if args.app_bundle.is_some() => build_app_bundle(args.app_bundle.as_deref().unwrap()),
+        #[cfg(target_os = "macos")]
+        _ if args.install => app_bundle::install(),
+        #[cfg(target_os = "macos")]
+        _ if args.uninstall => app_bundle::uninstall(),
+        #[cfg(not(target_os = "macos"))]
         _ if args.install => desktop::install(),
+        #[cfg(not(target_os = "macos"))]
         _ if args.uninstall => desktop::uninstall(),
         Some(_) => opening(&args).and_then(run),
         None => unreachable!("clap requires a file without --install or --uninstall"),

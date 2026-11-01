@@ -210,18 +210,11 @@ pub fn uninstall() -> Result<(), String> {
     proceed(plan_uninstall(&places))
 }
 
-/// Shows the steps, asks, and carries them out on a yes.
-fn proceed(plan: Plan) -> Result<(), String> {
-    let steps = match plan {
-        Plan::Nothing(why) => {
-            println!("{why}. Nothing to do.");
-            return Ok(());
-        }
-        Plan::Steps(steps) => steps,
-    };
+/// Prints the lines indented and asks "Proceed? [y/N]"; whether to go ahead.
+pub fn ask_to_proceed(lines: &[String]) -> Result<bool, String> {
     println!();
-    for step in &steps {
-        println!("  {}", describe(step));
+    for line in lines {
+        println!("  {line}");
     }
     println!();
     print!("Proceed? [y/N] ");
@@ -234,7 +227,20 @@ fn proceed(plan: Plan) -> Result<(), String> {
         // No answer was typed, so the prompt's line is still open.
         println!();
     }
-    if !confirmed((read > 0).then_some(answer.as_str())) {
+    Ok(confirmed((read > 0).then_some(answer.as_str())))
+}
+
+/// Shows the steps, asks, and carries them out on a yes.
+fn proceed(plan: Plan) -> Result<(), String> {
+    let steps = match plan {
+        Plan::Nothing(why) => {
+            println!("{why}. Nothing to do.");
+            return Ok(());
+        }
+        Plan::Steps(steps) => steps,
+    };
+    let lines: Vec<String> = steps.iter().map(describe).collect();
+    if !ask_to_proceed(&lines)? {
         println!("Nothing changed.");
         return Ok(());
     }
