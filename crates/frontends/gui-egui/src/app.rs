@@ -1914,7 +1914,14 @@ mod tests {
             fn find(shape: &egui::Shape, text: &str) -> Option<Color32> {
                 match shape {
                     egui::Shape::Text(t) if t.galley.text() == text => {
-                        Some(t.override_text_color.unwrap_or(t.fallback_color))
+                        let span = t
+                            .galley
+                            .job
+                            .sections
+                            .first()
+                            .map(|section| section.format.color)
+                            .filter(|colour| *colour != Color32::PLACEHOLDER);
+                        Some(span.or(t.override_text_color).unwrap_or(t.fallback_color))
                     }
                     egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| find(s, text)),
                     _ => None,
@@ -4253,6 +4260,27 @@ mod tests {
     }
 
     #[test]
+    fn menu_uses_the_menu_fill_and_hover() {
+        let mut h = Harness::new();
+        let palette = h.theme().palette(egui::Theme::Dark);
+        h.click(h.app.bar.menu.center());
+        h.frames(30, vec![]);
+        assert!(!filled_deep(&h, palette.menu_fill).is_empty());
+        let entry = h.text_rect("Settings…").expect("settings entry");
+        h.frames(30, vec![Event::PointerMoved(entry.center())]);
+        assert!(!filled_deep(&h, palette.menu_hover).is_empty());
+    }
+
+    #[test]
+    fn menu_labels_use_the_menu_text_colour() {
+        let mut h = Harness::new();
+        let palette = h.theme().palette(egui::Theme::Dark);
+        h.click(h.app.bar.menu.center());
+        h.frames(1, vec![]);
+        assert_eq!(h.text_color("Settings…"), Some(palette.menu_text));
+    }
+
+    #[test]
     fn search_field_uses_the_input_fill() {
         let h = Harness::new();
         let palette = h.theme().palette(egui::Theme::Dark);
@@ -4278,6 +4306,23 @@ mod tests {
             h.ctx.global_style().visuals.panel_fill,
             Color32::from_rgb(0xfa, 0xfa, 0xfb)
         );
+    }
+
+    /// The rectangles filled with `colour`, including shapes nested in a
+    /// `Shape::Vec` such as a popup's frame.
+    fn filled_deep(h: &Harness, colour: Color32) -> Vec<Rect> {
+        fn find(shape: &egui::Shape, colour: Color32, out: &mut Vec<Rect>) {
+            match shape {
+                egui::Shape::Rect(r) if r.fill == colour => out.push(r.rect),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| find(s, colour, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &h.shapes {
+            find(&clipped.shape, colour, &mut out);
+        }
+        out
     }
 
     /// The tints of the textured meshes drawn last frame: pages and
