@@ -892,8 +892,14 @@ impl NoidoApp {
             counter: self.search_state.counter(),
         };
         let focus = std::mem::take(&mut self.search_focus_requested);
+        let frame = crate::theme::Theme::current(ui.ctx()).frame(
+            ui.ctx().theme(),
+            crate::theme::Surface::TitleBar,
+            ui.style(),
+        );
         let output = egui::Panel::top("titlebar")
             .exact_size(TITLE_BAR_HEIGHT)
+            .frame(frame)
             .show(ui, |ui| titlebar::show(ui, &bar, &mut self.search, focus))
             .inner;
         self.bar = output.rects;
@@ -4228,6 +4234,39 @@ mod tests {
             h.theme().palette(egui::Theme::Dark).selection,
             h.ctx.global_style().visuals.selection.bg_fill
         );
+    }
+
+    #[test]
+    fn title_bar_uses_theme_colours() {
+        let mut h = Harness::new();
+        h.app.name = "test.pdf".into();
+        h.frames(1, vec![]);
+        let palette = h.theme().palette(egui::Theme::Dark);
+        let status = titlebar::status_text(
+            h.app.current_page().unwrap_or(0),
+            h.app.view.layout().page_count(),
+            h.app.view.scale(),
+        );
+        assert_eq!(h.text_color("test.pdf"), Some(palette.title_text));
+        assert_eq!(h.text_color(&status), Some(palette.muted));
+        assert!(!filled_with(&h, palette.title_bar).is_empty());
+    }
+
+    #[test]
+    fn search_field_uses_the_input_fill() {
+        let h = Harness::new();
+        let palette = h.theme().palette(egui::Theme::Dark);
+        assert!(!filled_with(&h, palette.input).is_empty());
+    }
+
+    // macOS draws the traffic lights itself, so there is no close button.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn close_hover_uses_the_danger_colour() {
+        let mut h = Harness::new();
+        let palette = h.theme().palette(egui::Theme::Dark);
+        h.frames(1, vec![Event::PointerMoved(h.app.bar.close.center())]);
+        assert!(!filled_with(&h, palette.danger).is_empty());
     }
 
     #[test]
