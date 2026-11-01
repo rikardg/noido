@@ -4,6 +4,7 @@ members = [
     "crates/noido-engine",
     "crates/engine-hayro",
     "crates/noido-core",
+    "crates/noido-macos",
     "crates/noido-render",
     "crates/noido-settings",
     "crates/noido-state",
@@ -27,6 +28,11 @@ noido-core = { path = "crates/noido-core" }
 noido-settings = { path = "crates/noido-settings" }
 noido-state = { path = "crates/noido-state" }
 noido-text = { path = "crates/noido-text" }
+noido-macos = { path = "crates/noido-macos" }
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+block2 = "0.6"
 hayro = "0.8"
 eframe = { version = "0.37", features = ["persistence"] }
 clap = { version = "4", features = ["derive"] }

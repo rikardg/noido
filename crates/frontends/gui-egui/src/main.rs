@@ -66,8 +66,30 @@ struct Args {
     app_bundle: Option<PathBuf>,
 }
 
+/// Drops the `-psn_…` argument older Finders add to a launch.
+fn without_psn(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    args.into_iter()
+        .filter(|a| !a.as_encoded_bytes().starts_with(b"-psn_"))
+        .collect()
+}
+
+/// A launch from Finder: no argument but the program name, from inside a
+/// bundle. The documents come as an Apple event, not as arguments.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn is_finder_launch(args: &[OsString], exe: &Path) -> bool {
+    args.len() == 1 && app_bundle::bundle_of(exe).is_some()
+}
+
 fn main() -> ExitCode {
-    let args = Args::parse();
+    let args = without_psn(std::env::args_os());
+    #[cfg(target_os = "macos")]
+    if let Ok(exe) = std::env::current_exe()
+        && is_finder_launch(&args, &exe)
+        && let Some(bundle) = app_bundle::bundle_of(&exe)
+    {
+        noido_macos::run_launcher(&bundle);
+    }
+    let args = Args::parse_from(args);
     let result = match &args.path {
         _ if args.app_bundle.is_some() => build_app_bundle(args.app_bundle.as_deref().unwrap()),
         _ if args.install => desktop::install(),
@@ -355,5 +377,30 @@ mod tests {
     fn page_conflicts_with_install() {
         assert!(Args::try_parse_from(["noido", "--install", "--page", "3"]).is_err());
         assert!(Args::try_parse_from(["noido", "--uninstall", "--page", "3"]).is_err());
+    }
+
+    #[test]
+    fn psn_arguments_are_dropped() {
+        let args = without_psn(["noido", "-psn_0_12345", "a.pdf"].map(OsString::from));
+        assert_eq!(args, ["noido", "a.pdf"].map(OsString::from));
+    }
+
+    #[test]
+    fn finder_launch_is_no_argument_inside_a_bundle() {
+        let bundled = Path::new("/A/noido.app/Contents/MacOS/noido");
+        let bare = Path::new("/opt/homebrew/bin/noido");
+        let none = [OsString::from("noido")];
+        let one = ["noido", "a.pdf"].map(OsString::from);
+        assert!(is_finder_launch(&none, bundled));
+        assert!(!is_finder_launch(&none, bare));
+        assert!(!is_finder_launch(&one, bundled));
+    }
+
+    #[test]
+    fn file_urls_from_finder_are_read_exactly() {
+        assert_eq!(
+            opening_of(&["noido", "file:///b/a%20b%20%C3%A9%23.pdf"]).path,
+            PathBuf::from("/b/a b é#.pdf")
+        );
     }
 }
