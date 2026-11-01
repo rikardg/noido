@@ -1429,7 +1429,11 @@ impl NoidoApp {
 
         // The page area changes size this frame when the sidebar opens or
         // closes; lay the pages out for it now, not a frame late.
-        let frame = egui::Frame::central_panel(ui.style());
+        let frame = crate::theme::Theme::current(&ctx).frame(
+            ctx.theme(),
+            crate::theme::Surface::Central,
+            ui.style(),
+        );
         let area = ui.available_rect_before_wrap() - frame.total_margin();
         if self.last_scroll.is_some() {
             self.view.set_viewport_size(area.width(), area.height());
@@ -4382,6 +4386,31 @@ mod tests {
                 .iter()
                 .any(|r| r.corner_radius == dialog),
             "open settings did not repaint with the light dialog"
+        );
+    }
+
+    #[test]
+    fn a_light_theme_sits_the_pages_on_the_desk() {
+        let mut h = Harness::new();
+        h.ctx.set_theme(egui::ThemePreference::Light);
+        h.frames(1, vec![]);
+        let desk = Color32::from_rgb(0xd2, 0xd2, 0xd3);
+        assert_ne!(desk, h.ctx.global_style().visuals.panel_fill);
+        let area = filled_with(&h, desk);
+        assert!(
+            area.iter()
+                .any(|r| r.min.y >= TITLE_BAR_HEIGHT && r.width() > 200.0 && r.height() > 200.0),
+            "no desk below the title bar: {area:?}"
+        );
+    }
+
+    #[test]
+    fn a_dark_theme_keeps_its_background_behind_the_pages() {
+        let h = Harness::new();
+        let area = filled_with(&h, Color32::from_rgb(0x22, 0x22, 0x26));
+        assert!(
+            area.iter().any(|r| r.width() > 200.0 && r.height() > 200.0),
+            "no page area on the background: {area:?}"
         );
     }
 

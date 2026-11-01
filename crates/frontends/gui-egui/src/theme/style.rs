@@ -509,7 +509,8 @@ pub(super) fn frame(theme: &ResolvedTheme, surface: Surface, style: &egui::Style
         Surface::Sidebar => Frame::side_top_panel(style)
             .fill(convert::color(theme.sidebar.background_color))
             .inner_margin(0),
-        Surface::Central => Frame::central_panel(style),
+        Surface::Central => Frame::central_panel(style)
+            .fill(super::desk(convert::color(theme.defaults.background_color))),
     }
 }
 
@@ -614,6 +615,18 @@ mod tests {
         assert_eq!(dialog.corner_radius, egui::CornerRadius::same(18));
         let menu = theme.frame(egui::Theme::Dark, Surface::Menu, &style);
         assert_eq!(menu.fill, Color32::from_rgb(0x22, 0x22, 0x26));
+    }
+
+    #[test]
+    fn the_central_frame_fills_with_the_desk() {
+        let theme = Theme::preset("adwaita").expect("adwaita");
+        let style = theme.style(egui::Theme::Light);
+        let central = theme.frame(egui::Theme::Light, Surface::Central, &style);
+        assert_eq!(central.fill, Color32::from_rgb(0xd2, 0xd2, 0xd3));
+        assert_eq!(
+            central.inner_margin,
+            egui::Frame::central_panel(&style).inner_margin
+        );
     }
 
     #[test]
