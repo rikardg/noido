@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use engine_hayro::HayroEngine;
@@ -11,17 +11,20 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures");
 #[test]
 fn properties_arrive_and_wake_the_app() {
     let bytes = Arc::new(std::fs::read(format!("{FIXTURES}/properties.pdf")).unwrap());
-    let woken = Arc::new(AtomicBool::new(false));
-    let flag = woken.clone();
+    let (wake, woken) = mpsc::channel();
     let reply = read_properties(
         Arc::new(HayroEngine),
         bytes,
-        Box::new(move || flag.store(true, Ordering::SeqCst)),
+        Box::new(move || {
+            let _ = wake.send(());
+        }),
     );
     let properties = reply.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(properties.title.as_deref(), Some("Info Title"));
     assert_eq!(properties.fonts.len(), 4);
-    assert!(woken.load(Ordering::SeqCst));
+    woken
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the reply did not wake the app");
 }
 
 #[test]
