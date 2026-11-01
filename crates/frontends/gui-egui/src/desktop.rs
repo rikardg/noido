@@ -8,15 +8,18 @@ use std::path::{Path, PathBuf};
 use crate::icon;
 
 /// The file's name, which is also what the desktop calls the app.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const FILE_NAME: &str = "noido.desktop";
 
 /// The icon's file name; `Icon=noido` in the entry finds it by this name.
 pub const ICON_FILE_NAME: &str = "noido.svg";
 
 /// Rebuilds the MIME type cache of an applications directory.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const REFRESH_TOOL: &str = "update-desktop-database";
 
 /// Where things go: the applications directory and the binary to launch.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub struct Places {
     pub applications: PathBuf,
     /// The `hicolor` icon theme's directory.
@@ -25,6 +28,7 @@ pub struct Places {
 }
 
 /// One change to the system.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 #[derive(Debug, PartialEq)]
 pub enum Step {
     /// Write the `.desktop` file or the icon; `replaces` when a different
@@ -44,6 +48,7 @@ pub enum Step {
 }
 
 /// What a command will do.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 #[derive(Debug, PartialEq)]
 pub enum Plan {
     /// Already done; says why.
@@ -52,6 +57,7 @@ pub enum Plan {
 }
 
 /// The `.desktop` file launching `exe`.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn desktop_entry(exe: &Path) -> Result<String, String> {
     let exe = exe
         .to_str()
@@ -76,6 +82,7 @@ pub fn desktop_entry(exe: &Path) -> Result<String, String> {
 /// `arg` as written in an `Exec` value: quoted when it holds a reserved
 /// character, `%` doubled, and backslashes doubled again for the key file's
 /// own escaping.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn exec_argument(arg: &str) -> String {
     const RESERVED: &str = " \t\n\"'\\><~|&;$*?#()`";
     let quoted = if arg.chars().any(|c| RESERVED.contains(c)) {
@@ -96,6 +103,7 @@ fn exec_argument(arg: &str) -> String {
 
 /// Writes the icon, then the entry that names it, each only when missing or
 /// different; so an install from before the icon gets just the icon.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn plan_install(places: &Places) -> Result<Plan, String> {
     let path = places.applications.join(FILE_NAME);
     let icon = write_if_different(places.icon_path(), icon::SVG.to_owned())
@@ -127,6 +135,7 @@ fn write_if_different(path: PathBuf, contents: String) -> Option<Step> {
 }
 
 /// Removes the entry and the icon, whichever is there.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn plan_uninstall(places: &Places) -> Plan {
     let path = places.applications.join(FILE_NAME);
     let icon = places.icon_path();
@@ -150,6 +159,7 @@ pub fn plan_uninstall(places: &Places) -> Plan {
 }
 
 /// One line for the list shown before asking.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn describe(step: &Step) -> String {
     match step {
         Step::Write {
@@ -180,6 +190,7 @@ pub fn confirmed(answer: Option<&str>) -> bool {
 
 /// Carries out the steps in order. Returns notes to show, e.g. a skipped
 /// refresh; stops at the first failure.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn carry_out(steps: &[Step], refresh_tool: &str) -> Result<Vec<String>, String> {
     let mut notes = Vec::new();
     for step in steps {
@@ -214,6 +225,7 @@ pub fn carry_out(steps: &[Step], refresh_tool: &str) -> Result<Vec<String>, Stri
     Ok(notes)
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 impl Places {
     /// Where the icon goes: the theme's scalable app icons.
     pub fn icon_path(&self) -> PathBuf {
@@ -242,6 +254,7 @@ impl Places {
 }
 
 /// `noido --install`.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn install() -> Result<(), String> {
     let places = Places::here()?;
     println!("This adds noido to your desktop's apps for PDFs, launching");
@@ -253,6 +266,7 @@ pub fn install() -> Result<(), String> {
 }
 
 /// `noido --uninstall`.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn uninstall() -> Result<(), String> {
     let places = Places::here()?;
     println!("This removes noido from your desktop's apps.");
@@ -280,6 +294,7 @@ pub fn ask_to_proceed(lines: &[String]) -> Result<bool, String> {
 }
 
 /// Shows the steps, asks, and carries them out on a yes.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn proceed(plan: Plan) -> Result<(), String> {
     let steps = match plan {
         Plan::Nothing(why) => {
