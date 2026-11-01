@@ -306,5 +306,6 @@ fn wakes_per_update() {
     );
     let generation = searcher.search("a", 0);
     let updates = until_done(&searcher, generation);
+    wait_for(|| wakes.load(Ordering::SeqCst) >= updates.len());
     assert_eq!(wakes.load(Ordering::SeqCst), updates.len());
 }

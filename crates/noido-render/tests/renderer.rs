@@ -72,7 +72,11 @@ fn renders_requested_page_and_wakes() {
     assert_eq!(rendered.page, 0);
     let image = rendered.result.unwrap();
     assert_eq!((image.width(), image.height()), (306, 396));
-    assert!(wakes.load(Ordering::SeqCst) >= 1);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while wakes.load(Ordering::SeqCst) < 1 {
+        assert!(Instant::now() < deadline, "the render did not wake the app");
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }
 
 #[test]
