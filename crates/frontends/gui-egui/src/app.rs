@@ -1217,11 +1217,12 @@ impl NoidoApp {
             }
             // Matches over the page, the current one stronger.
             let first = hits.first_on(page).unwrap_or(0);
+            let warning = ui.visuals().warn_fg_color;
             for (i, hit) in hits.on_page(page).iter().enumerate() {
                 let fill = if hits.current() == Some(first + i) {
-                    search::CURRENT_FILL
+                    search::current_fill(warning)
                 } else {
-                    search::HIGHLIGHT_FILL
+                    search::highlight_fill(warning)
                 };
                 for area in &hit.text.rects {
                     let min = rect.min + vec2(area.x, area.y) * layout.scale();
@@ -1250,7 +1251,7 @@ impl NoidoApp {
                 self.clicked_link = Some(link.clone());
             }
             if let noido_engine::LinkTarget::Web(uri) = &link.target {
-                response.on_hover_text_at_pointer(uri);
+                crate::theme::hover_text_at_pointer(response, uri);
             }
             self.hovered_link = Some(link);
         }
@@ -1449,7 +1450,9 @@ impl NoidoApp {
                     .on_hover_cursor(egui::CursorIcon::Grab)
                     .on_drag_cursor(egui::CursorIcon::Grabbing);
             }
-            let output = scroll_area.show_viewport(ui, |ui, viewport| self.pages(ui, viewport));
+            let output = crate::theme::scope(ui, crate::theme::Role::Scrollbar, |ui| {
+                scroll_area.show_viewport(ui, |ui, viewport| self.pages(ui, viewport))
+            });
             // The pointing hand over a link, unless a drag is under way.
             if cursor_free
                 && self.hovered_link.is_some()
@@ -4597,6 +4600,16 @@ mod tests {
     }
 
     /// Clicks the thumbnail of `page`, which must be in view.
+    #[test]
+    fn sidebar_uses_the_sidebar_fill_and_selection() {
+        let mut h = Harness::new();
+        h.app.sidebar.open = true;
+        h.frames(2, vec![]);
+        let palette = h.theme().palette(egui::Theme::Dark);
+        assert!(!filled_deep(&h, palette.sidebar).is_empty());
+        assert!(!filled_deep(&h, palette.sidebar_selection).is_empty());
+    }
+
     fn click_thumbnail(h: &mut Harness, page: usize) {
         let (_, rect) = *h
             .app
@@ -5422,7 +5435,8 @@ mod tests {
         let mut h = searching(&more_cats());
         search_for(&mut h, "cat");
         h.frames(2, vec![]);
-        let current = filled(&h, search::CURRENT_FILL);
+        let warning = h.theme().palette(egui::Theme::Dark).warning;
+        let current = filled(&h, search::current_fill(warning));
         assert_eq!(current.len(), 1, "{current:?}");
         // "a cat": "cat" is chars 2..5 of the first line, at 72 + 2 × 6 pt.
         let scale = h.app.view.scale();
@@ -5434,7 +5448,7 @@ mod tests {
             (current[0].height() - 12.0 * scale).abs() < 1.0,
             "{current:?}"
         );
-        let others = filled(&h, search::HIGHLIGHT_FILL);
+        let others = filled(&h, search::highlight_fill(warning));
         assert!(!others.is_empty());
         assert!(others.iter().all(|r| r.min.y > current[0].min.y));
     }
@@ -5506,8 +5520,9 @@ mod tests {
         h.frames(3, vec![]);
         assert!(h.app.sidebar_view.result_rows().is_empty());
         assert!(!h.app.sidebar_view.drawn().is_empty());
-        assert!(filled(&h, search::HIGHLIGHT_FILL).is_empty());
-        assert!(filled(&h, search::CURRENT_FILL).is_empty());
+        let warning = h.theme().palette(egui::Theme::Dark).warning;
+        assert!(filled(&h, search::highlight_fill(warning)).is_empty());
+        assert!(filled(&h, search::current_fill(warning)).is_empty());
     }
 
     #[test]
@@ -5881,6 +5896,16 @@ mod tests {
         let mut h = linking(&link_engine());
         let at = screen_pos(&h, 0, 100.0, 96.0);
         hover_link(&mut h, at);
+    }
+
+    #[test]
+    fn link_outlines_use_the_theme_link_colour() {
+        let mut h = linking(&link_engine());
+        let palette = h.theme().palette(egui::Theme::Dark);
+        assert_eq!(h.ctx.global_style().visuals.hyperlink_color, palette.link);
+        let at = screen_pos(&h, 0, 100.0, 96.0);
+        hover_link(&mut h, at);
+        assert!(!link_outlines(&h).is_empty());
     }
 
     #[test]

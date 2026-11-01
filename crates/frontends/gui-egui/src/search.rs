@@ -7,9 +7,19 @@ use noido_render::{SearchUpdate, TextSearcher};
 
 /// Seconds after the last change to the field before it is searched.
 pub const DELAY: f64 = 0.2;
-/// The fill over a match on the page, and over the current one.
-pub const HIGHLIGHT_FILL: Color32 = Color32::from_rgba_premultiplied(90, 75, 0, 90);
-pub const CURRENT_FILL: Color32 = Color32::from_rgba_premultiplied(140, 70, 0, 140);
+/// The alpha of the fill over a match, and over the current one.
+const HIGHLIGHT_ALPHA: u8 = 90;
+const CURRENT_ALPHA: u8 = 140;
+
+/// The fill over a match on the page, from the theme's warning colour.
+pub fn highlight_fill(warning: Color32) -> Color32 {
+    Color32::from_rgba_unmultiplied(warning.r(), warning.g(), warning.b(), HIGHLIGHT_ALPHA)
+}
+
+/// The fill over the current match, from the theme's warning colour.
+pub fn current_fill(warning: Color32) -> Color32 {
+    Color32::from_rgba_unmultiplied(warning.r(), warning.g(), warning.b(), CURRENT_ALPHA)
+}
 
 /// What to do with the first hit of a query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -272,6 +282,19 @@ pub fn status_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hits_use_the_warning_colour() {
+        let warning = Color32::from_rgb(0xe5, 0xa5, 0x0a);
+        assert_eq!(
+            highlight_fill(warning),
+            Color32::from_rgba_unmultiplied(0xe5, 0xa5, 0x0a, 90)
+        );
+        assert_eq!(
+            current_fill(warning),
+            Color32::from_rgba_unmultiplied(0xe5, 0xa5, 0x0a, 140)
+        );
+    }
 
     #[test]
     fn counter_text_cases() {
