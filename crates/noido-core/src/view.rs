@@ -32,6 +32,8 @@ pub struct ViewState {
     pub dual: bool,
     /// Dual mode's pairing: see [`LayoutMode::odd_left`].
     pub odd_left: bool,
+    /// No gap between pages.
+    pub gapless: bool,
     pub centre: DocPoint,
 }
 
@@ -77,6 +79,7 @@ impl View {
             dual: defaults.dual,
             odd_left: defaults.odd_left,
             paged: (!defaults.continuous && has_pages).then_some(0),
+            gapless: defaults.gapless,
         });
         let scale = match defaults.zoom {
             StartZoom::Fixed => defaults.fixed_scale(),
@@ -107,6 +110,11 @@ impl View {
     /// Dual mode's pairing: see [`LayoutMode::odd_left`].
     pub fn odd_left(&self) -> bool {
         self.layout.mode().odd_left
+    }
+
+    /// No gap between pages.
+    pub fn gapless(&self) -> bool {
+        self.layout.mode().gapless
     }
 
     /// The spread shown in paged mode.
@@ -182,6 +190,7 @@ impl View {
             continuous: self.continuous(),
             dual: self.dual(),
             odd_left: self.layout.mode().odd_left,
+            gapless: self.gapless(),
             centre,
         })
     }
@@ -197,6 +206,7 @@ impl View {
             odd_left: state.odd_left,
             // A placeholder to mark paged; `restore_place` picks the spread.
             paged: (!state.continuous).then_some(0),
+            gapless: state.gapless,
         });
         self.mode = state.zoom;
         if state.zoom == ZoomMode::Custom {
@@ -296,20 +306,42 @@ impl View {
                 let scale = self.fit_scale(self.mode);
                 self.rescale(scale, centre, centre);
             }
-            Action::ToggleContinuous => {
-                self.switch_mode(self.dual(), self.odd_left(), !self.continuous())
-            }
-            Action::ToggleDual => {
-                self.switch_mode(!self.dual(), self.odd_left(), self.continuous())
-            }
+            Action::ToggleContinuous => self.switch_mode(
+                self.dual(),
+                self.odd_left(),
+                !self.continuous(),
+                self.gapless(),
+            ),
+            Action::ToggleDual => self.switch_mode(
+                !self.dual(),
+                self.odd_left(),
+                self.continuous(),
+                self.gapless(),
+            ),
             // Single pages don't pair: nothing on screen changes.
             Action::ToggleOddLeft if !self.dual() => self.layout.set_mode(LayoutMode {
                 odd_left: !self.odd_left(),
                 ..self.layout.mode()
             }),
-            Action::ToggleOddLeft => {
-                self.switch_mode(self.dual(), !self.odd_left(), self.continuous())
+            Action::ToggleOddLeft => self.switch_mode(
+                self.dual(),
+                !self.odd_left(),
+                self.continuous(),
+                self.gapless(),
+            ),
+            // One page on screen, with no gap either way: nothing moves.
+            Action::ToggleGapless if !self.dual() && !self.continuous() => {
+                self.layout.set_mode(LayoutMode {
+                    gapless: !self.gapless(),
+                    ..self.layout.mode()
+                })
             }
+            Action::ToggleGapless => self.switch_mode(
+                self.dual(),
+                self.odd_left(),
+                self.continuous(),
+                !self.gapless(),
+            ),
             Action::ScrollScreenUp | Action::ScrollScreenDown if !self.continuous() => {
                 self.page_in_paged_mode(action);
             }
@@ -355,7 +387,7 @@ impl View {
     /// Changes the arrangement, keeping the page at the centre: in paged mode
     /// its spread is shown from the top; in continuous mode the centre point
     /// stays in place.
-    fn switch_mode(&mut self, dual: bool, odd_left: bool, continuous: bool) {
+    fn switch_mode(&mut self, dual: bool, odd_left: bool, continuous: bool, gapless: bool) {
         let (cx, cy) = self.centre();
         let (x, y) = (self.offset.0 + cx, self.offset.1 + cy);
         let mut anchor = self.layout.doc_point(x, y);
@@ -368,12 +400,14 @@ impl View {
             dual,
             odd_left,
             paged: None,
+            gapless,
         });
         let paged = (!continuous).then(|| self.layout.spread_of(page));
         self.layout.set_mode(LayoutMode {
             dual,
             odd_left,
             paged,
+            gapless,
         });
         let spread = paged.unwrap_or_else(|| self.layout.spread_of(page));
         let scale = self.fit_scale_for(self.mode, spread);
@@ -1466,6 +1500,7 @@ mod tests {
             continuous,
             dual,
             odd_left: true,
+            gapless: false,
             centre: DocPoint {
                 page,
                 // The horizontal centre of a fit-width page: reachable.
@@ -1477,8 +1512,22 @@ mod tests {
 
     fn assert_same_state(a: ViewState, b: ViewState) {
         assert_eq!(
-            (a.zoom, a.continuous, a.dual, a.odd_left, a.centre.page),
-            (b.zoom, b.continuous, b.dual, b.odd_left, b.centre.page)
+            (
+                a.zoom,
+                a.continuous,
+                a.dual,
+                a.odd_left,
+                a.gapless,
+                a.centre.page
+            ),
+            (
+                b.zoom,
+                b.continuous,
+                b.dual,
+                b.odd_left,
+                b.gapless,
+                b.centre.page
+            )
         );
         assert!((a.scale - b.scale).abs() < 1e-4, "{a:?} vs {b:?}");
         assert_near((a.centre.x, a.centre.y), (b.centre.x, b.centre.y), 0.5);
@@ -1549,6 +1598,73 @@ mod tests {
         view.apply(Action::ToggleOddLeft);
         assert!(view.odd_left());
         assert_eq!(view.current_spread(), Some(2));
+    }
+
+    #[test]
+    fn gapless_is_off_by_default() {
+        assert!(!letter_view().gapless());
+    }
+
+    #[test]
+    fn gapless_fit_width_uses_the_gap_space() {
+        let mut view = View::new(vec![size(612.0, 792.0); 4]);
+        view.set_viewport_size(1260.0, 800.0);
+        view.apply(Action::ToggleDual);
+        let with_gap = view.scale();
+        view.apply(Action::ToggleGapless);
+        assert!(view.gapless());
+        assert!(view.scale() > with_gap, "{} vs {with_gap}", view.scale());
+    }
+
+    #[test]
+    fn toggle_gapless_keeps_centre_in_continuous() {
+        let mut view = letter_view();
+        view.apply(Action::ToggleDual);
+        view.scrolled_to(0.0, 1000.0);
+        let before = doc_at(&view, (200.0, 400.0));
+        view.apply(Action::ToggleGapless);
+        assert!(view.gapless());
+        let after = doc_at(&view, (200.0, 400.0));
+        assert_eq!(after.page, before.page);
+        // Fit width rescales when the gap goes, so only the place on the
+        // page vertically, which the anchor pins, stays.
+        assert!((after.y - before.y).abs() < 1.0, "{after:?} vs {before:?}");
+    }
+
+    #[test]
+    fn toggle_gapless_in_single_paged_keeps_view() {
+        let mut view = paged_view();
+        view.apply(Action::ZoomIn);
+        view.scrolled_to(0.0, 300.0);
+        let before = view.offset();
+        view.apply(Action::ToggleGapless);
+        assert!(view.gapless());
+        assert_eq!(view.offset(), before);
+    }
+
+    #[test]
+    fn toggle_gapless_in_paged_keeps_spread_at_top() {
+        let mut view = paged_view();
+        view.apply(Action::ToggleDual);
+        view.go_to_page(4);
+        let spread = view.current_spread();
+        view.apply(Action::ToggleGapless);
+        assert!(view.gapless());
+        assert_eq!(view.current_spread(), spread);
+        assert_eq!(view.offset().1, 0.0);
+    }
+
+    #[test]
+    fn state_round_trips_gapless() {
+        let mut view = letter_view();
+        view.apply(Action::ToggleDual);
+        view.apply(Action::ToggleGapless);
+        let state = view.state().unwrap();
+        assert!(state.gapless);
+        let mut restored = letter_view();
+        restored.restore(&state);
+        assert!(restored.gapless());
+        assert_same_state(restored.state().unwrap(), state);
     }
 
     #[test]
@@ -1770,6 +1886,20 @@ mod tests {
         assert!(!view.continuous());
         assert_eq!(view.current_spread(), Some(0));
         assert_eq!(view.offset().1, 0.0);
+    }
+
+    #[test]
+    fn with_defaults_gapless() {
+        let view = defaults_view(Defaults {
+            dual: true,
+            gapless: true,
+            ..Defaults::default()
+        });
+        assert!(view.gapless());
+        assert_eq!(
+            view.layout().page_rect(1).unwrap().x,
+            view.layout().page_rect(0).unwrap().x + 612.0 * view.scale()
+        );
     }
 
     #[test]

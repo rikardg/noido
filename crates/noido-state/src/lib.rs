@@ -244,6 +244,8 @@ struct Place {
     // Absent from files written before the setting existed.
     #[serde(default = "yes")]
     odd_left: bool,
+    #[serde(default)]
+    gapless: bool,
     page: usize,
     x: f32,
     y: f32,
@@ -277,6 +279,7 @@ impl Place {
             continuous: state.continuous,
             dual: state.dual,
             odd_left: state.odd_left,
+            gapless: state.gapless,
             page: state.centre.page,
             x: state.centre.x,
             y: state.centre.y,
@@ -294,6 +297,7 @@ impl Place {
             continuous: self.continuous,
             dual: self.dual,
             odd_left: self.odd_left,
+            gapless: self.gapless,
             centre: DocPoint {
                 page: self.page,
                 x: self.x,

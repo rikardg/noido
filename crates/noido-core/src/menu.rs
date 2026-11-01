@@ -8,6 +8,7 @@ pub enum Check {
     Continuous,
     Dual,
     OddLeft,
+    Gapless,
     Sidebar,
 }
 
@@ -42,6 +43,7 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
             check(Action::ToggleContinuous, "Continuous", Check::Continuous),
             check(Action::ToggleDual, "Dual page", Check::Dual),
             check(Action::ToggleOddLeft, "Odd pages left", Check::OddLeft),
+            check(Action::ToggleGapless, "Gapless mode", Check::Gapless),
         ],
         vec![check(Action::ToggleSidebar, "Show sidebar", Check::Sidebar)],
         vec![
@@ -84,7 +86,7 @@ mod tests {
             vec![
                 vec!["Open…"],
                 vec!["Fit width", "Fit page", "Zoom in", "Zoom out"],
-                vec!["Continuous", "Dual page", "Odd pages left"],
+                vec!["Continuous", "Dual page", "Odd pages left", "Gapless mode"],
                 vec!["Show sidebar"],
                 vec!["Back", "Forward"],
                 vec!["Copy link to page", "Copy Markdown link to page"],
@@ -101,7 +103,13 @@ mod tests {
             .collect();
         assert_eq!(
             checked,
-            vec!["Continuous", "Dual page", "Odd pages left", "Show sidebar"]
+            vec![
+                "Continuous",
+                "Dual page",
+                "Odd pages left",
+                "Gapless mode",
+                "Show sidebar"
+            ]
         );
     }
 

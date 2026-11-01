@@ -37,6 +37,8 @@ pub struct LayoutMode {
     /// right, as in a book, then 2|3, 4|5, …
     pub odd_left: bool,
     pub paged: Option<usize>,
+    /// No [`PAGE_GAP`] between rows or between the pages of a spread.
+    pub gapless: bool,
 }
 
 impl Default for LayoutMode {
@@ -45,6 +47,7 @@ impl Default for LayoutMode {
             dual: false,
             odd_left: true,
             paged: None,
+            gapless: false,
         }
     }
 }
@@ -117,7 +120,7 @@ impl Layout {
             .iter()
             .map(|&(spread, _)| self.spread_size(spread).map_or(0.0, |s| s.height) * scale)
             .sum::<f32>()
-            + PAGE_GAP * row_widths.len().saturating_sub(1) as f32;
+            + self.row_gap() * row_widths.len().saturating_sub(1) as f32;
         let mut y = MARGIN + ((available_height - rows_height - 2.0 * MARGIN) / 2.0).max(0.0);
         for (spread, row_width) in row_widths {
             let pages = self.spread_pages(spread);
@@ -143,7 +146,7 @@ impl Layout {
                 height,
                 pages,
             });
-            y += height + PAGE_GAP;
+            y += height + self.row_gap();
         }
         self.content_height = match self.rows.last() {
             Some(last) => available_height.max(last.top + last.height + MARGIN),
@@ -224,7 +227,16 @@ impl Layout {
 
     /// The gap between the pages of a spread, in UI points.
     pub fn spread_gap(&self, _spread: usize) -> f32 {
-        if self.mode.dual { PAGE_GAP } else { 0.0 }
+        if self.mode.dual && !self.mode.gapless {
+            PAGE_GAP
+        } else {
+            0.0
+        }
+    }
+
+    /// The gap between rows, in UI points.
+    fn row_gap(&self) -> f32 {
+        if self.mode.gapless { 0.0 } else { PAGE_GAP }
     }
 
     /// Width of the widest spread in PDF points, gap excluded.
@@ -414,6 +426,7 @@ mod tests {
         dual: true,
         odd_left: true,
         paged: None,
+        gapless: false,
     };
 
     /// Dual with page 1 alone, as in a book.
@@ -488,6 +501,36 @@ mod tests {
         assert_eq!(layout.page_rect(1).unwrap().y, 12.0);
         assert_eq!(layout.page_rect(2).unwrap().y, 12.0 + 792.0 + 12.0);
         assert_eq!(layout.content_width(), 1260.0);
+    }
+
+    #[test]
+    fn gaps_are_on_by_default() {
+        assert!(!LayoutMode::default().gapless);
+    }
+
+    #[test]
+    fn gapless_dual_pages_and_rows_touch() {
+        let mode = LayoutMode {
+            gapless: true,
+            ..DUAL
+        };
+        let layout = arranged(letters(4), mode, 1224.0);
+        assert_eq!(layout.page_rect(0).unwrap().x, 12.0);
+        assert_eq!(layout.page_rect(1).unwrap().x, 12.0 + 612.0);
+        assert_eq!(layout.page_rect(2).unwrap().y, 12.0 + 792.0);
+        assert_eq!(layout.content_height(), 12.0 + 2.0 * 792.0 + 12.0);
+    }
+
+    #[test]
+    fn gapless_single_pages_stack_touch() {
+        let mode = LayoutMode {
+            gapless: true,
+            ..LayoutMode::default()
+        };
+        let layout = arranged(letters(3), mode, 636.0);
+        assert_eq!(layout.page_rect(1).unwrap().y, 12.0 + 792.0);
+        assert_eq!(layout.page_rect(2).unwrap().y, 12.0 + 2.0 * 792.0);
+        assert_eq!(layout.content_height(), 12.0 + 3.0 * 792.0 + 12.0);
     }
 
     #[test]

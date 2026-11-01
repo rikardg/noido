@@ -102,6 +102,7 @@ pub fn show(
         ui.checkbox(&mut new.continuous, label("Continuous", builtin.continuous));
         ui.checkbox(&mut new.dual, label("Dual page", builtin.dual));
         ui.checkbox(&mut new.odd_left, label("Odd pages left", builtin.odd_left));
+        ui.checkbox(&mut new.gapless, label("Gapless mode", builtin.gapless));
         ui.checkbox(&mut new.sidebar, label("Show sidebar", builtin.sidebar));
         ui.add_space(8.0);
 
