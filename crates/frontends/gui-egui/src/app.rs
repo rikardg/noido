@@ -4272,6 +4272,37 @@ mod tests {
     }
 
     #[test]
+    fn settings_uses_the_dialog_fill() {
+        let mut h = Harness::new();
+        let palette = h.theme().palette(egui::Theme::Dark);
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, None, Action::OpenSettings);
+        h.frames(30, vec![]);
+        let dialog = egui::CornerRadius::same(18);
+        assert!(
+            filled_rects_deep(&h, palette.dialog_fill)
+                .iter()
+                .any(|r| r.corner_radius == dialog),
+            "settings frame not at the dialog radius"
+        );
+    }
+
+    #[test]
+    fn info_uses_the_dialog_fill() {
+        let mut h = with_info_source(b"Info Title");
+        show_info(&mut h);
+        h.frames(30, vec![]);
+        let palette = h.theme().palette(egui::Theme::Dark);
+        let dialog = egui::CornerRadius::same(18);
+        assert!(
+            filled_rects_deep(&h, palette.dialog_fill)
+                .iter()
+                .any(|r| r.corner_radius == dialog),
+            "info frame not at the dialog radius"
+        );
+    }
+
+    #[test]
     fn menu_labels_use_the_menu_text_colour() {
         let mut h = Harness::new();
         let palette = h.theme().palette(egui::Theme::Dark);
@@ -4308,12 +4339,12 @@ mod tests {
         );
     }
 
-    /// The rectangles filled with `colour`, including shapes nested in a
-    /// `Shape::Vec` such as a popup's frame.
-    fn filled_deep(h: &Harness, colour: Color32) -> Vec<Rect> {
-        fn find(shape: &egui::Shape, colour: Color32, out: &mut Vec<Rect>) {
+    /// The rectangles filled with `colour`, including nested shapes and
+    /// their corner radii.
+    fn filled_rects_deep(h: &Harness, colour: Color32) -> Vec<egui::epaint::RectShape> {
+        fn find(shape: &egui::Shape, colour: Color32, out: &mut Vec<egui::epaint::RectShape>) {
             match shape {
-                egui::Shape::Rect(r) if r.fill == colour => out.push(r.rect),
+                egui::Shape::Rect(r) if r.fill == colour => out.push(r.clone()),
                 egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| find(s, colour, out)),
                 _ => {}
             }
@@ -4323,6 +4354,15 @@ mod tests {
             find(&clipped.shape, colour, &mut out);
         }
         out
+    }
+
+    /// The rectangles filled with `colour`, including shapes nested in a
+    /// `Shape::Vec` such as a popup's frame.
+    fn filled_deep(h: &Harness, colour: Color32) -> Vec<Rect> {
+        filled_rects_deep(h, colour)
+            .into_iter()
+            .map(|r| r.rect)
+            .collect()
     }
 
     /// The tints of the textured meshes drawn last frame: pages and
