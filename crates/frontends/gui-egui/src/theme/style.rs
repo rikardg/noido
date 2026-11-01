@@ -262,6 +262,18 @@ fn input(theme: &ResolvedTheme, style: &mut egui::Style) {
     active.fg_stroke = Stroke::new(2.0, text);
     active.corner_radius = radius;
 
+    style.spacing.button_padding = Vec2::new(
+        input
+            .border
+            .padding
+            .left
+            .unwrap_or(style.spacing.button_padding.x),
+        input
+            .border
+            .padding
+            .top
+            .unwrap_or(style.spacing.button_padding.y),
+    );
     style.spacing.interact_size.y = input.min_height;
     style.text_styles.insert(
         TextStyle::Body,

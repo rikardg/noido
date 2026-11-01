@@ -9,6 +9,8 @@ use eframe::egui::{
 };
 use noido_core::{Action, Check, Keymap, Platform, SidebarState, menu, shortcut_label};
 
+use crate::theme;
+
 /// Height of the bar, in UI points.
 pub const TITLE_BAR_HEIGHT: f32 = 40.0;
 /// The search field's height: egui's 20 pt and 2 pt more above and below.
@@ -23,8 +25,6 @@ const ICON_BUTTON: f32 = 28.0;
 const STATUS_GAP: f32 = 8.0;
 /// Room left for macOS's window buttons at the bar's left.
 const TRAFFIC_LIGHTS_INSET: f32 = 76.0;
-/// The close button's colour on hover.
-const CLOSE_HOVER: Color32 = Color32::from_rgb(0xc0, 0x1c, 0x28);
 
 /// What the bar shows.
 pub struct Bar<'a> {
@@ -119,7 +119,10 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
             ui.add_space(TRAFFIC_LIGHTS_INSET);
         }
         let toggle =
-            icon_button(ui, bar.sidebar.open, paint_sidebar_icon).on_hover_text("Sidebar (F9)");
+            theme::hover_text(
+            icon_button(ui, bar.sidebar.open, paint_sidebar_icon),
+            "Sidebar (F9)",
+        );
         if toggle.clicked() {
             output.actions.push(Action::ToggleSidebar);
         }
@@ -131,16 +134,17 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         } else {
             SEARCH_HIDDEN_WIDTH
         };
-        // The native input height is taller than the compact title bar allows.
-        ui.spacing_mut().interact_size.y = SEARCH_HEIGHT;
-        ui.spacing_mut().button_padding.y = 2.0;
-        let field = ui.add(
-            egui::TextEdit::singleline(search)
-                .hint_text("Search")
-                .desired_width(width.max(SEARCH_MIN_WIDTH))
-                .min_size(vec2(0.0, SEARCH_HEIGHT))
-                .align(Align2::LEFT_CENTER),
-        );
+        let field = theme::scope(ui, theme::Role::Input, |ui| {
+            // The native input height is taller than the compact title bar allows.
+            ui.spacing_mut().interact_size.y = SEARCH_HEIGHT;
+            ui.add(
+                egui::TextEdit::singleline(search)
+                    .hint_text("Search")
+                    .desired_width(width.max(SEARCH_MIN_WIDTH))
+                    .min_size(vec2(0.0, SEARCH_HEIGHT))
+                    .align(Align2::LEFT_CENTER),
+            )
+        });
         let (enter, escape, shift) = ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Enter),
@@ -178,7 +182,7 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
                 output.rects.close = window_buttons(ui, maximized);
                 ui.add_space(ui.spacing().item_spacing.x * 2.0);
             }
-            let menu_button = icon_button(ui, false, paint_menu_icon).on_hover_text("Menu");
+            let menu_button = theme::hover_text(icon_button(ui, false, paint_menu_icon), "Menu");
             output.rects.menu = menu_button.rect;
             egui::Popup::menu(&menu_button).show(|ui| {
                 menu_entries(ui, bar, &mut output.actions);
@@ -250,25 +254,30 @@ fn paint_title(ui: &egui::Ui, rect: Rect, centre: f32, bar: &Bar) {
     let total = name.size().x + STATUS_GAP + status.size().x;
     let left = (centre - total / 2.0).clamp(rect.left(), (rect.right() - total).max(rect.left()));
     let painter = ui.painter_at(rect);
-    let colour = ui.visuals().text_color();
+    let palette = theme::Theme::current(ui.ctx()).palette(ui.ctx().theme());
     let top = |height: f32| rect.center().y - height / 2.0;
     let status_left = left + name.size().x + STATUS_GAP;
-    painter.galley(pos2(left, top(name.size().y)), name, colour);
-    painter.galley(pos2(status_left, top(status.size().y)), status, colour);
+    painter.galley(pos2(left, top(name.size().y)), name, palette.title_text);
+    painter.galley(
+        pos2(status_left, top(status.size().y)),
+        status,
+        palette.muted,
+    );
 }
 
 /// Minimise, maximise or restore, and close, right to left from the bar's
 /// right end; returns the close button's rect.
 fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Rect {
-    let close = icon_button(ui, false, paint_close_icon).on_hover_text("Close");
+    let close = theme::hover_text(icon_button(ui, false, paint_close_icon), "Close");
+    let palette = theme::Theme::current(ui.ctx()).palette(ui.ctx().theme());
     if close.hovered() {
-        // Redrawn in red over the plain hover.
+        // Redrawn in the danger colour over the plain hover.
         ui.painter().rect_filled(
             close.rect,
             ui.visuals().widgets.hovered.corner_radius,
-            CLOSE_HOVER,
+            palette.danger,
         );
-        paint_close_icon(ui.painter(), close.rect.shrink(8.0), Color32::WHITE);
+        paint_close_icon(ui.painter(), close.rect.shrink(8.0), palette.danger_text);
     }
     if close.clicked() {
         ui.send_viewport_cmd(ViewportCommand::Close);
@@ -278,13 +287,10 @@ fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Rect {
     } else {
         (paint_maximise_icon, "Maximise")
     };
-    if icon_button(ui, false, paint).on_hover_text(hint).clicked() {
+    if theme::hover_text(icon_button(ui, false, paint), hint).clicked() {
         ui.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
     }
-    if icon_button(ui, false, paint_minimise_icon)
-        .on_hover_text("Minimise")
-        .clicked()
-    {
+    if theme::hover_text(icon_button(ui, false, paint_minimise_icon), "Minimise").clicked() {
         ui.send_viewport_cmd(ViewportCommand::Minimized(true));
     }
     close.rect
