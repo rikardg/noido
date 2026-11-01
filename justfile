@@ -37,3 +37,7 @@ run file: build
 # update ~/.cargo/bin/noido
 install:
     cargo install --locked --path crates/frontends/gui-egui
+
+# build noido.app into target/app (macOS)
+app: build
+    target/release/noido --app-bundle target/app

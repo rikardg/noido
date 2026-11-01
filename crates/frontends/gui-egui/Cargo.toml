@@ -26,6 +26,10 @@ ctrlc.workspace = true
 notify.workspace = true
 interprocess.workspace = true
 blake3.workspace = true
+roxmltree.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+noido-macos.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

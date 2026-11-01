@@ -61,6 +61,12 @@ pub fn pick_pdf(frame: Option<&eframe::Frame>, directory: Option<PathBuf>, on_pi
 /// process hands over to the window that has it and exits.
 pub fn open(path: &Path) {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("noido"));
+    // In the app bundle, NSWorkspace starts the window, in front.
+    #[cfg(target_os = "macos")]
+    if let Some(app) = crate::app_bundle::bundle_of(&exe) {
+        noido_macos::launch_in_bundle(&app, &[path.into()], |_| {});
+        return;
+    }
     // Detached: the new window's output is not ours to show.
     let _ = std::process::Command::new(exe)
         .arg(path)

@@ -6,18 +6,22 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 /// The file's name, which is also what the desktop calls the app.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const FILE_NAME: &str = "noido.desktop";
 
 /// Rebuilds the MIME type cache of an applications directory.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const REFRESH_TOOL: &str = "update-desktop-database";
 
 /// Where things go: the applications directory and the binary to launch.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub struct Places {
     pub applications: PathBuf,
     pub exe: PathBuf,
 }
 
 /// One change to the system.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 #[derive(Debug, PartialEq)]
 pub enum Step {
     /// Write the `.desktop` file; `replaces` when a different one is there.
@@ -32,6 +36,7 @@ pub enum Step {
 }
 
 /// What a command will do.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 #[derive(Debug, PartialEq)]
 pub enum Plan {
     /// Already done; says why.
@@ -40,6 +45,7 @@ pub enum Plan {
 }
 
 /// The `.desktop` file launching `exe`.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn desktop_entry(exe: &Path) -> Result<String, String> {
     let exe = exe
         .to_str()
@@ -64,6 +70,7 @@ pub fn desktop_entry(exe: &Path) -> Result<String, String> {
 /// `arg` as written in an `Exec` value: quoted when it holds a reserved
 /// character, `%` doubled, and backslashes doubled again for the key file's
 /// own escaping.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn exec_argument(arg: &str) -> String {
     const RESERVED: &str = " \t\n\"'\\><~|&;$*?#()`";
     let quoted = if arg.chars().any(|c| RESERVED.contains(c)) {
@@ -82,6 +89,7 @@ fn exec_argument(arg: &str) -> String {
     quoted.replace('%', "%%").replace('\\', "\\\\")
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn plan_install(places: &Places) -> Result<Plan, String> {
     let path = places.applications.join(FILE_NAME);
     let contents = desktop_entry(&places.exe)?;
@@ -102,6 +110,7 @@ pub fn plan_install(places: &Places) -> Result<Plan, String> {
     ]))
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn plan_uninstall(places: &Places) -> Plan {
     let path = places.applications.join(FILE_NAME);
     if !path.exists() {
@@ -114,6 +123,7 @@ pub fn plan_uninstall(places: &Places) -> Plan {
 }
 
 /// One line for the list shown before asking.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn describe(step: &Step) -> String {
     match step {
         Step::Write {
@@ -140,6 +150,7 @@ pub fn confirmed(answer: Option<&str>) -> bool {
 
 /// Carries out the steps in order. Returns notes to show, e.g. a skipped
 /// refresh; stops at the first failure.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn carry_out(steps: &[Step], refresh_tool: &str) -> Result<Vec<String>, String> {
     let mut notes = Vec::new();
     for step in steps {
@@ -171,6 +182,7 @@ pub fn carry_out(steps: &[Step], refresh_tool: &str) -> Result<Vec<String>, Stri
     Ok(notes)
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 impl Places {
     /// This system's applications directory and the running binary.
     fn here() -> Result<Self, String> {
@@ -193,6 +205,7 @@ impl Places {
 }
 
 /// `noido --install`.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn install() -> Result<(), String> {
     let places = Places::here()?;
     println!("This adds noido to your desktop's apps for PDFs, launching");
@@ -204,24 +217,18 @@ pub fn install() -> Result<(), String> {
 }
 
 /// `noido --uninstall`.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn uninstall() -> Result<(), String> {
     let places = Places::here()?;
     println!("This removes noido from your desktop's apps.");
     proceed(plan_uninstall(&places))
 }
 
-/// Shows the steps, asks, and carries them out on a yes.
-fn proceed(plan: Plan) -> Result<(), String> {
-    let steps = match plan {
-        Plan::Nothing(why) => {
-            println!("{why}. Nothing to do.");
-            return Ok(());
-        }
-        Plan::Steps(steps) => steps,
-    };
+/// Prints the lines indented and asks "Proceed? [y/N]"; whether to go ahead.
+pub fn ask_to_proceed(lines: &[String]) -> Result<bool, String> {
     println!();
-    for step in &steps {
-        println!("  {}", describe(step));
+    for line in lines {
+        println!("  {line}");
     }
     println!();
     print!("Proceed? [y/N] ");
@@ -234,7 +241,21 @@ fn proceed(plan: Plan) -> Result<(), String> {
         // No answer was typed, so the prompt's line is still open.
         println!();
     }
-    if !confirmed((read > 0).then_some(answer.as_str())) {
+    Ok(confirmed((read > 0).then_some(answer.as_str())))
+}
+
+/// Shows the steps, asks, and carries them out on a yes.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn proceed(plan: Plan) -> Result<(), String> {
+    let steps = match plan {
+        Plan::Nothing(why) => {
+            println!("{why}. Nothing to do.");
+            return Ok(());
+        }
+        Plan::Steps(steps) => steps,
+    };
+    let lines: Vec<String> = steps.iter().map(describe).collect();
+    if !ask_to_proceed(&lines)? {
         println!("Nothing changed.");
         return Ok(());
     }
