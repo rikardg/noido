@@ -3112,9 +3112,9 @@ mod tests {
 
     fn show_info(h: &mut Harness) {
         h.press(egui::Key::I, Modifiers::COMMAND);
-        h.until(|h| h.text_rect("Info Title").is_some());
-        // The page takes its new size the frame after.
-        h.frames(2, vec![]);
+        // The page takes its new size as the properties arrive; wait for its
+        // last font row rather than a fixed number of frames.
+        h.until(|h| h.text_rect("Regular, Italic").is_some());
         assert!(h.app.info_page.is_some(), "document info not shown");
     }
 
