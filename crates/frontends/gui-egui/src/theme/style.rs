@@ -3,10 +3,15 @@
 use eframe::egui::{self, Color32, FontFamily, FontId, Frame, Margin, Stroke, TextStyle, Vec2};
 use native_theme::ResolvedTheme;
 
-use super::{Layout, Role, Surface, convert};
+use super::{Layout, Role, Surface, convert, fonts::Fonts};
 
 /// Builds the style for one variant.
-pub(super) fn global(theme: &ResolvedTheme, layout: &Layout, mode: egui::Theme) -> egui::Style {
+pub(super) fn global(
+    theme: &ResolvedTheme,
+    layout: &Layout,
+    fonts: &Fonts,
+    mode: egui::Theme,
+) -> egui::Style {
     let mut style = egui::Style {
         visuals: match mode {
             egui::Theme::Light => egui::Visuals::light(),
@@ -134,7 +139,7 @@ pub(super) fn global(theme: &ResolvedTheme, layout: &Layout, mode: egui::Theme) 
     );
     style.text_styles.insert(
         TextStyle::Heading,
-        FontId::new(theme.text_scale.dialog_title.size, FontFamily::Proportional),
+        FontId::new(theme.text_scale.dialog_title.size, fonts.heading_family()),
     );
 
     style
