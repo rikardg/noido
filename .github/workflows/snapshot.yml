@@ -1,0 +1,107 @@
+name: Snapshot
+
+# One button press: build Linux and macOS, and add a pre-release to the
+# release list. Nothing is versioned by hand; the tag carries the time and the
+# commit, and each binary stamps the commit it came from into --version.
+# Tagged releases, the Homebrew formula and the macOS app stay with the
+# planned dist workflow (docs/investigations/2026-10-26-versioning-and-releases.md).
+
+on:
+    workflow_dispatch:
+        inputs:
+            note:
+                description: Optional first line for the release notes
+                required: false
+                type: string
+            draft:
+                description: Leave it as a draft, outside the release list, to check it first
+                required: false
+                type: boolean
+                default: false
+    # A branch whose name starts with snapshot-test tries the whole flow:
+    # build, pack, upload, draft release.
+    push:
+        branches: ["snapshot-test*"]
+
+# The builds only read
+permissions:
+    contents: read
+
+# Two presses at once would race for the tag name; the second waits its turn.
+concurrency:
+    group: snapshot
+    cancel-in-progress: false
+
+env:
+    CARGO_TERM_COLOR: always
+
+jobs:
+    build:
+        name: build (${{ matrix.target }})
+        runs-on: ${{ matrix.os }}
+        env:
+            # Shown by `noido --version`. The workflow is the source of truth.
+            NOIDO_GIT_SHA: ${{ github.sha }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    # The images CI checks. 22.04 keeps the binary's glibc floor
+                    # at 2.35.
+                    - os: ubuntu-22.04
+                      target: x86_64-unknown-linux-gnu
+                    - os: macos-26
+                      target: aarch64-apple-darwin
+        steps:
+            - uses: actions/checkout@v7
+            # Caches target/ through Swatinem/rust-cache by default. The version
+            # survives the cache: build.rs reruns when NOIDO_GIT_SHA changes.
+            - uses: actions-rust-lang/setup-rust-toolchain@v1
+            - uses: taiki-e/install-action@v2
+              with:
+                  tool: just
+            - run: just snapshot ${{ matrix.target }}
+            - uses: actions/upload-artifact@v7
+              with:
+                  name: ${{ matrix.target }}
+                  path: dist/*
+                  if-no-files-found: error
+
+    publish:
+        name: publish
+        needs: build
+        runs-on: ubuntu-22.04
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/download-artifact@v8
+              with:
+                  path: dist
+                  merge-multiple: true
+            - name: Add the release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  GH_REPO: ${{ github.repository }}
+                  NOTE: ${{ inputs.note }}
+                  SHA: ${{ github.sha }}
+                  # A push has no form to tick, and must never publish on its
+                  # own: the branch's run leaves a draft.
+                  DRAFT: ${{ github.event_name == 'push' || inputs.draft }}
+              run: |
+                  set -eu
+                  short=$(printf '%s' "$SHA" | cut -c1-8)
+                  stamp=$(date -u +%Y%m%d-%H%M)
+                  tag="snapshot-$stamp-$short"
+                  {
+                      if [ -n "${NOTE:-}" ]; then printf '%s\n\n' "$NOTE"; fi
+                      printf 'Snapshot of commit `%s`.\n\n' "$short"
+                      printf '[Source](https://github.com/%s/tree/%s)\n' "$GH_REPO" "$SHA"
+                  } > notes.md
+                  draft=""
+                  if [ "${DRAFT:-}" = "true" ]; then draft=--draft; fi
+                  gh release create "$tag" dist/* \
+                      --target "$SHA" \
+                      --title "Snapshot $stamp ($short)" \
+                      --notes-file notes.md \
+                      --prerelease \
+                      $draft

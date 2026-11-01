@@ -25,3 +25,6 @@ rustc-ice-*.txt
 
 # superpowers plan workspaces
 .superpowers/
+
+# snapshot builds (just snapshot)
+/dist/
