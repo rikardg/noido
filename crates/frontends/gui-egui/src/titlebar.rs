@@ -184,9 +184,16 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
             }
             let menu_button = theme::hover_text(icon_button(ui, false, paint_menu_icon), "Menu");
             output.rects.menu = menu_button.rect;
-            egui::Popup::menu(&menu_button).show(|ui| {
-                menu_entries(ui, bar, &mut output.actions);
-            });
+            let menu_theme = theme::Theme::current(ui.ctx());
+            let mode = ui.ctx().theme();
+            egui::Popup::menu(&menu_button)
+                .style(move |style: &mut egui::Style| {
+                    egui::menu::menu_style(&mut *style);
+                    menu_theme.apply_role(mode, style, theme::Role::Menu);
+                })
+                .show(|ui| {
+                    menu_entries(ui, bar, &mut output.actions);
+                });
 
             let rest = ui.available_rect_before_wrap();
             paint_title(ui, rest, full.center().x, bar);
@@ -196,6 +203,12 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
 }
 
 fn menu_entries(ui: &mut egui::Ui, bar: &Bar, actions: &mut Vec<Action>) {
+    eprintln!(
+        "MENU STYLE inactive={:?} noninteractive={:?} weak={:?}",
+        ui.visuals().widgets.inactive.fg_stroke.color,
+        ui.visuals().widgets.noninteractive.fg_stroke.color,
+        ui.visuals().weak_text_color()
+    );
     let platform = if cfg!(target_os = "macos") {
         Platform::Mac
     } else {
@@ -215,18 +228,16 @@ fn menu_entries(ui: &mut egui::Ui, bar: &Bar, actions: &mut Vec<Action>) {
                 None => false,
             };
             // An invisible mark keeps all labels aligned.
-            let mark = RichText::new("✔").color(if checked {
-                ui.visuals().text_color()
-            } else {
-                Color32::TRANSPARENT
-            });
+            let text = ui.visuals().widgets.inactive.fg_stroke.color;
+            let mark = RichText::new("✔").color(if checked { text } else { Color32::TRANSPARENT });
+            let label = RichText::new(entry.label).color(text);
             let shortcut = bar
                 .keymap
                 .key_for(entry.action)
                 .map(|press| shortcut_label(press, platform))
                 .unwrap_or_default();
             if ui
-                .add(egui::Button::new((mark, entry.label)).shortcut_text(shortcut))
+                .add(egui::Button::new((mark, label)).shortcut_text(shortcut))
                 .clicked()
             {
                 actions.push(entry.action);
