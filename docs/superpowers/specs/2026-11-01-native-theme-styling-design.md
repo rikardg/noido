@@ -90,7 +90,9 @@ into `app.rs`; if a second consumer appears, the module can move to a crate.
   from `native-theme`) resolved for the current egui mode; never leave the
   UI unstyled.
 - Install a `Style` for both `egui::Theme::Light` and `Dark` with
-  `Context::set_style_of`, and keep `ThemePreference::System`.
+  `Context::set_style_of`, and select the mode `native-theme` reports with
+  `Context::set_theme`. egui's `ThemePreference::System` cannot supply it on
+  Linux: winit reports no system theme there, so egui falls back to dark.
 - Watch the OS theme with `native-theme`'s `watch` feature. The callback runs
   off the UI thread: clear the detection caches, re-read `SystemTheme`, send
   it to the UI thread and ask egui to repaint. The app installs the new theme

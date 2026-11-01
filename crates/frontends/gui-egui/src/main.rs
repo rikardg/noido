@@ -126,6 +126,7 @@ fn run(opening: Opening) -> Result<(), String> {
     let ctx = egui::Context::default();
     let theme = theme::Theme::from_system();
     theme.install(&ctx);
+    let theme_live = theme::Live::start(&ctx);
     // Mod +/-/0 zoom the document, not egui's interface.
     ctx.options_mut(|o| {
         o.zoom_with_keyboard = false;
@@ -195,6 +196,7 @@ fn run(opening: Opening) -> Result<(), String> {
         .with_searcher(searcher)
         .with_linker(linker)
         .with_source(source);
+    let app = app.with_theme(theme_live);
     let app = match activation {
         Some(activation) => app.with_activation(activation),
         None => app,

@@ -444,7 +444,6 @@ fn scrollbar(theme: &ResolvedTheme, style: &mut egui::Style) {
 }
 
 /// The frame for a surface with its own padding, radius or fill.
-#[allow(dead_code)]
 pub(super) fn frame(theme: &ResolvedTheme, surface: Surface, style: &egui::Style) -> Frame {
     match surface {
         Surface::TitleBar => Frame::NONE

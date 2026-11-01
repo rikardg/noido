@@ -203,12 +203,6 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
 }
 
 fn menu_entries(ui: &mut egui::Ui, bar: &Bar, actions: &mut Vec<Action>) {
-    eprintln!(
-        "MENU STYLE inactive={:?} noninteractive={:?} weak={:?}",
-        ui.visuals().widgets.inactive.fg_stroke.color,
-        ui.visuals().widgets.noninteractive.fg_stroke.color,
-        ui.visuals().weak_text_color()
-    );
     let platform = if cfg!(target_os = "macos") {
         Platform::Mac
     } else {

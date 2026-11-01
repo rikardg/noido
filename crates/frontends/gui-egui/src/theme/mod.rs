@@ -6,12 +6,15 @@
 
 mod convert;
 mod fonts;
+mod live;
 mod style;
 
 use std::sync::Arc;
 
 use eframe::egui::{self, Color32};
 use native_theme::ResolvedTheme;
+
+pub use live::Live;
 
 const THEME_ID: &str = "noido-theme";
 
@@ -22,7 +25,7 @@ struct Layout {
 }
 
 /// A native widget definition applied to a subtree.
-// Used by the surface tasks after the role layer lands.
+// Some roles are available to future surfaces but not used yet.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -37,7 +40,7 @@ pub enum Role {
 }
 
 /// A surface with its own native frame.
-// Used by the surface tasks after the role layer lands.
+// Some surfaces are available to future callers but not used yet.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
@@ -50,8 +53,6 @@ pub enum Surface {
 }
 
 /// The parts of the theme the custom-painted chrome needs.
-// Used by the surfaces in the tasks after the global style lands.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     pub panel: Color32,
@@ -84,6 +85,7 @@ pub struct Theme {
     dark: ResolvedTheme,
     layout: Layout,
     fonts: fonts::Fonts,
+    mode: egui::Theme,
 }
 
 impl Theme {
@@ -97,6 +99,7 @@ impl Theme {
             dark,
             layout: Layout::default(),
             fonts: fonts::Fonts::default(),
+            mode: egui::Theme::Dark,
         })
     }
 
@@ -107,23 +110,16 @@ impl Theme {
         )
     }
 
+    /// Reads the OS theme without falling back; a failure keeps the current theme.
+    fn try_from_system() -> Result<Self, String> {
+        native_theme::SystemTheme::from_system()
+            .map(Self::from_native)
+            .map_err(|error| error.to_string())
+    }
+
     fn from_system_result(result: Result<native_theme::SystemTheme, String>) -> Self {
         match result {
-            Ok(system) => {
-                let fonts = match system.mode {
-                    native_theme::ColorMode::Dark => fonts::Fonts::load(&system.dark),
-                    _ => fonts::Fonts::load(&system.light),
-                };
-                Self {
-                    light: system.light,
-                    dark: system.dark,
-                    layout: Layout {
-                        widget_gap: system.layout.widget_gap,
-                        window_margin: system.layout.window_margin,
-                    },
-                    fonts,
-                }
-            }
+            Ok(system) => Self::from_native(system),
             Err(error) => {
                 eprintln!("noido: cannot read the system theme ({error}); using Adwaita");
                 Self::preset("adwaita").expect("the bundled Adwaita preset exists")
@@ -131,8 +127,28 @@ impl Theme {
         }
     }
 
+    fn from_native(system: native_theme::SystemTheme) -> Self {
+        let mode = match system.mode {
+            native_theme::ColorMode::Dark => egui::Theme::Dark,
+            _ => egui::Theme::Light,
+        };
+        let fonts = match mode {
+            egui::Theme::Dark => fonts::Fonts::load(&system.dark),
+            egui::Theme::Light => fonts::Fonts::load(&system.light),
+        };
+        Self {
+            light: system.light,
+            dark: system.dark,
+            layout: Layout {
+                widget_gap: system.layout.widget_gap,
+                window_margin: system.layout.window_margin,
+            },
+            fonts,
+            mode,
+        }
+    }
+
     /// The theme currently installed on `ctx`.
-    #[allow(dead_code)]
     pub fn current(ctx: &egui::Context) -> Arc<Self> {
         ctx.data(|data| data.get_temp::<Arc<Self>>(egui::Id::unique(THEME_ID)))
             .expect("the noido theme is installed before the UI runs")
@@ -140,6 +156,7 @@ impl Theme {
 
     /// Installs both variants and remembers this theme for custom painting.
     pub fn install(&self, ctx: &egui::Context) {
+        ctx.set_theme(self.mode);
         fonts::install(ctx, &self.fonts);
         ctx.set_style_of(egui::Theme::Light, self.style(egui::Theme::Light));
         ctx.set_style_of(egui::Theme::Dark, self.style(egui::Theme::Dark));
@@ -159,13 +176,11 @@ impl Theme {
     }
 
     /// The frame for a surface with its own padding, radius or fill.
-    #[allow(dead_code)]
     pub fn frame(&self, mode: egui::Theme, surface: Surface, style: &egui::Style) -> egui::Frame {
         style::frame(self.variant(mode), surface, style)
     }
 
     /// The values custom-painted UI reads.
-    #[allow(dead_code)]
     pub fn palette(&self, mode: egui::Theme) -> Palette {
         let theme = self.variant(mode);
         Palette {
@@ -210,7 +225,6 @@ pub fn install_preset(ctx: &egui::Context, name: &str) {
 }
 
 /// Runs `add` with one native role's style.
-#[allow(dead_code)]
 pub fn scope<R>(ui: &mut egui::Ui, role: Role, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let theme = Theme::current(ui.ctx());
     let mode = ui.ctx().theme();
@@ -224,13 +238,11 @@ pub fn scope<R>(ui: &mut egui::Ui, role: Role, add: impl FnOnce(&mut egui::Ui) -
 }
 
 /// Shows `text` over `response` with the tooltip role.
-#[allow(dead_code)]
 pub fn hover_text(response: egui::Response, text: impl Into<egui::WidgetText>) -> egui::Response {
     tooltip(response, text.into(), false)
 }
 
 /// Shows `text` at the pointer with the tooltip role.
-#[allow(dead_code)]
 pub fn hover_text_at_pointer(
     response: egui::Response,
     text: impl Into<egui::WidgetText>,
@@ -238,7 +250,6 @@ pub fn hover_text_at_pointer(
     tooltip(response, text.into(), true)
 }
 
-#[allow(dead_code)]
 fn tooltip(response: egui::Response, text: egui::WidgetText, at_pointer: bool) -> egui::Response {
     let ctx = response.ctx.clone();
     let theme = Theme::current(&ctx);
@@ -297,6 +308,16 @@ mod tests {
         output.drop_without_applying_deltas();
         assert_ne!(inside, outside);
         assert_eq!(outside, Some(Color32::from_rgb(0x22, 0x22, 0x26)));
+    }
+
+    #[test]
+    fn install_selects_the_theme_mode() {
+        let ctx = egui::Context::default();
+        ctx.set_theme(ThemePreference::Dark);
+        let mut theme = Theme::preset("adwaita").expect("adwaita");
+        theme.mode = egui::Theme::Light;
+        theme.install(&ctx);
+        assert_eq!(ctx.theme(), egui::Theme::Light);
     }
 
     #[test]
