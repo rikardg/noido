@@ -14,6 +14,7 @@ mod open;
 mod search;
 mod settings;
 mod sidebar;
+mod theme;
 mod titlebar;
 mod watch;
 
@@ -123,6 +124,8 @@ fn run(opening: Opening) -> Result<(), String> {
 
     // Created up front so the render thread can wake the UI when a page is ready.
     let ctx = egui::Context::default();
+    let theme = theme::Theme::from_system();
+    theme.install(&ctx);
     // Mod +/-/0 zoom the document, not egui's interface.
     ctx.options_mut(|o| {
         o.zoom_with_keyboard = false;

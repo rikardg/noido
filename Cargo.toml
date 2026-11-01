@@ -29,6 +29,7 @@ noido-state = { path = "crates/noido-state" }
 noido-text = { path = "crates/noido-text" }
 hayro = "0.8"
 eframe = { version = "0.37", features = ["persistence"] }
+native-theme = { version = "0.7", default-features = false, features = ["native", "watch", "system-fonts"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 blake3 = "1"
