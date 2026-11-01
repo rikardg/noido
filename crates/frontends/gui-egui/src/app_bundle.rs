@@ -1,11 +1,13 @@
 //! The macOS app bundle, `noido.app`, as files on disk: the `Info.plist`
 //! text, reading its identity back, and writing the bundle. Pure file work,
 //! so it is tested on every platform.
-#![allow(dead_code)]
+// Off macOS only the tests reach most of this.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
 
 /// The bundle identifier Launch Services knows noido by.
+#[allow(dead_code)]
 pub const IDENTIFIER: &str = "io.github.rikardg.noido";
 
 /// The bundle's directory name.
@@ -48,6 +50,7 @@ pub fn info_plist(version: &str) -> String {
 }
 
 /// What an installed bundle says about itself.
+#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub struct Identity {
     pub identifier: String,
@@ -56,6 +59,7 @@ pub struct Identity {
 
 /// The identifier and version in a plist's top-level dict; `None` when it
 /// is not XML or lacks either.
+#[allow(dead_code)]
 pub fn identity(plist_xml: &str) -> Option<Identity> {
     let doc = roxmltree::Document::parse(plist_xml).ok()?;
     let dict = doc
@@ -79,6 +83,7 @@ pub fn identity(plist_xml: &str) -> Option<Identity> {
 }
 
 /// The identity of the bundle at `app`, `None` when its plist is unreadable.
+#[allow(dead_code)]
 pub fn read_identity(app: &Path) -> Option<Identity> {
     identity(&std::fs::read_to_string(app.join("Contents/Info.plist")).ok()?)
 }
@@ -109,6 +114,7 @@ pub fn write_bundle(exe: &Path, app: &Path, version: &str) -> Result<(), String>
 
 /// The `X.app` when `exe` is `X.app/Contents/MacOS/<name>`, judged by the
 /// path's components alone.
+#[allow(dead_code)]
 pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
@@ -134,9 +140,75 @@ pub fn in_temp_dir(dir: &Path) -> bool {
         .any(|t| dir.starts_with(t))
 }
 
+/// The program that signs a bundle.
+pub const CODESIGN: &str = "codesign";
+
+/// Signs `app` ad hoc: macOS won't run an unsigned arm64 binary.
+pub fn sign(app: &Path) -> Result<(), String> {
+    let status = std::process::Command::new(CODESIGN)
+        .args(["-s", "-", "--force"])
+        .arg(app)
+        .status()
+        .map_err(|e| format!("cannot run {CODESIGN}: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{CODESIGN} failed: {status}"))
+    }
+}
+
+/// Whether `exe` lies inside `app`: writing the bundle would delete it.
+fn runs_from(exe: &Path, app: &Path) -> bool {
+    let app = app.canonicalize().unwrap_or_else(|_| app.to_path_buf());
+    exe.starts_with(app)
+}
+
+/// Builds `dir/noido.app` from the running binary and signs it.
+#[cfg(target_os = "macos")]
+pub fn app_bundle(dir: &Path) -> Result<(), String> {
+    if in_temp_dir(dir) {
+        return Err(format!(
+            "{} is in a temporary directory, where macOS won't run apps",
+            dir.display()
+        ));
+    }
+    let exe = std::env::current_exe()
+        .and_then(|e| e.canonicalize())
+        .map_err(|e| format!("cannot find the running binary: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let app = dir.join(APP_NAME);
+    if runs_from(&exe, &app) {
+        return Err(format!(
+            "cannot replace {}, the app it is running from",
+            app.display()
+        ));
+    }
+    write_bundle(&exe, &app, env!("CARGO_PKG_VERSION"))?;
+    sign(&app)?;
+    println!("{}", app.display());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn app_bundle_refuses_a_temp_dir() {
+        let dir = std::env::temp_dir().join("noido-app-bundle-refused");
+        let e = app_bundle(&dir).unwrap_err();
+        assert!(e.contains("temporary directory"), "{e}");
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn the_running_app_is_not_replaced() {
+        let dir = std::env::current_dir().unwrap();
+        let app = dir.join("Cargo.toml");
+        assert!(runs_from(&app.join("Contents/MacOS/noido"), &app));
+        assert!(!runs_from(&dir.join("target/noido"), &app));
+    }
 
     #[test]
     fn plist_is_xml_and_declares_pdfs_and_the_scheme() {
