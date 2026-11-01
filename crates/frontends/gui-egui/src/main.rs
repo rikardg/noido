@@ -19,7 +19,7 @@ mod titlebar;
 mod watch;
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -49,23 +49,27 @@ const WHEEL_SCROLL_SPEED: f32 = 125.0;
 #[command(name = "noido", version, about = "PDF reader and note taker")]
 struct Args {
     /// PDF file, or a file: or noido: link, to open
-    #[arg(required_unless_present_any = ["install", "uninstall"])]
+    #[arg(required_unless_present_any = ["install", "uninstall", "app_bundle"])]
     path: Option<OsString>,
     /// Page to open at, from 1
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..),
-          conflicts_with_all = ["install", "uninstall"])]
+          conflicts_with_all = ["install", "uninstall", "app_bundle"])]
     page: Option<u32>,
     /// Add noido to the desktop's apps for PDFs (Linux)
-    #[arg(long, conflicts_with_all = ["path", "uninstall"])]
+    #[arg(long, conflicts_with_all = ["path", "uninstall", "app_bundle"])]
     install: bool,
     /// Remove what --install added
-    #[arg(long, conflicts_with = "path")]
+    #[arg(long, conflicts_with_all = ["path", "app_bundle"])]
     uninstall: bool,
+    /// Build an ad-hoc signed noido.app in DIR (macOS)
+    #[arg(long, value_name = "DIR", conflicts_with = "path")]
+    app_bundle: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
     let result = match &args.path {
+        _ if args.app_bundle.is_some() => build_app_bundle(args.app_bundle.as_deref().unwrap()),
         _ if args.install => desktop::install(),
         _ if args.uninstall => desktop::uninstall(),
         Some(_) => opening(&args).and_then(run),
@@ -78,6 +82,16 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn build_app_bundle(dir: &Path) -> Result<(), String> {
+    app_bundle::app_bundle(dir)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn build_app_bundle(_dir: &Path) -> Result<(), String> {
+    Err("--app-bundle is for macOS only".into())
 }
 
 /// What the command line asks to open: `--page` wins over a link's target.
@@ -246,9 +260,15 @@ fn own_title_bar(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
+
+    #[test]
+    fn app_bundle_takes_a_dir_and_no_file() {
+        let a = Args::try_parse_from(["noido", "--app-bundle", "out"]).unwrap();
+        assert_eq!(a.app_bundle, Some(PathBuf::from("out")));
+        assert!(Args::try_parse_from(["noido", "--app-bundle", "out", "a.pdf"]).is_err());
+        assert!(Args::try_parse_from(["noido", "--app-bundle", "out", "--install"]).is_err());
+    }
 
     #[test]
     fn install_and_uninstall_take_no_file() {
