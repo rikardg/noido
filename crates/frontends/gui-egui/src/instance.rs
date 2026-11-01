@@ -41,7 +41,10 @@ type Address = String;
 /// The outcome of asking whether the file is open already.
 pub enum Claim {
     /// It is, and that noido was asked to come forward: this launch is done.
-    Running,
+    Running {
+        /// Its process, when it said (for bringing it to the front).
+        pid: Option<u32>,
+    },
     /// It isn't; this launch listens for later ones.
     First(Listener),
     /// No socket could be had: open the file without listening.
@@ -96,10 +99,9 @@ fn claim_at(address: &Address, timeout: Duration, target: Option<&Target>) -> Cl
     };
     if let Ok(stream) = Stream::connect(name.clone()) {
         // A noido that doesn't answer can't be displaced either.
-        return if hand_over(stream, timeout, target) {
-            Claim::Running
-        } else {
-            Claim::Unavailable
+        return match hand_over(stream, timeout, target) {
+            Some(pid) => Claim::Running { pid },
+            None => Claim::Unavailable,
         };
     }
     make_room(address);
@@ -116,9 +118,10 @@ fn claim_at(address: &Address, timeout: Duration, target: Option<&Target>) -> Cl
 }
 
 /// Asks the noido at the other end of `stream` to come forward and go to
-/// `target`; false if it doesn't answer within `timeout`. The exchange runs on a thread of its
-/// own, since named pipes on Windows have no read timeout.
-fn hand_over(stream: Stream, timeout: Duration, target: Option<&Target>) -> bool {
+/// `target`; `None` if it doesn't answer within `timeout`, else the pid
+/// it gave, if any. The exchange runs on a thread of its own, since named
+/// pipes on Windows have no read timeout.
+fn hand_over(stream: Stream, timeout: Duration, target: Option<&Target>) -> Option<Option<u32>> {
     let request = match target {
         Some(target) => format!("{ACTIVATE} {}", to_fragment(target)),
         None => ACTIVATE.to_owned(),
@@ -127,10 +130,14 @@ fn hand_over(stream: Stream, timeout: Duration, target: Option<&Target>) -> bool
     let exchange = move || {
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
-        let ok = writeln!(reader.get_mut(), "{request}").is_ok()
+        let answer = if writeln!(reader.get_mut(), "{request}").is_ok()
             && reader.read_line(&mut line).is_ok()
-            && line.trim_end() == OK;
-        let _ = answered_tx.send(ok);
+        {
+            parse_answer(line.trim_end())
+        } else {
+            None
+        };
+        let _ = answered_tx.send(answer);
     };
     // A noido that never answers leaves the thread waiting until this
     // launch exits, moments later.
@@ -139,9 +146,18 @@ fn hand_over(stream: Stream, timeout: Duration, target: Option<&Target>) -> bool
         .spawn(exchange)
         .is_err()
     {
-        return false;
+        return None;
     }
-    answered.recv_timeout(timeout).unwrap_or(false)
+    answered.recv_timeout(timeout).unwrap_or(None)
+}
+
+/// What an answer says: `None` if it isn't one, else the pid it names
+/// (`ok 123`; a bare `ok` names none).
+fn parse_answer(line: &str) -> Option<Option<u32>> {
+    match line.strip_prefix(OK)? {
+        "" => Some(None),
+        rest => rest.strip_prefix(' ')?.parse().ok().map(Some),
+    }
 }
 
 impl Listener {
@@ -194,7 +210,7 @@ fn answer(stream: Stream, activate: impl FnOnce(Option<Target>)) {
         _ => return,
     };
     activate(target);
-    let _ = writeln!(reader.get_mut(), "{OK}");
+    let _ = writeln!(reader.get_mut(), "{OK} {}", std::process::id());
 }
 
 /// A short name for `canonical`, the same for every launch on it.
@@ -269,9 +285,54 @@ mod tests {
         };
         let activation = listener.serve(no_waker());
         assert!(activation.take().is_none());
-        assert!(matches!(claim_at(&address, TIMEOUT, None), Claim::Running));
+        assert!(matches!(
+            claim_at(&address, TIMEOUT, None),
+            Claim::Running { .. }
+        ));
         assert_eq!(activation.take(), Some(Request { target: None }));
         assert!(activation.take().is_none(), "taken twice");
+    }
+
+    #[test]
+    fn hand_over_reports_the_running_pid() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let address = dir.path().join("a.sock");
+        let Claim::First(listener) = claim_at(&address, TIMEOUT, None) else {
+            panic!("first claim");
+        };
+        let _activation = listener.serve(no_waker());
+        assert!(matches!(claim_at(&address, TIMEOUT, None),
+            Claim::Running { pid: Some(p) } if p == std::process::id()));
+    }
+
+    #[test]
+    fn a_bare_ok_still_counts_as_handed_over() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let address = dir.path().join("a.sock");
+        let name = address.as_path().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new().name(name).create_sync().unwrap();
+        let server = thread::spawn(move || {
+            let stream = listener.incoming().next().unwrap().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            writeln!(reader.get_mut(), "ok").unwrap();
+        });
+        assert!(matches!(
+            claim_at(&address, TIMEOUT, None),
+            Claim::Running { pid: None }
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn answers_parse_leniently() {
+        assert_eq!(parse_answer("ok"), Some(None));
+        assert_eq!(parse_answer("ok 123"), Some(Some(123)));
+        assert_eq!(parse_answer("ok x"), None);
+        assert_eq!(parse_answer("ok 1 2"), None);
+        assert_eq!(parse_answer("okay"), None);
+        assert_eq!(parse_answer(""), None);
     }
 
     #[test]
@@ -325,7 +386,7 @@ mod tests {
         let _silent = Stream::connect(name).unwrap();
         assert!(matches!(
             claim_at(&address, Duration::from_millis(300), None),
-            Claim::Running
+            Claim::Running { .. }
         ));
     }
 
@@ -369,7 +430,7 @@ mod tests {
         for target in targets {
             assert!(matches!(
                 claim_at(&address, TIMEOUT, target.as_ref()),
-                Claim::Running
+                Claim::Running { .. }
             ));
         }
         activation.take()

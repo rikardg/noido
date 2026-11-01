@@ -131,7 +131,15 @@ fn run(opening: Opening) -> Result<(), String> {
     let target = opening.target;
     // Before reading the file: a launch on an open file only hands over.
     let listener = match instance::claim(path, target.as_ref()) {
-        Claim::Running => {
+        Claim::Running { pid } => {
+            // The sender brings the window forward: a window can't bring
+            // itself to the front on macOS.
+            #[cfg(target_os = "macos")]
+            if let Some(pid) = pid {
+                noido_macos::activate_pid(pid);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = pid;
             eprintln!("{}", handed_over(path, target.as_ref()));
             return Ok(());
         }
