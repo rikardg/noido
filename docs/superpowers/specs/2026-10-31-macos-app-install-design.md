@@ -234,6 +234,14 @@ arrives before any of noido's code could take it.
   `CFBundleURLTypes` for the `noido:` scheme that the `.desktop` file
   already claims.
 - No icon file, no `PkgInfo`, no `LSUIElement`.
+- `NoidoVersion` = the full version `--version` shows, with the commit
+  (`0.1.0+69fa5bc6`). `CFBundleShortVersionString` gets only the part
+  before the `+`, and `CFBundleVersion` is left out: Apple defines both
+  as dot-separated numbers. Wherever this design compares versions
+  ("same version", "another version", the stale-app hint), it compares
+  this full one, read from `NoidoVersion`, or from
+  `CFBundleShortVersionString` in a bundle that has no `NoidoVersion`
+  key. So a rebuild from another commit counts as another version.
 
 **`noido --app-bundle <dir>`** (macOS): writes the bundle to `<dir>`,
 signs it ad hoc (`codesign -s - --force`), and prints the path. For the
