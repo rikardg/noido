@@ -14,7 +14,12 @@ pub const APP_NAME: &str = "noido.app";
 
 /// The `Info.plist` of a bundle holding noido `version`: a viewer for PDFs
 /// (ranked below the default) and the owner of the `noido` URL scheme.
+///
+/// `version` is the full one, commit included (`0.1.0+69fa5bc6`). macOS
+/// gets only the numbers before the `+`; the full version goes in a key of
+/// noido's own, which is what tells two builds apart.
 pub fn info_plist(version: &str) -> String {
+    let numbers = version.split('+').next().unwrap_or(version);
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
@@ -23,7 +28,8 @@ pub fn info_plist(version: &str) -> String {
 <key>CFBundleIdentifier</key><string>{IDENTIFIER}</string>
 <key>CFBundleName</key><string>noido</string>
 <key>CFBundleDisplayName</key><string>noido</string>
-<key>CFBundleShortVersionString</key><string>{version}</string>
+<key>CFBundleShortVersionString</key><string>{numbers}</string>
+<key>NoidoVersion</key><string>{version}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSMinimumSystemVersion</key><string>11.0</string>
 <key>CFBundleDocumentTypes</key>
@@ -56,7 +62,8 @@ pub struct Identity {
 }
 
 /// The identifier and version in a plist's top-level dict; `None` when it
-/// is not XML or lacks either.
+/// is not XML or lacks either. The version is the full one when the bundle
+/// has it, as an older bundle doesn't.
 pub fn identity(plist_xml: &str) -> Option<Identity> {
     // Tools that rewrite a plist add a DOCTYPE.
     let options = roxmltree::ParsingOptions {
@@ -80,7 +87,7 @@ pub fn identity(plist_xml: &str) -> Option<Identity> {
     };
     Some(Identity {
         identifier: value("CFBundleIdentifier")?,
-        version: value("CFBundleShortVersionString")?,
+        version: value("NoidoVersion").or_else(|| value("CFBundleShortVersionString"))?,
     })
 }
 
@@ -194,7 +201,7 @@ pub fn app_bundle(dir: &Path) -> Result<(), String> {
             app.display()
         ));
     }
-    write_bundle(&exe, &app, env!("CARGO_PKG_VERSION"))?;
+    write_bundle(&exe, &app, env!("NOIDO_VERSION"))?;
     sign(&app)?;
     println!("{}", app.display());
     Ok(())
@@ -361,7 +368,7 @@ impl Places {
             user_apps: home.join("Applications"),
             system_apps: PathBuf::from("/Applications"),
             exe,
-            version: env!("CARGO_PKG_VERSION").into(),
+            version: env!("NOIDO_VERSION").into(),
         })
     }
 }
@@ -442,8 +449,9 @@ mod tests {
             version: version.into(),
         };
         assert_eq!(stale_hint(None, "0.2.0"), None);
-        let current = id(IDENTIFIER, env!("CARGO_PKG_VERSION"));
-        assert_eq!(stale_hint(Some(&current), env!("CARGO_PKG_VERSION")), None);
+        let current = id(IDENTIFIER, env!("NOIDO_VERSION"));
+        assert_eq!(stale_hint(Some(&current), env!("NOIDO_VERSION")), None);
+        assert!(stale_hint(Some(&id(IDENTIFIER, "0.2.0+aaaaaaaa")), "0.2.0+bbbbbbbb").is_some());
         assert_eq!(
             stale_hint(Some(&id("com.example.other", "0.0.1")), "0.2.0"),
             None
@@ -493,6 +501,14 @@ mod tests {
         assert!(!xml.contains("CFBundleTypeExtensions"));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn install_compares_the_full_version_this_build_stamps() {
+        let version = Places::here().unwrap().version;
+        assert_eq!(version, env!("NOIDO_VERSION"));
+        assert!(version.contains('+'), "{version} lacks the commit");
+    }
+
     #[test]
     fn identity_reads_back_what_the_plist_says() {
         assert_eq!(
@@ -503,6 +519,44 @@ mod tests {
             })
         );
         assert_eq!(identity("not xml"), None);
+    }
+
+    #[test]
+    fn a_bundle_from_before_the_full_version_counts_as_another_version() {
+        // An installed noido.app written before NoidoVersion existed.
+        let old = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>{IDENTIFIER}</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+</dict></plist>"#
+        );
+        let installed = identity(&old).unwrap();
+        assert_eq!(installed.version, "0.1.0");
+        assert!(stale_hint(Some(&installed), "0.1.0+abcdef12").is_some());
+    }
+
+    #[test]
+    fn the_plist_carries_the_full_version_and_macos_the_numbers() {
+        let xml = info_plist("1.2.3+abcdef12");
+        assert!(xml.contains("<key>CFBundleShortVersionString</key><string>1.2.3</string>"));
+        assert!(xml.contains("<key>NoidoVersion</key><string>1.2.3+abcdef12</string>"));
+        assert!(!xml.contains("CFBundleVersion<"));
+        assert_eq!(identity(&xml).unwrap().version, "1.2.3+abcdef12");
+    }
+
+    #[test]
+    fn install_from_another_commit_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut places = places(dir.path());
+        places.version = "2.0.0+bbbbbbbb".into();
+        install_at(&places, "2.0.0+aaaaaaaa");
+        let mut steps = vec![Step::Remove {
+            app: app_of(&places),
+            version: Some("2.0.0+aaaaaaaa".into()),
+        }];
+        steps.extend(fresh_steps(&places));
+        assert_eq!(plan_install(&places), Plan::Steps(steps));
     }
 
     #[test]
