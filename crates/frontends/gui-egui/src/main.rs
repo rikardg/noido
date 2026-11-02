@@ -135,7 +135,7 @@ fn hint_if_stale() {
         return;
     };
     let installed = app_bundle::read_identity(&home.join("Applications/noido.app"));
-    if let Some(hint) = app_bundle::stale_hint(installed.as_ref(), env!("CARGO_PKG_VERSION")) {
+    if let Some(hint) = app_bundle::stale_hint(installed.as_ref(), env!("NOIDO_VERSION")) {
         eprintln!("noido: {hint}");
     }
 }
