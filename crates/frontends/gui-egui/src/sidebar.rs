@@ -10,7 +10,7 @@ use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
-    Column, Hits, Layout, MAX_RENDER_SIDE, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState,
+    Column, Eased, Hits, Layout, MAX_RENDER_SIDE, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState,
     max_width, render_scale,
 };
 use noido_render::{RenderRequest, Renderer};
@@ -88,6 +88,8 @@ pub struct SidebarView {
     followed: Option<usize>,
     /// The scroll offset at the end of last frame.
     offset: f32,
+    /// The thumb of a solid bar, as drawn: it catches up after the page.
+    thumb: Eased,
     /// The column's width last frame.
     width: f32,
     /// The thumbnails' scroll area's id, once shown.
@@ -116,6 +118,7 @@ impl SidebarView {
             thumb_width: 0.0,
             followed: None,
             offset: 0.0,
+            thumb: Eased::default(),
             width: 0.0,
             scroll_id: None,
             shown: false,
@@ -180,12 +183,14 @@ impl SidebarView {
         self.sharp.retain(|&page, _| page < page_count);
     }
 
-    /// Forgets the sharp renders while the sidebar is closed.
+    /// Forgets the sharp renders while the sidebar is closed, and where its
+    /// thumb was drawn: it is drawn in place when the thumbnails show again.
     pub fn closed(&mut self) {
         if !self.shown {
             return;
         }
         self.shown = false;
+        self.thumb = Eased::default();
         self.visible = 0..0;
         self.sharp.clear();
         self.drawn.clear();
@@ -281,7 +286,32 @@ impl SidebarView {
             let shown =
                 area.show_viewport(ui, |ui, viewport| self.column(ui, viewport, &column, input));
             if let Some((bars, _)) = solid {
-                theme::paint_thumbs(ui, &shown, bars);
+                // Following the page, the thumbnails jump and the thumb
+                // eases after them; it goes with the reader's scrolling.
+                let offset = shown.state.clamped_offset();
+                let follows = target.is_some()
+                    && self.shown
+                    && !resized
+                    && !theme::Theme::current(ui.ctx()).reduce_motion();
+                // Under the pointer it is where egui takes presses on it.
+                let inner = shown.inner_rect;
+                let groove = Rect::from_min_max(
+                    egui::pos2(inner.max.x, inner.min.y),
+                    egui::pos2(
+                        inner.max.x + ui.spacing().scroll.allocated_width(),
+                        inner.max.y,
+                    ),
+                );
+                if ui.rect_contains_pointer(groove) {
+                    self.thumb = Eased::default();
+                }
+                // A frame's time, not a gap since an idle one.
+                let dt = ui.input(|input| input.stable_dt).min(0.1);
+                let y = self.thumb.update(offset.y, follows, dt);
+                if self.thumb.moving() {
+                    ui.ctx().request_repaint();
+                }
+                theme::paint_thumbs_at(ui, &shown, bars, egui::vec2(offset.x, y));
             }
             shown
         });
@@ -602,6 +632,11 @@ impl SidebarView {
     #[cfg(test)]
     pub fn drawn(&self) -> &[(usize, Rect)] {
         &self.drawn
+    }
+
+    #[cfg(test)]
+    pub fn offset(&self) -> f32 {
+        self.offset
     }
 
     #[cfg(test)]
