@@ -4661,10 +4661,10 @@ mod tests {
 
     #[test]
     fn a_queued_theme_requests_a_repaint() {
-        let (live, tx) = crate::theme::Live::for_test();
+        let (live, tx) =
+            crate::theme::Live::with_loader(|| Ok(crate::theme::Theme::preset("adwaita").unwrap()));
         let mut h = Harness::build(move |app| app.with_theme(live));
-        tx.send(crate::theme::Theme::preset("adwaita").unwrap())
-            .unwrap();
+        tx.send(()).unwrap();
         h.frames(1, vec![]);
         assert_eq!(h.repaint_delay, Duration::ZERO);
     }
