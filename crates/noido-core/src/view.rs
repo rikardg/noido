@@ -1,5 +1,6 @@
 use noido_engine::{Destination, Size};
 
+use crate::layout::FIT_NOISE;
 use crate::{Action, Defaults, DocPoint, Layout, LayoutMode, MARGIN, StartZoom, scroll_target};
 
 /// Smallest and largest zoom, in UI points per PDF point.
@@ -502,12 +503,12 @@ impl View {
     /// Whether the wheel flips spreads ([`View::wheel_flip`]) rather than
     /// scrolling: paged mode with the spread fitting the viewport vertically.
     pub fn wheel_flips(&self) -> bool {
-        !self.continuous() && self.max_offset().1 <= EDGE_EPSILON
+        !self.continuous() && self.max_offset().1 <= FIT_NOISE
     }
 
     /// Whether the content fits the viewport sideways.
     fn fits_width(&self) -> bool {
-        self.max_offset().0 <= EDGE_EPSILON
+        self.max_offset().0 <= FIT_NOISE
     }
 
     /// Shows the spread after (`down`) or before `spread`, from the side facing

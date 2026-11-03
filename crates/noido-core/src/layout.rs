@@ -6,9 +6,10 @@ use noido_engine::Size;
 pub const PAGE_GAP: f32 = 12.0;
 /// Space around the column of pages, in UI points.
 pub const MARGIN: f32 = 12.0;
-/// How far a row may come out wider than its room and still fit it, in UI
-/// points: float noise from fitting, never a real overflow.
-const FIT_NOISE: f32 = 0.5;
+/// How far content may come out larger than its room and still fit it, in
+/// UI points: float noise from fitting, never a real overflow. The layout,
+/// the scroll bars and the view's fit questions all use this one.
+pub(crate) const FIT_NOISE: f32 = 0.5;
 /// Longest side of a rendered page image, in pixels.
 pub const MAX_RENDER_SIDE: u32 = 8192;
 
