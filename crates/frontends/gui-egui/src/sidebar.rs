@@ -90,6 +90,8 @@ pub struct SidebarView {
     offset: f32,
     /// The column's width last frame.
     width: f32,
+    /// The thumbnails' scroll area's id, once shown.
+    scroll_id: Option<egui::Id>,
     /// Whether the sidebar was shown last frame.
     shown: bool,
     highlighted: Range<usize>,
@@ -113,6 +115,7 @@ impl SidebarView {
             followed: None,
             offset: 0.0,
             width: 0.0,
+            scroll_id: None,
             shown: false,
             highlighted: 0..0,
             result_rows: Vec::new(),
@@ -232,8 +235,17 @@ impl SidebarView {
         // No overscroll at the ends, as on the pages; it would also undo the
         // offsets set to follow the current page.
         ui.spacing_mut().scroll.kinetic.rubber_band = false;
-        let width = ui.available_width();
-        let height = ui.available_height();
+        let outer = (ui.available_width(), ui.available_height());
+        // A solid bar takes room from the thumbnails: lay them out beside it
+        // when they need one.
+        let solid = theme::solid_bar(ui).map(|bar| {
+            let bars = noido_core::scroll_bars(outer, bar, |(width, _)| {
+                let column = Column::new(input.layout.page_sizes(), width);
+                (width, column.content_height())
+            });
+            (bars, bars.inner(outer, bar))
+        });
+        let (width, height) = solid.map_or(outer, |(_, room)| room);
         let column = Column::new(input.layout.page_sizes(), width);
         let resized = (width - self.width).abs() > 0.5;
         self.width = width;
@@ -256,9 +268,13 @@ impl SidebarView {
         if let Some(target) = target {
             area = area.vertical_scroll_offset(target);
         }
+        if let Some((bars, _)) = solid {
+            area = theme::with_solid_bars(ui.ctx(), area, bars, self.scroll_id);
+        }
         let shown = theme::scope(ui, theme::Role::Scrollbar, |ui| {
             area.show_viewport(ui, |ui, viewport| self.column(ui, viewport, &column, input))
         });
+        self.scroll_id = Some(shown.id);
         let offset = shown.state.clamped_offset().y;
         let scrolled = target.is_none() && !resized && (offset - self.offset).abs() > 0.5;
         self.offset = offset;

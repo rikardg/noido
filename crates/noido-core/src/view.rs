@@ -135,6 +135,15 @@ impl View {
         self.viewport
     }
 
+    /// The content's (width, height) if the viewport were `width` × `height`;
+    /// the view itself is left as it is.
+    pub fn content_size_at(&self, width: f32, height: f32) -> (f32, f32) {
+        let scale = self.fit_scale_in(self.mode, self.fit_spread(), (width, height));
+        let mut layout = self.layout.clone();
+        layout.arrange(scale, width, height);
+        (layout.content_width(), layout.content_height())
+    }
+
     /// Resizes the viewport, refitting in fit modes and keeping the document
     /// point at the centre in place.
     pub fn set_viewport_size(&mut self, width: f32, height: f32) {
@@ -668,19 +677,29 @@ impl View {
     /// The fitted scale for `mode`, using the current spread in paged mode or
     /// the spread at the centre in continuous mode.
     fn fit_scale(&self, mode: ZoomMode) -> f32 {
-        let spread = self.current_spread().unwrap_or_else(|| {
+        self.fit_scale_for(mode, self.fit_spread())
+    }
+
+    /// The spread a fit fits: the current one in paged mode, the one at the
+    /// centre in continuous mode.
+    fn fit_spread(&self) -> usize {
+        self.current_spread().unwrap_or_else(|| {
             let (cx, cy) = self.centre();
             self.layout
                 .doc_point(self.offset.0 + cx, self.offset.1 + cy)
                 .map_or(0, |p| self.layout.spread_of(p.page))
-        });
-        self.fit_scale_for(mode, spread)
+        })
     }
 
     fn fit_scale_for(&self, mode: ZoomMode, spread: usize) -> f32 {
+        self.fit_scale_in(mode, spread, self.viewport)
+    }
+
+    /// The fitted scale for `mode` and `spread` in a (width, height) viewport.
+    fn fit_scale_in(&self, mode: ZoomMode, spread: usize, viewport: (f32, f32)) -> f32 {
         let gap = self.layout.spread_gap(spread);
-        let width = self.viewport.0 - 2.0 * MARGIN - gap;
-        let height = self.viewport.1 - 2.0 * MARGIN;
+        let width = viewport.0 - 2.0 * MARGIN - gap;
+        let height = viewport.1 - 2.0 * MARGIN;
         let ratio = |available: f32, length: f32| (length > 0.0).then(|| available / length);
         let scale = match mode {
             ZoomMode::Custom => Some(self.scale()),
@@ -710,6 +729,21 @@ mod tests {
         let mut view = View::new(vec![size(612.0, 792.0); 10]);
         view.set_viewport_size(636.0, 800.0);
         view
+    }
+
+    #[test]
+    fn content_size_at_is_the_size_a_viewport_would_give_and_changes_nothing() {
+        let view = letter_view();
+        let before = (view.offset(), view.scale(), view.viewport_size());
+        // Fit width in a narrower viewport: the pages shrink, and so does
+        // the content's height.
+        let size = view.content_size_at(619.0, 800.0);
+        assert_eq!((view.offset(), view.scale(), view.viewport_size()), before);
+        let mut resized = letter_view();
+        resized.set_viewport_size(619.0, 800.0);
+        let layout = resized.layout();
+        assert_eq!(size, (layout.content_width(), layout.content_height()));
+        assert!(size.1 < view.layout().content_height());
     }
 
     /// The document point at viewport point `at`.

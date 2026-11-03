@@ -256,6 +256,35 @@ pub fn scope<R>(ui: &mut egui::Ui, role: Role, add: impl FnOnce(&mut egui::Ui) -
     .inner
 }
 
+/// The room a solid scroll bar takes across, under the scrollbar role;
+/// `None` for overlay bars, which take none.
+pub fn solid_bar(ui: &egui::Ui) -> Option<f32> {
+    let theme = Theme::current(ui.ctx());
+    let mut style = (**ui.style()).clone();
+    theme.apply_role(ui.ctx().theme(), &mut style, Role::Scrollbar);
+    let scroll = style.spacing.scroll;
+    (!scroll.floating).then(|| scroll.allocated_width())
+}
+
+/// `area` showing exactly the solid `bars`, at once: egui would otherwise
+/// show a bar from the frame after it is needed, and slide it in, while the
+/// content is already laid out beside it. `last` is the area's id from the
+/// frame before, if it was shown.
+pub fn with_solid_bars(
+    ctx: &egui::Context,
+    area: egui::ScrollArea,
+    bars: noido_core::Bars,
+    last: Option<egui::Id>,
+) -> egui::ScrollArea {
+    if let Some(id) = last {
+        // No time to animate in: the bar is there, or not, now.
+        ctx.animate_bool_with_time(id.with("h"), bars.horizontal, 0.0);
+        ctx.animate_bool_with_time(id.with("v"), bars.vertical, 0.0);
+    }
+    area.scroll([bars.horizontal, bars.vertical])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+}
+
 /// Shows `text` over `response` with the tooltip role.
 pub fn hover_text(response: egui::Response, text: impl Into<egui::WidgetText>) -> egui::Response {
     tooltip(response, text.into(), false)
