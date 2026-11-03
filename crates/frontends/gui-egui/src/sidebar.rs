@@ -275,7 +275,12 @@ impl SidebarView {
             if let Some((bars, _)) = solid {
                 theme::paint_grooves(ui, ui.available_rect_before_wrap(), bars);
             }
-            area.show_viewport(ui, |ui, viewport| self.column(ui, viewport, &column, input))
+            let shown =
+                area.show_viewport(ui, |ui, viewport| self.column(ui, viewport, &column, input));
+            if let Some((bars, _)) = solid {
+                theme::paint_thumbs(ui, &shown, bars);
+            }
+            shown
         });
         self.scroll_id = Some(shown.id);
         let offset = shown.state.clamped_offset().y;
