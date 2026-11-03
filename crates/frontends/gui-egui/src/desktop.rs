@@ -5,8 +5,13 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::icon;
+
 /// The file's name, which is also what the desktop calls the app.
 pub const FILE_NAME: &str = "noido.desktop";
+
+/// The icon's file name; `Icon=noido` in the entry finds it by this name.
+pub const ICON_FILE_NAME: &str = "noido.svg";
 
 /// Rebuilds the MIME type cache of an applications directory.
 pub const REFRESH_TOOL: &str = "update-desktop-database";
@@ -14,19 +19,26 @@ pub const REFRESH_TOOL: &str = "update-desktop-database";
 /// Where things go: the applications directory and the binary to launch.
 pub struct Places {
     pub applications: PathBuf,
+    /// The `hicolor` icon theme's directory.
+    pub icon_theme: PathBuf,
     pub exe: PathBuf,
 }
 
 /// One change to the system.
 #[derive(Debug, PartialEq)]
 pub enum Step {
-    /// Write the `.desktop` file; `replaces` when a different one is there.
+    /// Write the `.desktop` file or the icon; `replaces` when a different
+    /// one is there.
     Write {
         path: PathBuf,
         contents: String,
         replaces: bool,
     },
     Remove(PathBuf),
+    /// Set the directory's modification time to now. GTK and GNOME Shell
+    /// rescan an icon theme (and distrust its cache) only when the theme's
+    /// own directory is newer; a file added deeper down doesn't change it.
+    Touch(PathBuf),
     /// Run [`REFRESH_TOOL`] on the directory.
     Refresh(PathBuf),
 }
@@ -51,7 +63,7 @@ pub fn desktop_entry(exe: &Path) -> Result<String, String> {
          GenericName=PDF Reader\n\
          Comment=Read PDFs and take notes\n\
          Exec={} %u\n\
-         Icon=x-office-document\n\
+         Icon=noido\n\
          Terminal=false\n\
          StartupNotify=true\n\
          StartupWMClass=noido\n\
@@ -82,35 +94,59 @@ fn exec_argument(arg: &str) -> String {
     quoted.replace('%', "%%").replace('\\', "\\\\")
 }
 
+/// Writes the icon, then the entry that names it, each only when missing or
+/// different; so an install from before the icon gets just the icon.
 pub fn plan_install(places: &Places) -> Result<Plan, String> {
     let path = places.applications.join(FILE_NAME);
-    let contents = desktop_entry(&places.exe)?;
-    let existing = std::fs::read_to_string(&path).ok();
-    if existing.as_deref() == Some(contents.as_str()) {
+    let icon = write_if_different(places.icon_path(), icon::SVG.to_owned())
+        .map(|write| [write, Step::Touch(places.icon_theme.clone())]);
+    let entry = write_if_different(path.clone(), desktop_entry(&places.exe)?);
+    let refresh = entry.is_some();
+    let mut steps: Vec<Step> = icon.into_iter().flatten().chain(entry).collect();
+    if steps.is_empty() {
         return Ok(Plan::Nothing(format!(
             "Already installed: {}",
             path.display()
         )));
     }
-    Ok(Plan::Steps(vec![
-        Step::Write {
-            path,
-            contents,
-            replaces: existing.is_some(),
-        },
-        Step::Refresh(places.applications.clone()),
-    ]))
+    if refresh {
+        steps.push(Step::Refresh(places.applications.clone()));
+    }
+    Ok(Plan::Steps(steps))
 }
 
+/// A step writing `contents` to `path`, unless they are there already.
+fn write_if_different(path: PathBuf, contents: String) -> Option<Step> {
+    // As bytes: a file that isn't text is still there to be replaced.
+    let existing = std::fs::read(&path).ok();
+    (existing.as_deref() != Some(contents.as_bytes())).then(|| Step::Write {
+        path,
+        contents,
+        replaces: existing.is_some(),
+    })
+}
+
+/// Removes the entry and the icon, whichever is there.
 pub fn plan_uninstall(places: &Places) -> Plan {
     let path = places.applications.join(FILE_NAME);
-    if !path.exists() {
+    let icon = places.icon_path();
+    let entry_there = path.exists();
+    let icon_there = icon.exists();
+    let mut steps: Vec<Step> = [path.clone(), icon]
+        .into_iter()
+        .filter(|p| p.exists())
+        .map(Step::Remove)
+        .collect();
+    if steps.is_empty() {
         return Plan::Nothing(format!("Not installed: no {}", path.display()));
     }
-    Plan::Steps(vec![
-        Step::Remove(path),
-        Step::Refresh(places.applications.clone()),
-    ])
+    if icon_there {
+        steps.push(Step::Touch(places.icon_theme.clone()));
+    }
+    if entry_there {
+        steps.push(Step::Refresh(places.applications.clone()));
+    }
+    Plan::Steps(steps)
 }
 
 /// One line for the list shown before asking.
@@ -129,6 +165,10 @@ pub fn describe(step: &Step) -> String {
             format!("Replace {} (it differs from this noido's)", path.display())
         }
         Step::Remove(path) => format!("Remove {}", path.display()),
+        Step::Touch(dir) => format!(
+            "Touch {}, so the desktop looks for new icons",
+            dir.display()
+        ),
         Step::Refresh(dir) => format!("Run {REFRESH_TOOL} {}", dir.display()),
     }
 }
@@ -154,6 +194,9 @@ pub fn carry_out(steps: &[Step], refresh_tool: &str) -> Result<Vec<String>, Stri
             }
             Step::Remove(path) => std::fs::remove_file(path)
                 .map_err(|e| format!("cannot remove {}: {e}", path.display()))?,
+            Step::Touch(dir) => std::fs::File::open(dir)
+                .and_then(|d| d.set_modified(std::time::SystemTime::now()))
+                .map_err(|e| format!("cannot touch {}: {e}", dir.display()))?,
             // The desktop finds the file without the cache too, so a refresh
             // that doesn't happen is a note, not a failure.
             Step::Refresh(dir) => {
@@ -172,6 +215,11 @@ pub fn carry_out(steps: &[Step], refresh_tool: &str) -> Result<Vec<String>, Stri
 }
 
 impl Places {
+    /// Where the icon goes: the theme's scalable app icons.
+    pub fn icon_path(&self) -> PathBuf {
+        self.icon_theme.join("scalable/apps").join(ICON_FILE_NAME)
+    }
+
     /// This system's applications directory and the running binary.
     fn here() -> Result<Self, String> {
         if !cfg!(target_os = "linux") {
@@ -187,6 +235,7 @@ impl Places {
             .map_err(|e| format!("cannot find the noido binary: {e}"))?;
         Ok(Self {
             applications: data_home.join("applications"),
+            icon_theme: data_home.join("icons/hicolor"),
             exe,
         })
     }
@@ -258,8 +307,18 @@ mod tests {
     fn places(dir: &Path) -> Places {
         Places {
             applications: dir.join("applications"),
+            icon_theme: dir.join("icons/hicolor"),
             exe: PathBuf::from("/opt/noido/noido"),
         }
+    }
+
+    /// Writes the entry and the icon as an install would.
+    fn installed(places: &Places) {
+        std::fs::create_dir_all(&places.applications).unwrap();
+        std::fs::create_dir_all(places.icon_path().parent().unwrap()).unwrap();
+        let entry = desktop_entry(&places.exe).unwrap();
+        std::fs::write(places.applications.join(FILE_NAME), entry).unwrap();
+        std::fs::write(places.icon_path(), icon::SVG).unwrap();
     }
 
     #[test]
@@ -273,7 +332,7 @@ mod tests {
             "GenericName=PDF Reader",
             "Comment=Read PDFs and take notes",
             "Exec=/opt/noido/noido %u",
-            "Icon=x-office-document",
+            "Icon=noido",
             "Terminal=false",
             "StartupNotify=true",
             "StartupWMClass=noido",
@@ -301,15 +360,20 @@ mod tests {
     }
 
     #[test]
-    fn fresh_install_writes_the_file_and_refreshes() {
+    fn fresh_install_writes_the_icon_and_the_file_and_refreshes() {
         let dir = temp_dir("fresh");
         let places = places(&dir);
-        let path = places.applications.join(FILE_NAME);
         assert_eq!(
             plan_install(&places).unwrap(),
             Plan::Steps(vec![
                 Step::Write {
-                    path,
+                    path: places.icon_path(),
+                    contents: icon::SVG.to_owned(),
+                    replaces: false,
+                },
+                Step::Touch(places.icon_theme.clone()),
+                Step::Write {
+                    path: places.applications.join(FILE_NAME),
                     contents: desktop_entry(&places.exe).unwrap(),
                     replaces: false,
                 },
@@ -319,20 +383,52 @@ mod tests {
     }
 
     #[test]
-    fn install_over_the_same_file_does_nothing() {
+    fn install_over_the_same_files_does_nothing() {
         let dir = temp_dir("same");
         let places = places(&dir);
-        std::fs::create_dir_all(&places.applications).unwrap();
-        let contents = desktop_entry(&places.exe).unwrap();
-        std::fs::write(places.applications.join(FILE_NAME), contents).unwrap();
+        installed(&places);
         assert!(matches!(plan_install(&places).unwrap(), Plan::Nothing(_)));
+    }
+
+    #[test]
+    fn install_with_the_icon_missing_writes_only_the_icon() {
+        let dir = temp_dir("icon-missing");
+        let places = places(&dir);
+        installed(&places);
+        std::fs::remove_file(places.icon_path()).unwrap();
+        assert_eq!(
+            plan_install(&places).unwrap(),
+            Plan::Steps(vec![
+                Step::Write {
+                    path: places.icon_path(),
+                    contents: icon::SVG.to_owned(),
+                    replaces: false,
+                },
+                Step::Touch(places.icon_theme.clone()),
+            ])
+        );
+    }
+
+    #[test]
+    fn install_over_a_different_icon_replaces_only_the_icon() {
+        let dir = temp_dir("icon-different");
+        let places = places(&dir);
+        installed(&places);
+        std::fs::write(places.icon_path(), "<svg/>").unwrap();
+        let Plan::Steps(steps) = plan_install(&places).unwrap() else {
+            panic!("expected steps");
+        };
+        assert_eq!(steps.len(), 2, "{steps:?}");
+        assert!(matches!(&steps[0], Step::Write { path, replaces: true, .. }
+            if *path == places.icon_path()));
+        assert_eq!(steps[1], Step::Touch(places.icon_theme.clone()));
     }
 
     #[test]
     fn install_over_a_different_file_replaces_it() {
         let dir = temp_dir("different");
         let places = places(&dir);
-        std::fs::create_dir_all(&places.applications).unwrap();
+        installed(&places);
         std::fs::write(
             places.applications.join(FILE_NAME),
             "[Desktop Entry]\nExec=/old %f\n",
@@ -341,7 +437,25 @@ mod tests {
         let Plan::Steps(steps) = plan_install(&places).unwrap() else {
             panic!("expected steps");
         };
+        assert_eq!(steps.len(), 2, "{steps:?}");
         assert!(matches!(steps[0], Step::Write { replaces: true, .. }));
+        assert!(
+            describe(&steps[0]).starts_with("Replace "),
+            "{}",
+            describe(&steps[0])
+        );
+        assert_eq!(steps[1], Step::Refresh(places.applications.clone()));
+    }
+
+    #[test]
+    fn install_over_a_file_that_is_not_text_replaces_it() {
+        let dir = temp_dir("icon-binary");
+        let places = places(&dir);
+        installed(&places);
+        std::fs::write(places.icon_path(), [0xff, 0xfe, 0x00]).unwrap();
+        let Plan::Steps(steps) = plan_install(&places).unwrap() else {
+            panic!("expected steps");
+        };
         assert!(
             describe(&steps[0]).starts_with("Replace "),
             "{}",
@@ -350,8 +464,25 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_removes_the_file_and_refreshes() {
+    fn uninstall_removes_the_file_and_the_icon_and_refreshes() {
         let dir = temp_dir("uninstall");
+        let places = places(&dir);
+        installed(&places);
+        assert_eq!(
+            plan_uninstall(&places),
+            Plan::Steps(vec![
+                Step::Remove(places.applications.join(FILE_NAME)),
+                Step::Remove(places.icon_path()),
+                Step::Touch(places.icon_theme.clone()),
+                Step::Refresh(places.applications.clone())
+            ])
+        );
+    }
+
+    #[test]
+    fn uninstall_with_only_the_file_removes_it_and_refreshes() {
+        // As left by a noido from before the icon.
+        let dir = temp_dir("uninstall-no-icon");
         let places = places(&dir);
         let path = places.applications.join(FILE_NAME);
         std::fs::create_dir_all(&places.applications).unwrap();
@@ -361,6 +492,21 @@ mod tests {
             Plan::Steps(vec![
                 Step::Remove(path),
                 Step::Refresh(places.applications.clone())
+            ])
+        );
+    }
+
+    #[test]
+    fn uninstall_with_only_the_icon_removes_it() {
+        let dir = temp_dir("uninstall-only-icon");
+        let places = places(&dir);
+        installed(&places);
+        std::fs::remove_file(places.applications.join(FILE_NAME)).unwrap();
+        assert_eq!(
+            plan_uninstall(&places),
+            Plan::Steps(vec![
+                Step::Remove(places.icon_path()),
+                Step::Touch(places.icon_theme.clone()),
             ])
         );
     }
@@ -381,6 +527,10 @@ mod tests {
         };
         assert_eq!(describe(&write), "Write /a/noido.desktop");
         assert_eq!(describe(&Step::Remove(path)), "Remove /a/noido.desktop");
+        assert_eq!(
+            describe(&Step::Touch(PathBuf::from("/a/hicolor"))),
+            "Touch /a/hicolor, so the desktop looks for new icons"
+        );
         assert_eq!(
             describe(&Step::Refresh(PathBuf::from("/a"))),
             "Run update-desktop-database /a"
@@ -414,12 +564,29 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             desktop_entry(&places.exe).unwrap()
         );
+        let icon_path = places.icon_path();
+        assert_eq!(std::fs::read_to_string(&icon_path).unwrap(), icon::SVG);
 
         let Plan::Steps(uninstall) = plan_uninstall(&places) else {
             panic!("expected steps");
         };
         carry_out(&uninstall, "noido-no-such-tool").unwrap();
         assert!(!path.exists());
+        assert!(!icon_path.exists());
+    }
+
+    #[test]
+    fn touching_makes_the_theme_newer() {
+        let dir = temp_dir("touch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let long_ago = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1 << 30);
+        std::fs::File::open(&dir)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        carry_out(&[Step::Touch(dir.clone())], "noido-no-such-tool").unwrap();
+        let modified = std::fs::metadata(&dir).unwrap().modified().unwrap();
+        assert!(modified > long_ago, "{modified:?}");
     }
 
     #[test]
