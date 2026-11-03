@@ -14,11 +14,12 @@ use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send};
+use objc2::runtime::{ProtocolObject, Sel};
+use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSRunningApplication,
-    NSWorkspace, NSWorkspaceOpenConfiguration,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSMenu, NSMenuItem,
+    NSModalResponseOK, NSOpenPanel, NSRunningApplication, NSWorkspace,
+    NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSError, NSNotification, NSObject, NSObjectProtocol, NSString, NSURL,
@@ -115,6 +116,11 @@ impl Launches {
         urls
     }
 
+    /// Whether any launch has started.
+    fn started(&self) -> bool {
+        self.last_start.is_some()
+    }
+
     /// One launch has finished, at `now`.
     fn launched(&mut self, now: Instant) {
         self.running = self.running.saturating_sub(1);
@@ -164,8 +170,14 @@ define_class!(
         // SAFETY: The signature is correct.
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, _notification: &NSNotification) {
-            let to_launch = self.launches().finished_launching(Instant::now());
+            let mut to_launch = self.launches().finished_launching(Instant::now());
             if to_launch.is_empty() {
+                // The app itself was opened, without a document: ask for one.
+                let picked = pick_pdfs(MainThreadMarker::from(self));
+                to_launch = self.launches().opened(picked, Instant::now());
+            }
+            // Cancelled, and Finder sent nothing while the panel was up.
+            if !self.launches().started() {
                 exit(0);
             }
             let launches = self.ivars().launches.clone();
@@ -220,6 +232,73 @@ impl Delegate {
     }
 }
 
+/// Asks for PDFs in the standard Open panel, in front: the picked files'
+/// URLs, none on Cancel.
+fn pick_pdfs(mtm: MainThreadMarker) -> Vec<String> {
+    // As an accessory app the launcher is never activated, and it has no
+    // menus, so the panel would get no focus and its text fields no ⌘V.
+    // For the panel it becomes a regular app, with a Dock icon.
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    app.setMainMenu(Some(&main_menu(mtm)));
+    // NSApp.activate needs macOS 14; noido.app supports 11.
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setAllowsMultipleSelection(true);
+    panel.setCanChooseDirectories(false);
+    // allowedContentTypes would need the UTType bindings, a crate more;
+    // the file-type list still works on every macOS noido runs on.
+    #[allow(deprecated)]
+    panel.setAllowedFileTypes(Some(&NSArray::from_retained_slice(&[NSString::from_str(
+        "pdf",
+    )])));
+    if panel.runModal() != NSModalResponseOK {
+        return Vec::new();
+    }
+    panel
+        .URLs()
+        .iter()
+        .filter_map(|url| url.absoluteString().map(|text| text.to_string()))
+        .collect()
+}
+
+/// The menus the Open panel needs: Quit, and Edit, whose key equivalents
+/// are how ⌘X, ⌘C, ⌘V and ⌘A reach the panel's text fields.
+fn main_menu(mtm: MainThreadMarker) -> Retained<NSMenu> {
+    let app_menu = NSMenu::new(mtm);
+    add_item(&app_menu, "Quit noido", sel!(terminate:), "q");
+    let edit = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Edit"));
+    for (title, action, key) in [
+        ("Cut", sel!(cut:), "x"),
+        ("Copy", sel!(copy:), "c"),
+        ("Paste", sel!(paste:), "v"),
+        ("Select All", sel!(selectAll:), "a"),
+    ] {
+        add_item(&edit, title, action, key);
+    }
+    let bar = NSMenu::new(mtm);
+    for menu in [app_menu, edit] {
+        let item = NSMenuItem::new(mtm);
+        item.setSubmenu(Some(&menu));
+        bar.addItem(&item);
+    }
+    bar
+}
+
+fn add_item(menu: &NSMenu, title: &str, action: Sel, key: &str) {
+    // SAFETY: The actions are standard responder messages; with no target,
+    // AppKit sends them along the responder chain to whoever answers them.
+    #[allow(unsafe_code)]
+    unsafe {
+        menu.addItemWithTitle_action_keyEquivalent(
+            &NSString::from_str(title),
+            Some(action),
+            &NSString::from_str(key),
+        );
+    }
+}
+
 /// The bookkeeping stays usable even if a panic poisoned its lock.
 fn lock(launches: &Mutex<Launches>) -> MutexGuard<'_, Launches> {
     launches.lock().unwrap_or_else(|e| e.into_inner())
@@ -258,6 +337,17 @@ mod tests {
     fn nothing_waiting_at_finish_launches_nothing() {
         let mut launches = Launches::default();
         assert!(launches.finished_launching(Instant::now()).is_empty());
+    }
+
+    #[test]
+    fn nothing_has_started_until_a_launch_does() {
+        let now = Instant::now();
+        let mut launches = Launches::default();
+        launches.finished_launching(now);
+        assert!(!launches.started());
+        // Picked in the Open panel, or sent by Finder while it was up.
+        assert_eq!(launches.opened(urls(&["a"]), now), urls(&["a"]));
+        assert!(launches.started());
     }
 
     #[test]
