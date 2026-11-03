@@ -15,7 +15,7 @@ use noido_core::{
 };
 use noido_render::{RenderRequest, Renderer};
 
-use crate::image::PageImage;
+use crate::image::{Fades, PageImage, paint_page};
 use crate::theme;
 
 /// How far the current page's highlight reaches around its thumbnail, and
@@ -77,6 +77,8 @@ pub struct SidebarView {
     renderer: Option<Renderer>,
     tracker: RenderTracker,
     sharp: HashMap<usize, PageImage>,
+    /// Sharp renders fading in over the low-res thumbnails.
+    fades: Fades,
     /// The pages visible last frame; empty while closed.
     visible: Range<usize>,
     /// Visible thumbnails' screen rects last frame.
@@ -104,6 +106,7 @@ impl SidebarView {
             renderer: None,
             tracker: RenderTracker::new(page_count),
             sharp: HashMap::new(),
+            fades: Fades::default(),
             visible: 0..0,
             drawn: Vec::new(),
             thumb_width: 0.0,
@@ -124,11 +127,18 @@ impl SidebarView {
         self
     }
 
-    /// Takes in sharp renders.
-    pub fn receive(&mut self, ctx: &egui::Context, layout: &Layout) {
+    /// Takes in sharp renders; those over a `lowres` thumbnail fade in.
+    pub fn receive(
+        &mut self,
+        ctx: &egui::Context,
+        layout: &Layout,
+        lowres: Option<&HashMap<usize, PageImage>>,
+    ) {
         let Some(renderer) = &self.renderer else {
             return;
         };
+        let now = ctx.input(|i| i.time);
+        self.fades.forget_finished(now);
         while let Some(rendered) = renderer.try_recv() {
             // Scrolled away or closed meanwhile: the tracker has forgotten
             // the page, so it is asked for again when it comes back.
@@ -141,7 +151,10 @@ impl SidebarView {
                     let name = format!("sidebar-{}", rendered.page);
                     let size = layout.page_size(rendered.page);
                     let image = PageImage::load(ctx, name, &image, size, rendered.scale);
-                    self.sharp.insert(rendered.page, image);
+                    let stand_in = lowres.is_some_and(|l| l.contains_key(&rendered.page));
+                    if self.sharp.insert(rendered.page, image).is_none() && stand_in {
+                        self.fades.start(rendered.page, now);
+                    }
                 }
                 Err(e) => {
                     eprintln!("noido: thumbnail of page {}: {e}", rendered.page + 1);
@@ -287,6 +300,8 @@ impl SidebarView {
         let text = ui.visuals().text_color();
         let font = egui::TextStyle::Body.resolve(ui.style());
         let mut clicked = None;
+        let now = ui.input(|i| i.time);
+        let mut fading = false;
         self.drawn.clear();
         for page in visible {
             let (Some(thumb), Some(label)) = (column.thumb(page), column.label(page)) else {
@@ -306,18 +321,14 @@ impl SidebarView {
             if current {
                 painter.rect_filled(rect.expand(HIGHLIGHT), HIGHLIGHT, selection.bg_fill);
             }
-            let image = self
-                .sharp
-                .get(&page)
-                .or_else(|| input.lowres.and_then(|lowres| lowres.get(&page)));
-            match image {
-                Some(image) => {
-                    painter.image(image.texture.id(), rect, image.uv, input.paper);
-                }
-                None => {
-                    painter.rect_filled(rect, 0.0, input.paper);
-                }
-            }
+            fading |= paint_page(
+                painter,
+                rect,
+                self.sharp.get(&page),
+                input.lowres.and_then(|lowres| lowres.get(&page)),
+                self.fades.alpha(page, now),
+                input.paper,
+            );
             painter.rect_stroke(
                 rect,
                 0.0,
@@ -343,6 +354,9 @@ impl SidebarView {
             }
             painter.galley(number.min, galley, colour);
             self.drawn.push((page, rect));
+        }
+        if fading {
+            ui.ctx().request_repaint();
         }
         clicked
     }

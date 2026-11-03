@@ -1,5 +1,7 @@
 //! Rendered pages on the GPU.
 
+use std::collections::HashMap;
+
 use eframe::egui::{self, Color32, ColorImage, Rect, TextureHandle, TextureOptions, pos2};
 use noido_core::Paper;
 use noido_engine::{Rgba8Image, Size};
@@ -51,6 +53,62 @@ pub(crate) fn page_uv(size: Size, scale: f32, image: &Rgba8Image) -> Rect {
             covered(size.height, image.height()),
         ),
     )
+}
+
+/// How long a page's render takes to fade in over its stand-in.
+pub(crate) const FADE_SECONDS: f64 = 0.15;
+
+/// Pages whose render is fading in over their stand-in: when each began.
+#[derive(Default)]
+pub(crate) struct Fades {
+    started: HashMap<usize, f64>,
+}
+
+impl Fades {
+    /// `page`'s render arrived at `now`.
+    pub(crate) fn start(&mut self, page: usize, now: f64) {
+        self.started.insert(page, now);
+    }
+
+    /// How far `page`'s fade has come at `now`, from 0 to 1; `None` once
+    /// done, or if it never began.
+    pub(crate) fn alpha(&self, page: usize, now: f64) -> Option<f32> {
+        let t = (now - self.started.get(&page)?) / FADE_SECONDS;
+        (t < 1.0).then_some(t.max(0.0) as f32)
+    }
+
+    /// Drops the fades done by `now`.
+    pub(crate) fn forget_finished(&mut self, now: f64) {
+        self.started.retain(|_, start| now - *start < FADE_SECONDS);
+    }
+}
+
+/// Paints a page over `rect` with `tint`: its `sharp` image, fading in over
+/// its `stand_in` while `fade` (see [`Fades::alpha`]) runs; else the stand-in;
+/// else blank paper. Returns whether it is fading.
+pub(crate) fn paint_page(
+    painter: &egui::Painter,
+    rect: Rect,
+    sharp: Option<&PageImage>,
+    stand_in: Option<&PageImage>,
+    fade: Option<f32>,
+    tint: Color32,
+) -> bool {
+    let draw = |image: &PageImage, tint| painter.image(image.texture.id(), rect, image.uv, tint);
+    match (sharp, stand_in, fade) {
+        (Some(sharp), Some(stand_in), Some(alpha)) => {
+            draw(stand_in, tint);
+            draw(sharp, tint.gamma_multiply(alpha));
+            return true;
+        }
+        (Some(image), _, _) | (None, Some(image), _) => {
+            draw(image, tint);
+        }
+        (None, None, _) => {
+            painter.rect_filled(rect, 0.0, tint);
+        }
+    }
+    false
 }
 
 /// The blur of [`soften`] in each direction: away from the edges, two box
@@ -148,6 +206,27 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn fade_rises_and_ends() {
+        let mut fades = Fades::default();
+        assert_eq!(fades.alpha(2, 10.0), None);
+        fades.start(2, 10.0);
+        assert_eq!(fades.alpha(2, 10.0), Some(0.0));
+        let half = fades.alpha(2, 10.0 + FADE_SECONDS / 2.0).unwrap();
+        assert!((half - 0.5).abs() < 1e-6, "{half}");
+        assert_eq!(fades.alpha(2, 10.0 + FADE_SECONDS), None);
+        assert_eq!(fades.alpha(3, 10.0), None);
+    }
+
+    #[test]
+    fn finished_fades_are_forgotten() {
+        let mut fades = Fades::default();
+        fades.start(1, 0.0);
+        fades.start(2, 1.0);
+        fades.forget_finished(1.0);
+        assert_eq!(fades.started.keys().copied().collect::<Vec<_>>(), [2]);
     }
 
     #[test]
