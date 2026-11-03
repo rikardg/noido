@@ -62,6 +62,7 @@ struct Row {
 
 /// Rows of pages (single pages or spreads) stacked top to bottom at a given
 /// scale, each centred horizontally.
+#[derive(Clone)]
 pub struct Layout {
     page_sizes: Vec<Size>,
     mode: LayoutMode,

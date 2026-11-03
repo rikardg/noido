@@ -51,6 +51,8 @@ const FLASH_OUTLINE_WIDTH: f32 = 2.5;
 /// What egui's scroll area reported at the end of the last frame.
 #[derive(Clone, Copy)]
 struct ScrollState {
+    /// The scroll area's id.
+    id: egui::Id,
     /// The visible area, in screen coordinates.
     inner: Rect,
     offset: Vec2,
@@ -1458,8 +1460,18 @@ impl NoidoApp {
             ui.style(),
         );
         let area = ui.available_rect_before_wrap() - frame.total_margin();
+        // Solid bars take room from the pages: lay them out beside the bars
+        // they need there.
+        let solid = crate::theme::solid_bar(ui).map(|bar| {
+            let outer = (area.width(), area.height());
+            let bars = noido_core::scroll_bars(outer, bar, |(width, height)| {
+                self.view.content_size_at(width, height)
+            });
+            (bars, bars.inner(outer, bar))
+        });
         if self.last_scroll.is_some() {
-            self.view.set_viewport_size(area.width(), area.height());
+            let (width, height) = solid.map_or((area.width(), area.height()), |(_, room)| room);
+            self.view.set_viewport_size(width, height);
         }
 
         let (x, y) = self.view.offset();
@@ -1480,6 +1492,10 @@ impl NoidoApp {
             // position. (It also keeps offsets noido sets from springing back.)
             ui.spacing_mut().scroll.kinetic.rubber_band = false;
             let mut scroll_area = ScrollArea::both().auto_shrink(false).scroll_source(source);
+            if let Some((bars, _)) = solid {
+                let last = self.last_scroll.map(|last| last.id);
+                scroll_area = crate::theme::with_solid_bars(ui.ctx(), scroll_area, bars, last);
+            }
             if move_scroll {
                 scroll_area = scroll_area.scroll_offset(wanted);
             }
@@ -1505,6 +1521,7 @@ impl NoidoApp {
             let size = self.last_scroll.map(|last| last.inner.size());
             self.told = size.map(|size| (wanted, size));
             self.last_scroll = Some(ScrollState {
+                id: output.id,
                 inner: output.inner_rect,
                 offset: output.state.clamped_offset(),
             });
@@ -1791,6 +1808,16 @@ mod tests {
             };
             harness.frames(3, vec![]);
             harness
+        }
+
+        /// The harness with a theme whose scroll bars are solid
+        /// (windows-11: a 17-point groove), as macOS with "Show scroll
+        /// bars: Always".
+        fn solid_bars(mut self) -> Self {
+            crate::theme::install_preset(&self.ctx, "windows-11");
+            self.ctx.set_theme(egui::ThemePreference::Dark);
+            self.frames(3, vec![]);
+            self
         }
 
         fn frames(&mut self, count: usize, mut events: Vec<Event>) {
@@ -2599,6 +2626,63 @@ mod tests {
     #[test]
     fn toggling_sidebar_draws_pages_in_place_at_once() {
         sidebar_toggle_draws_in_place(Harness::new());
+    }
+
+    #[test]
+    fn toggling_sidebar_draws_pages_in_place_with_solid_bars() {
+        sidebar_toggle_draws_in_place(Harness::new().solid_bars());
+    }
+
+    /// The pages are laid out in the room the scroll area leaves beside a
+    /// solid bar: at fit width they fit it, so no horizontal bar.
+    #[test]
+    fn solid_bars_leave_fitted_pages_no_horizontal_bar() {
+        let mut h = Harness::new().solid_bars();
+        h.frames(3, vec![]);
+        let inner = h.app.last_scroll.unwrap().inner;
+        assert_eq!(h.app.view.viewport_size(), (inner.width(), inner.height()));
+        let layout = h.app.view.layout();
+        assert!(
+            layout.content_width() <= inner.width() + 0.5,
+            "content {} wider than {}",
+            layout.content_width(),
+            inner.width()
+        );
+        assert!(layout.content_height() > inner.height());
+    }
+
+    /// Zoomed in past the width, the pages scroll sideways too, and are laid
+    /// out above the horizontal bar.
+    #[test]
+    fn solid_bars_scroll_zoomed_in_pages_both_ways() {
+        let mut h = Harness::new().solid_bars();
+        for _ in 0..3 {
+            h.press(egui::Key::Equals, Modifiers::COMMAND);
+        }
+        h.frames(3, vec![]);
+        let inner = h.app.last_scroll.unwrap().inner;
+        assert_eq!(h.app.view.viewport_size(), (inner.width(), inner.height()));
+        assert!(h.app.view.layout().content_width() > inner.width());
+    }
+
+    /// The sidebar's thumbnails are laid out beside its solid bar, not
+    /// under it.
+    #[test]
+    fn solid_bars_leave_the_thumbnails_clear() {
+        let mut h = Harness::new().solid_bars();
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(3, vec![]);
+        // Inside the panel's 1-point border on its right.
+        let bar_left = h.app.sidebar.width - 1.0 - 17.0;
+        let drawn = h.app.sidebar_view.drawn();
+        assert!(!drawn.is_empty());
+        for (page, rect) in drawn {
+            assert!(
+                rect.max.x + noido_core::COLUMN_MARGIN <= bar_left + 0.5,
+                "thumbnail {page} ends at {}, the bar starts at {bar_left}",
+                rect.max.x
+            );
+        }
     }
 
     /// Zoomed out, the page keeps its size but is centred in a narrower area.

@@ -1,5 +1,6 @@
 //! noido viewer state, independent of any UI toolkit.
 
+mod bars;
 mod column;
 mod defaults;
 mod fonts;
@@ -16,6 +17,7 @@ mod tracker;
 mod view;
 mod window;
 
+pub use bars::*;
 pub use column::*;
 pub use defaults::*;
 pub use fonts::*;
