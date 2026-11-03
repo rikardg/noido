@@ -67,6 +67,9 @@ pub struct NoidoApp {
     fades: Fades,
     keymap: Keymap,
     last_scroll: Option<ScrollState>,
+    /// When egui last moved the pages itself (wheel, flick, drag, bar),
+    /// in egui's time, rather than noido setting where they are.
+    pages_scrolled_at: Option<f64>,
     /// Trackpad distance scrolled towards the next flip, positive downwards.
     flip_distance: f32,
     persistence: Option<Persistence>,
@@ -222,6 +225,7 @@ impl NoidoApp {
             fades: Fades::default(),
             keymap: Keymap::native(),
             last_scroll: None,
+            pages_scrolled_at: None,
             flip_distance: 0.0,
             persistence: None,
             history: History::default(),
@@ -1434,6 +1438,11 @@ impl NoidoApp {
                     generation: self.search_state.generation(),
                     status: self.search_state.status(self.view.layout().page_count()),
                 }),
+                // Within a quarter second: wheel steps and a flick's last
+                // frames come further apart than every frame.
+                scrolling: self
+                    .pages_scrolled_at
+                    .is_some_and(|at| ctx.input(|i| i.time) - at < 0.25),
             };
             let output = self.sidebar_view.show(ui, &mut self.sidebar, &input);
             if let Some(page) = output.clicked {
@@ -1532,6 +1541,15 @@ impl NoidoApp {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
 
+            let moved = self.last_scroll.is_some_and(|last| {
+                (last.offset - output.state.clamped_offset())
+                    .abs()
+                    .max_elem()
+                    > OFFSET_EPSILON
+            });
+            if moved && !move_scroll {
+                self.pages_scrolled_at = Some(ui.ctx().input(|i| i.time));
+            }
             let size = self.last_scroll.map(|last| last.inner.size());
             self.told = size.map(|size| (wanted, size));
             self.last_scroll = Some(ScrollState {
@@ -5565,6 +5583,59 @@ mod tests {
         for pair in tops.windows(2) {
             assert!(pair[1] >= pair[0], "{start} {tops:?}");
         }
+    }
+
+    /// Scrolling the pages by wheel or flick, the thumb follows gently:
+    /// still on its way when the quick pace would have stopped, so it
+    /// doesn't stand still between pages.
+    #[test]
+    fn sidebar_thumb_follows_a_flick_gently() {
+        let mut h = sidebar_on(Arc::new(BlankEngine30)).solid_bars();
+        page_until_the_sidebar_follows(&mut h);
+        h.frames(1, vec![Event::PointerMoved(pos2(600.0, 500.0))]);
+        let step = wheel(
+            egui::MouseWheelUnit::Point,
+            -1500.0,
+            egui::MouseWheelSource::Wheel,
+        );
+        h.frames(1, vec![step]);
+        let (mut offsets, mut tops) = (vec![], vec![]);
+        for _ in 0..120 {
+            h.frames(1, vec![]);
+            offsets.push(h.app.sidebar_view.offset());
+            tops.push(sidebar_thumb_top(&h));
+        }
+        let last_follow = offsets
+            .windows(2)
+            .rposition(|w| w[1] != w[0])
+            .expect("the sidebar followed")
+            + 1;
+        let end = *tops.last().unwrap();
+        assert!(tops[last_follow + 20] < end - 0.1, "{last_follow} {tops:?}");
+        assert_eq!(tops[last_follow + 60], end, "{last_follow} {tops:?}");
+    }
+
+    /// Key steps in quick succession stay quick: noido moved the pages,
+    /// not a wheel or flick.
+    #[test]
+    fn sidebar_thumb_stays_quick_for_repeated_keys() {
+        let mut h = sidebar_on(Arc::new(BlankEngine30)).solid_bars();
+        page_until_the_sidebar_follows(&mut h);
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        h.frames(4, vec![]);
+        let before = h.app.sidebar_view.offset();
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        assert!(
+            h.app.sidebar_view.offset() > before + 1.0,
+            "no second follow"
+        );
+        let mut tops = vec![sidebar_thumb_top(&h)];
+        for _ in 0..40 {
+            h.frames(1, vec![]);
+            tops.push(sidebar_thumb_top(&h));
+        }
+        assert_eq!(tops[20], tops[40], "{tops:?}");
+        assert_eq!(h.app.pages_scrolled_at, None);
     }
 
     /// Mid-glide, the pointer coming over the groove puts the thumb where

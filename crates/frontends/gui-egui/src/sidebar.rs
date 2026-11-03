@@ -10,8 +10,8 @@ use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
-    Column, Eased, Hits, Layout, MAX_RENDER_SIDE, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState,
-    max_width, render_scale,
+    Column, Eased, Hits, Layout, MAX_RENDER_SIDE, Pace, RenderTracker, SIDEBAR_MIN_WIDTH,
+    SidebarState, max_width, render_scale,
 };
 use noido_render::{RenderRequest, Renderer};
 
@@ -49,6 +49,9 @@ pub struct Input<'a> {
     pub paper: Color32,
     /// While searching: the matches, shown instead of the thumbnails.
     pub results: Option<Results<'a>>,
+    /// The pages are moving by wheel, flick or drag: following them, the
+    /// thumb catches up gently.
+    pub scrolling: bool,
 }
 
 /// The matches of a search, for the sidebar.
@@ -287,12 +290,19 @@ impl SidebarView {
                 area.show_viewport(ui, |ui, viewport| self.column(ui, viewport, &column, input));
             if let Some((bars, _)) = solid {
                 // Following the page, the thumbnails jump and the thumb
-                // eases after them; it goes with the reader's scrolling.
+                // eases after them, gently while the pages scroll on; it
+                // goes with the reader's scrolling.
                 let offset = shown.state.clamped_offset();
                 let follows = target.is_some()
                     && self.shown
                     && !resized
                     && !theme::Theme::current(ui.ctx()).reduce_motion();
+                let pace = if input.scrolling {
+                    Pace::Gentle
+                } else {
+                    Pace::Quick
+                };
+                let follow = follows.then_some(pace);
                 // Under the pointer it is where egui takes presses on it.
                 let inner = shown.inner_rect;
                 let groove = Rect::from_min_max(
@@ -307,7 +317,7 @@ impl SidebarView {
                 }
                 // A frame's time, not a gap since an idle one.
                 let dt = ui.input(|input| input.stable_dt).min(0.1);
-                let y = self.thumb.update(offset.y, follows, dt);
+                let y = self.thumb.update(offset.y, follow, dt);
                 if self.thumb.moving() {
                     ui.ctx().request_repaint();
                 }
