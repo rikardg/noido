@@ -191,9 +191,10 @@ arrives before any of noido's code could take it.
    appears. URLs that reach the launcher after
    `applicationDidFinishLaunching`, while it waits for its launches to
    finish (a second click within about 0.1 s of the first, the hand test
-   found), are launched at once, the same way; the launcher exits after
-   the last launch it started, and the 5 s timeout counts from the latest
-   start.
+   found), are launched at once, the same way. The launcher exits 300 ms
+   after the last launch it started has finished, so a click that lands
+   while it exits is still launched; while launches are on their way, a
+   5 s timeout counts from the latest start.
 3. Rejected: swizzling `-[NSApplication setDelegate:]` at startup so
    winit's delegate has the method from the start, then loading the
    document inside eframe's app creator. One process and no launcher
