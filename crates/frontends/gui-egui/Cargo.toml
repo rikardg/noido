@@ -28,6 +28,9 @@ notify.workspace = true
 interprocess.workspace = true
 blake3.workspace = true
 
+[build-dependencies]
+resvg.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 

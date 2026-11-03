@@ -4,6 +4,7 @@
 mod app;
 mod desktop;
 mod frame;
+mod icon;
 mod image;
 mod info;
 mod instance;
@@ -182,6 +183,8 @@ fn run(opening: Opening) -> Result<(), String> {
                 .with_title(format!("{name} — noido"))
                 // Ties the window to noido.desktop (`noido --install`).
                 .with_app_id("noido")
+                // GNOME on Wayland takes the desktop file's icon instead.
+                .with_icon(icon::window_icon())
                 // Used when no window was saved yet.
                 .with_inner_size([900.0, 1100.0])
                 .with_min_inner_size(MIN_WINDOW_SIZE),
