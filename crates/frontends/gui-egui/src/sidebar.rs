@@ -35,6 +35,9 @@ const CARD_HEADER_GAP: f32 = 2.0;
 const CARD_GAP: f32 = 2.0;
 /// Lines of text around a match in its card.
 const EXCERPT_ROWS: usize = 3;
+/// How many thumbnails each side of the visible ones are rendered sharp
+/// ahead: the next spread either way in dual mode.
+const MARGIN: usize = 2;
 
 /// What the sidebar needs from the app each frame.
 pub struct Input<'a> {
@@ -84,6 +87,9 @@ pub struct SidebarView {
     fades: Fades,
     /// The pages visible last frame; empty while closed.
     visible: Range<usize>,
+    /// The visible pages and the margin around them, whose sharp renders
+    /// are asked for and kept.
+    kept: Range<usize>,
     /// Visible thumbnails' screen rects last frame.
     drawn: Vec<(usize, Rect)>,
     thumb_width: f32,
@@ -117,6 +123,7 @@ impl SidebarView {
             sharp: HashMap::new(),
             fades: Fades::default(),
             visible: 0..0,
+            kept: 0..0,
             drawn: Vec::new(),
             thumb_width: 0.0,
             followed: None,
@@ -154,7 +161,7 @@ impl SidebarView {
         while let Some(rendered) = renderer.try_recv() {
             // Scrolled away or closed meanwhile: the tracker has forgotten
             // the page, so it is asked for again when it comes back.
-            if !self.visible.contains(&rendered.page) {
+            if !self.kept.contains(&rendered.page) {
                 continue;
             }
             match rendered.result {
@@ -163,7 +170,9 @@ impl SidebarView {
                     let name = format!("sidebar-{}", rendered.page);
                     let size = layout.page_size(rendered.page);
                     let image = PageImage::load(ctx, name, &image, size, rendered.scale);
-                    let stand_in = lowres.is_some_and(|l| l.contains_key(&rendered.page));
+                    // A margin page's render is there before it shows.
+                    let stand_in = self.visible.contains(&rendered.page)
+                        && lowres.is_some_and(|l| l.contains_key(&rendered.page));
                     if self.sharp.insert(rendered.page, image).is_none() && stand_in {
                         self.fades.start(rendered.page, now);
                     }
@@ -195,6 +204,7 @@ impl SidebarView {
         self.shown = false;
         self.thumb = Eased::default();
         self.visible = 0..0;
+        self.kept = 0..0;
         self.sharp.clear();
         self.drawn.clear();
         self.tracker.forget_outside(0..0);
@@ -614,7 +624,8 @@ impl SidebarView {
         ui.painter().with_clip_rect(clip).galley(at, galley, text);
     }
 
-    /// Asks for sharp renders of the `visible` pages and drops the rest.
+    /// Asks for sharp renders of the `visible` pages and the margin around
+    /// them, and drops the rest.
     fn request(
         &mut self,
         column: &Column,
@@ -625,18 +636,23 @@ impl SidebarView {
         let Some(renderer) = &self.renderer else {
             return;
         };
-        renderer.set_keep(visible.clone());
-        renderer.set_priority(visible.clone().collect());
+        let kept = with_margin(visible, layout.page_count());
+        let order = render_order(visible, &kept);
+        renderer.set_keep(kept.clone());
+        renderer.set_priority(order.clone());
         let width = column.thumb_width() * pixels_per_point;
-        let wanted = self.tracker.wanted(visible.clone(), |page| {
-            let size = layout.page_size(page).expect("page in range");
-            render_scale(size, width / size.width, MAX_RENDER_SIDE)
-        });
-        for (page, scale) in wanted {
-            renderer.request(RenderRequest { page, scale });
+        for page in order {
+            let wanted = self.tracker.wanted(page..page + 1, |page| {
+                let size = layout.page_size(page).expect("page in range");
+                render_scale(size, width / size.width, MAX_RENDER_SIDE)
+            });
+            for (page, scale) in wanted {
+                renderer.request(RenderRequest { page, scale });
+            }
         }
-        self.tracker.forget_outside(visible.clone());
-        self.sharp.retain(|page, _| visible.contains(page));
+        self.tracker.forget_outside(kept.clone());
+        self.sharp.retain(|page, _| kept.contains(page));
+        self.kept = kept;
     }
 
     #[cfg(test)]
@@ -659,6 +675,11 @@ impl SidebarView {
         let mut pages: Vec<usize> = self.sharp.keys().copied().collect();
         pages.sort_unstable();
         pages
+    }
+
+    #[cfg(test)]
+    pub fn fading(&self, page: usize) -> bool {
+        self.fades.started(page)
     }
 
     #[cfg(test)]
@@ -693,6 +714,32 @@ fn hits_text(number: usize, count: usize) -> String {
     }
 }
 
+/// `visible` widened by [`MARGIN`] pages each side, within `page_count`.
+fn with_margin(visible: &Range<usize>, page_count: usize) -> Range<usize> {
+    if visible.is_empty() {
+        return visible.clone();
+    }
+    visible.start.saturating_sub(MARGIN)..(visible.end + MARGIN).min(page_count)
+}
+
+/// The pages of `kept` in the order to render them: the `visible` ones,
+/// then the margin, nearest first, the page after before the page before.
+fn render_order(visible: &Range<usize>, kept: &Range<usize>) -> Vec<usize> {
+    let mut order: Vec<usize> = visible.clone().collect();
+    for distance in 1..=MARGIN {
+        let after = visible.end + distance - 1;
+        if after < kept.end {
+            order.push(after);
+        }
+        if let Some(before) = visible.start.checked_sub(distance)
+            && before >= kept.start
+        {
+            order.push(before);
+        }
+    }
+    order
+}
+
 /// Up to `wanted` of the rows, of the lengths `rows`, with the row holding
 /// character `at` in the middle, or as near as the first and last rows
 /// allow.
@@ -714,6 +761,25 @@ fn rows_around(rows: &[usize], at: usize, wanted: usize) -> Range<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_order_is_visible_then_nearest_after_first() {
+        let kept = with_margin(&(3..5), 10);
+        assert_eq!(kept, 1..7);
+        assert_eq!(render_order(&(3..5), &kept), [3, 4, 5, 2, 6, 1]);
+    }
+
+    #[test]
+    fn render_order_stops_at_the_ends() {
+        let kept = with_margin(&(0..2), 10);
+        assert_eq!(kept, 0..4);
+        assert_eq!(render_order(&(0..2), &kept), [0, 1, 2, 3]);
+        let kept = with_margin(&(8..10), 10);
+        assert_eq!(kept, 6..10);
+        assert_eq!(render_order(&(8..10), &kept), [8, 9, 7, 6]);
+        assert_eq!(with_margin(&(4..4), 10), 4..4);
+        assert!(render_order(&(4..4), &(4..4)).is_empty());
+    }
 
     #[test]
     fn hits_text_counts_on_page() {

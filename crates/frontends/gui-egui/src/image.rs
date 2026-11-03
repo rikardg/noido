@@ -77,6 +77,11 @@ impl Fades {
         (t < 1.0).then_some(t.max(0.0) as f32)
     }
 
+    #[cfg(test)]
+    pub(crate) fn started(&self, page: usize) -> bool {
+        self.started.contains_key(&page)
+    }
+
     /// Drops the fades done by `now`.
     pub(crate) fn forget_finished(&mut self, now: f64) {
         self.started.retain(|_, start| now - *start < FADE_SECONDS);

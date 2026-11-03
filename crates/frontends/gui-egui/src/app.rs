@@ -4557,13 +4557,22 @@ mod tests {
         );
     }
 
+    /// The pages drawn last frame and the sidebar's margin around them, of
+    /// the 10 pages.
+    fn drawn_with_margin(h: &Harness) -> std::collections::BTreeSet<usize> {
+        let drawn = drawn_pages(h);
+        let (first, last) = (drawn[0], *drawn.last().unwrap());
+        (first.saturating_sub(2)..(last + 3).min(10)).collect()
+    }
+
     #[test]
-    fn sidebar_requests_only_visible_pages_at_its_width() {
+    fn sidebar_requests_visible_pages_and_a_margin_at_its_width() {
         let engine = RecordingEngine::default();
         let mut h = with_sidebar(engine.clone());
-        let drawn: std::collections::BTreeSet<usize> = drawn_pages(&h).into_iter().collect();
-        h.until(|_| engine.pages() == drawn);
-        assert_eq!(engine.pages(), drawn);
+        let wanted = drawn_with_margin(&h);
+        assert!(wanted.len() > drawn_pages(&h).len(), "{wanted:?}");
+        h.until(|_| engine.pages() == wanted);
+        assert_eq!(engine.pages(), wanted);
         let scale = h.app.sidebar_view.thumb_width() / 612.0;
         for (page, recorded) in engine.recorded() {
             assert!(
@@ -4616,9 +4625,95 @@ mod tests {
         wheel_sidebar(&mut h, -10_000.0);
         let drawn = drawn_pages(&h);
         assert!(drawn.contains(&9), "{drawn:?}");
+        let kept = drawn_with_margin(&h);
         let sharp = h.app.sidebar_view.sharp_pages();
         assert!(!sharp.contains(&0), "{sharp:?}");
-        assert!(sharp.iter().all(|page| drawn.contains(page)), "{sharp:?}");
+        assert!(sharp.iter().all(|page| kept.contains(page)), "{sharp:?}");
+    }
+
+    /// Presses `key` `times` times, each once the sidebar's renders have
+    /// come in; the current page's thumbnail is drawn at once, and sharp.
+    fn page_with_sidebar(h: &mut Harness, key: egui::Key, times: usize) {
+        h.frames(1, vec![Event::PointerMoved(pos2(600.0, 500.0))]);
+        let settled = |h: &Harness| {
+            let sharp = h.app.sidebar_view.sharp_pages();
+            drawn_with_margin(h).iter().all(|page| sharp.contains(page))
+        };
+        for _ in 0..times {
+            h.until(settled);
+            assert!(
+                settled(h),
+                "drawn {:?}, sharp {:?}",
+                drawn_pages(h),
+                h.app.sidebar_view.sharp_pages()
+            );
+            h.press(key, Modifiers::NONE);
+            let current = h.app.current_page().unwrap();
+            let sharp = h.app.sidebar_view.sharp_pages();
+            assert!(
+                drawn_pages(h).contains(&current) && sharp.contains(&current),
+                "page {current} drawn {:?}, sharp {sharp:?}",
+                drawn_pages(h)
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_thumbnails_are_sharp_when_paging_into_view() {
+        let mut h = with_sidebar(RecordingEngine::default());
+        page_with_sidebar(&mut h, egui::Key::PageDown, 9);
+        assert_eq!(h.app.current_page(), Some(9));
+        page_with_sidebar(&mut h, egui::Key::PageUp, 9);
+        assert_eq!(h.app.current_page(), Some(0));
+    }
+
+    #[test]
+    fn sidebar_thumbnails_are_sharp_when_paging_into_view_in_dual_mode() {
+        let mut h = with_sidebar(RecordingEngine::default());
+        // Paged: a PageDown is a spread. In this small window a continuous
+        // one scrolls past several, beyond any margin.
+        h.press(egui::Key::C, Modifiers::NONE);
+        h.press(egui::Key::D, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.view.dual());
+        page_with_sidebar(&mut h, egui::Key::PageDown, 5);
+        assert_eq!(
+            h.app.view.layout().spread_of(9),
+            h.app.view.current_spread().unwrap()
+        );
+        page_with_sidebar(&mut h, egui::Key::PageUp, 5);
+        assert_eq!(h.app.view.current_spread(), Some(0));
+    }
+
+    /// A margin page's render arrives out of view: when it comes into view
+    /// it is already there, with nothing to fade from.
+    #[test]
+    fn sidebar_margin_render_does_not_fade() {
+        let mut h = Harness::build(|app| {
+            let thumbnailer = Thumbnailer::start(
+                Arc::new(UnopenableEngine),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            );
+            let sidebar = Renderer::start_background(
+                Arc::new(BlankEngine),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            );
+            app.with_thumbnails(thumbnailer)
+                .with_sidebar_renderer(sidebar)
+        });
+        let lowres = blank_texture(&h.ctx, "lowres");
+        let textures = &mut h.app.thumbnails.as_mut().unwrap().textures;
+        for page in 0..10 {
+            textures.insert(page, lowres.clone());
+        }
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        let margin = *drawn_pages(&h).last().unwrap() + 1;
+        h.until(|h| h.app.sidebar_view.sharp_pages().contains(&margin));
+        assert!(h.app.sidebar_view.sharp_pages().contains(&margin));
+        assert!(!h.app.sidebar_view.fading(margin));
     }
 
     #[test]
