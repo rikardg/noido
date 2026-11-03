@@ -6000,6 +6000,93 @@ mod tests {
         assert!(rows.iter().any(|&(i, _)| i == 40), "{rows:?}");
     }
 
+    /// The list of matches scrolls with the same solid bar as the
+    /// thumbnails: its cards beside it, in a groove, with a thin thumb, and
+    /// a press in the groove scrolls.
+    #[test]
+    fn results_have_the_solid_bar() {
+        let pages: Vec<&[&str]> = vec![&["cat"]; 60];
+        let mut h = searching(&TextEngine::new(&pages)).solid_bars();
+        search_for(&mut h, "cat");
+        h.frames(3, vec![]);
+        // Inside the panel's 1-point border on its right.
+        let right = h.app.sidebar.width - 1.0;
+        let groove = right - 17.0;
+        let rows = h.app.sidebar_view.result_rows().to_vec();
+        assert!(!rows.is_empty());
+        for (index, row) in &rows {
+            assert!(
+                row.max.x <= groove + 0.5,
+                "card {index} ends at {}, the bar starts at {groove}",
+                row.max.x
+            );
+        }
+        let grooves = strips(&h, groove, right);
+        assert!(
+            grooves.iter().any(|(top, bottom)| bottom - top > 500.0),
+            "no groove: {grooves:?}"
+        );
+        assert_eq!(strips(&h, groove + 5.5, groove + 11.5).len(), 1, "no thumb");
+
+        // Mid-groove: its outer few points are the sidebar's resize handle.
+        let first = rows[0].0;
+        h.click(pos2(groove + 8.5, 900.0));
+        h.frames(3, vec![]);
+        assert!(
+            h.app.sidebar_view.result_rows()[0].0 > first,
+            "a press in the groove did not scroll the matches"
+        );
+    }
+
+    /// The cards' text keeps the panel's colours under the scrollbar role:
+    /// the matched word is drawn in the strong text colour, whether the bars
+    /// are solid (where the role makes egui's thumb colours transparent) or
+    /// overlay.
+    #[test]
+    fn results_keep_their_text_colours_under_the_scrollbar_role() {
+        for solid in [true, false] {
+            let pages: Vec<&[&str]> = vec![&["cat"]; 60];
+            let mut h = searching(&TextEngine::new(&pages));
+            if solid {
+                h = h.solid_bars();
+            }
+            search_for(&mut h, "cat");
+            h.frames(3, vec![]);
+            let strong = h.ctx.global_style().visuals.strong_text_color();
+            let sidebar = h.app.sidebar.width;
+            let colours: Vec<Color32> = h
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.pos.x < sidebar => Some(text),
+                    _ => None,
+                })
+                .flat_map(|text| text.galley.job.sections.iter().map(|s| s.format.color))
+                .collect();
+            assert!(
+                colours.contains(&strong),
+                "solid {solid}: no match in {strong:?} among {colours:?}"
+            );
+            assert!(
+                !colours.contains(&Color32::TRANSPARENT),
+                "solid {solid}: invisible text"
+            );
+        }
+    }
+
+    /// A few matches need no bar: the cards take the whole width.
+    #[test]
+    fn few_results_need_no_solid_bar() {
+        let mut h = searching(&more_cats()).solid_bars();
+        search_for(&mut h, "cat");
+        h.frames(3, vec![]);
+        let right = h.app.sidebar.width - 1.0;
+        for (index, row) in h.app.sidebar_view.result_rows() {
+            assert_eq!(row.max.x, right, "card {index}");
+        }
+        assert!(strips(&h, right - 17.0, right).is_empty());
+    }
+
     #[test]
     fn results_are_cards_of_one_height() {
         let mut h = searching(&more_cats());

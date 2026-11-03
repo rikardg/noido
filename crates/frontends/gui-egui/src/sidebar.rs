@@ -100,6 +100,8 @@ pub struct SidebarView {
     result_rows: Vec<(usize, Rect)>,
     followed_hit: Option<(u64, usize)>,
     results_offset: f32,
+    /// The list's scroll area's id, once shown.
+    results_id: Option<egui::Id>,
 }
 
 impl SidebarView {
@@ -121,6 +123,7 @@ impl SidebarView {
             result_rows: Vec::new(),
             followed_hit: None,
             results_offset: 0.0,
+            results_id: None,
         }
     }
 
@@ -400,7 +403,15 @@ impl SidebarView {
         }
         let hits = results.hits;
         let card = card_height(ui);
-        let height = ui.available_height();
+        let outer = (ui.available_width(), ui.available_height());
+        let content_height = 2.0 * RESULT_MARGIN + hits.len() as f32 * card;
+        // A solid bar, when the matches need one, as beside the thumbnails;
+        // their height doesn't depend on the width.
+        let solid = theme::solid_bar(ui).map(|bar| {
+            let bars = noido_core::scroll_bars(outer, bar, |(width, _)| (width, content_height));
+            (bars, bars.inner(outer, bar))
+        });
+        let height = solid.map_or(outer.1, |(_, room)| room.1);
         let current = hits.current();
         // Scrolled to the current match when it changes, the least distance.
         let target = current
@@ -429,30 +440,45 @@ impl SidebarView {
         if let Some(target) = target {
             area = area.vertical_scroll_offset(target.max(0.0));
         }
+        if let Some((bars, _)) = solid {
+            area = theme::with_solid_bars(ui.ctx(), area, bars, self.results_id);
+        }
         self.result_rows.clear();
-        let shown = area.show_viewport(ui, |ui, viewport| {
-            let content = vec2(
-                ui.available_width(),
-                2.0 * RESULT_MARGIN + hits.len() as f32 * card,
-            );
-            let (area, _) = ui.allocate_exact_size(content, Sense::hover());
-            let first = ((viewport.min.y - RESULT_MARGIN) / card).floor().max(0.0);
-            let last = ((viewport.max.y - RESULT_MARGIN) / card).ceil().max(0.0);
-            let mut clicked = None;
-            for index in first as usize..(last as usize).min(hits.len()) {
-                let row = Rect::from_min_size(
-                    area.min + vec2(0.0, RESULT_MARGIN + index as f32 * card),
-                    vec2(area.width(), card),
-                );
-                let id = ui.scope_id().with(("match", index));
-                if ui.interact(row, id, Sense::click()).clicked() {
-                    clicked = Some(index);
-                }
-                self.result_card(ui, row, hits, index, current == Some(index));
-                self.result_rows.push((index, row));
+        // The cards' colours are the panel's: the scrollbar role sets the
+        // widget colours egui's bars use, strong text among them. egui
+        // paints the bars with the outer style, so they keep the role.
+        let panel = ui.style().clone();
+        let shown = theme::scope(ui, theme::Role::Scrollbar, |ui| {
+            if let Some((bars, _)) = solid {
+                theme::paint_grooves(ui, ui.available_rect_before_wrap(), bars);
             }
-            clicked
+            let shown = area.show_viewport(ui, |ui, viewport| {
+                ui.set_style(panel);
+                let content = vec2(ui.available_width(), content_height);
+                let (area, _) = ui.allocate_exact_size(content, Sense::hover());
+                let first = ((viewport.min.y - RESULT_MARGIN) / card).floor().max(0.0);
+                let last = ((viewport.max.y - RESULT_MARGIN) / card).ceil().max(0.0);
+                let mut clicked = None;
+                for index in first as usize..(last as usize).min(hits.len()) {
+                    let row = Rect::from_min_size(
+                        area.min + vec2(0.0, RESULT_MARGIN + index as f32 * card),
+                        vec2(area.width(), card),
+                    );
+                    let id = ui.scope_id().with(("match", index));
+                    if ui.interact(row, id, Sense::click()).clicked() {
+                        clicked = Some(index);
+                    }
+                    self.result_card(ui, row, hits, index, current == Some(index));
+                    self.result_rows.push((index, row));
+                }
+                clicked
+            });
+            if let Some((bars, _)) = solid {
+                theme::paint_thumbs(ui, &shown, bars);
+            }
+            shown
         });
+        self.results_id = Some(shown.id);
         self.results_offset = shown.state.clamped_offset().y;
         shown.inner
     }
