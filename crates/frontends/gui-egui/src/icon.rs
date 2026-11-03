@@ -1,7 +1,11 @@
 //! The app icon. `assets/noido.svg` is its only source: `build.rs` renders
-//! the window icon from it.
+//! the window icon from it, and `--install` puts the SVG itself where the
+//! Linux desktop looks for icons.
 
 use eframe::egui::IconData;
+
+/// The icon's source, as installed for the desktop.
+pub const SVG: &str = include_str!("../assets/noido.svg");
 
 /// Side of the window icon in pixels (`build.rs` holds the same number).
 pub const SIDE: u32 = 256;
