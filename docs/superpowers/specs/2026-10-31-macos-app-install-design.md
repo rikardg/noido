@@ -174,6 +174,12 @@ arrives before any of noido's code could take it.
    queue each frame into the existing `open` hook. Launch Services brings
    the first noido window forward to deliver the event; the new window,
    or the one that already has the file, then takes the front from it.
+   A link (`noido:`) comes as a different Apple event, `GURL`, and the
+   hand test found that AppKit hands it to a method added this late only
+   for files, never for links. So the GUI also registers its own `GURL`
+   handler with `NSAppleEventManager` at the same moment, which queues
+   the link's text the same way. The handler is AppKit's to look up when
+   the event arrives, so when it is registered does not matter.
 2. **No arguments and inside a `.app`: launcher mode.** The `noido-macos`
    crate runs a bare `NSApplication` loop with an `application:openURLs:`
    delegate (no winit, no egui), starts one GUI per URL the launch event
@@ -182,7 +188,12 @@ arrives before any of noido's code could take it.
    the GUI's own startup is untouched, and the failure mode is a loud "no
    document" rather than a mysteriously empty window. Its cost: on a cold
    start the Dock shows the launcher bounce and go before the GUI's icon
-   appears.
+   appears. URLs that reach the launcher after
+   `applicationDidFinishLaunching`, while it waits for its launches to
+   finish (a second click within about 0.1 s of the first, the hand test
+   found), are launched at once, the same way; the launcher exits after
+   the last launch it started, and the 5 s timeout counts from the latest
+   start.
 3. Rejected: swizzling `-[NSApplication setDelegate:]` at startup so
    winit's delegate has the method from the start, then loading the
    document inside eframe's app creator. One process and no launcher
@@ -299,7 +310,10 @@ someone else's; nothing from inside the bundle.
   before the handler is installed: AppKit's answer to a delegate without
   the method was not tried. The window is about 100 ms and needs a click
   on a second file while the first noido starts; it goes on the
-  hand-testing list, and is fixed only if it shows.
+  hand-testing list, and is fixed only if it shows. The hand test lost
+  such a second click, but in the launcher, which Launch Services sends
+  it to while it is still waiting for its launches (fixed above); this
+  GUI case stays open until a lost click survives that fix.
 - What Finder itself shows: the probe was in the list Finder's *Open
   With* is built from, not looked at in Finder.
 
