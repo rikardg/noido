@@ -5,9 +5,7 @@
 //! laid out there (a fitted page gets narrower), which can change whether a
 //! bar is needed. [`scroll_bars`] settles that before anything is drawn.
 
-/// How far content may exceed its room and still count as fitting, in UI
-/// points: float noise in a fitted layout, not anything to scroll to.
-const FITS: f32 = 0.5;
+use crate::layout::FIT_NOISE;
 
 /// The solid scroll bars a scroll area shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -43,8 +41,8 @@ pub fn scroll_bars(
         let room = bars.inner(outer, bar);
         let (width, height) = content(room);
         let needed = Bars {
-            horizontal: bars.horizontal || width > room.0 + FITS,
-            vertical: bars.vertical || height > room.1 + FITS,
+            horizontal: bars.horizontal || width > room.0 + FIT_NOISE,
+            vertical: bars.vertical || height > room.1 + FIT_NOISE,
         };
         if needed == bars {
             break;
