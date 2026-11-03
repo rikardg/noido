@@ -1798,10 +1798,19 @@ mod tests {
             engine: Arc<dyn PdfEngine>,
             setup: impl FnOnce(NoidoApp) -> NoidoApp,
         ) -> Self {
+            Self::build_themed(engine, "adwaita", setup)
+        }
+
+        /// A harness with the theme `preset` from its first frame.
+        fn build_themed(
+            engine: Arc<dyn PdfEngine>,
+            preset: &str,
+            setup: impl FnOnce(NoidoApp) -> NoidoApp,
+        ) -> Self {
             let (renderer, info) =
                 Renderer::start(engine, Arc::new(Vec::new()), Box::new(|| {})).unwrap();
             let ctx = egui::Context::default();
-            crate::theme::install_preset(&ctx, "adwaita");
+            crate::theme::install_preset(&ctx, preset);
             ctx.set_theme(egui::ThemePreference::Dark);
             // As in main: quitting goes through the keymap.
             ctx.options_mut(|o| o.quit_shortcuts.clear());
@@ -2645,6 +2654,29 @@ mod tests {
     #[test]
     fn toggling_sidebar_draws_pages_in_place_with_solid_bars() {
         sidebar_toggle_draws_in_place(Harness::new().solid_bars());
+    }
+
+    /// A Mac starts with solid bars, not after a theme change: from the
+    /// first frames the pages are laid out beside the bar, the thumbnails
+    /// too once the sidebar opens.
+    #[test]
+    fn solid_bars_from_the_first_frame() {
+        let mut h = Harness::build_themed(Arc::new(BlankEngine), "windows-11", |app| app);
+        let inner = h.app.last_scroll.unwrap().inner;
+        assert_eq!(h.app.view.viewport_size(), (inner.width(), inner.height()));
+        assert!(h.app.view.layout().content_width() <= inner.width() + 0.5);
+
+        h.press(egui::Key::F9, Modifiers::NONE);
+        let bar_left = h.app.sidebar.width - 1.0 - 17.0;
+        let drawn = h.app.sidebar_view.drawn();
+        assert!(!drawn.is_empty());
+        for (page, rect) in drawn {
+            assert!(
+                rect.max.x + noido_core::COLUMN_MARGIN <= bar_left + 0.5,
+                "thumbnail {page} ends at {}",
+                rect.max.x
+            );
+        }
     }
 
     /// The pages are laid out in the room the scroll area leaves beside a
