@@ -1435,6 +1435,8 @@ impl NoidoApp {
     /// and `ui` is skipped.
     fn logic_pass(&mut self, ctx: &egui::Context) {
         self.receive_open_files(ctx);
+        // Here, not in `show`: a minimized window must still un-minimize.
+        self.come_forward(ctx);
     }
 
     /// One frame of the viewer.
@@ -1445,7 +1447,6 @@ impl NoidoApp {
         {
             ctx.request_repaint();
         }
-        self.come_forward(&ctx);
         self.receive_renders(&ctx);
         let lowres = self.thumbnails.as_ref().map(|t| &t.textures);
         self.sidebar_view.receive(&ctx, self.view.layout(), lowres);
@@ -4451,6 +4452,25 @@ mod tests {
                 .ends_with(format!("{}.window.ron", test_key().hex())),
             "window file moved"
         );
+    }
+
+    #[test]
+    fn a_minimized_window_comes_forward_in_the_logic_pass_without_a_ui_pass() {
+        let activation = crate::instance::Activation::default();
+        let mut h = Harness::build(|app| app.with_activation(activation.clone()));
+        h.frames(1, vec![]);
+        activation.request(None);
+        // While minimized, eframe runs only the logic pass.
+        let ctx = h.ctx.clone();
+        let output = ctx.run_logic(&RawInput::default(), |ctx| h.app.logic_pass(ctx));
+        let commands = output
+            .viewport_commands
+            .get(&egui::ViewportId::ROOT)
+            .cloned()
+            .unwrap_or_default();
+        assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
+        assert!(commands.contains(&egui::ViewportCommand::Focus));
+        assert!(activation.take().is_none(), "left set");
     }
 
     #[test]
