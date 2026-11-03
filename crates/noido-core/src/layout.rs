@@ -6,6 +6,9 @@ use noido_engine::Size;
 pub const PAGE_GAP: f32 = 12.0;
 /// Space around the column of pages, in UI points.
 pub const MARGIN: f32 = 12.0;
+/// How far a row may come out wider than its room and still fit it, in UI
+/// points: float noise from fitting, never a real overflow.
+const FIT_NOISE: f32 = 0.5;
 /// Longest side of a rendered page image, in pixels.
 pub const MAX_RENDER_SIDE: u32 = 8192;
 
@@ -113,7 +116,14 @@ impl Layout {
             })
             .collect();
         let widest_row = row_widths.iter().map(|&(_, w)| w).fold(0.0, f32::max);
-        self.content_width = available_width.max(widest_row + 2.0 * MARGIN);
+        // A fitted row comes out a float's breadth wider than the room it
+        // was fitted to; that is no room to scroll.
+        let row_width = widest_row + 2.0 * MARGIN;
+        self.content_width = if row_width > available_width + FIT_NOISE {
+            row_width
+        } else {
+            available_width
+        };
 
         self.rects = vec![None; self.page_sizes.len()];
         self.rows.clear();
