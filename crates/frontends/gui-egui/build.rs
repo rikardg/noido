@@ -1,12 +1,14 @@
 //! Stamps the commit into `noido --version`: `0.1.0+deadbeef`.
 //!
-//! A release is built from a plain checkout on GitHub, where the workflow
-//! passes the commit in `NOIDO_GIT_SHA`; a build elsewhere asks git instead.
-//! The `+` is SemVer build metadata, which never changes how two versions
-//! compare, so a snapshot is still "0.1.0" to anything that cares.
-//!
-//! The rerun line is what makes the stamp change: without it Cargo keeps the
-//! build it has cached and the old commit stays in the binary.
+//! The commit comes in `NOIDO_GIT_SHA`: from the workflow for a release,
+//! and from the justfile, which reads the working copy, for every `just`
+//! recipe. The rerun line is what makes the stamp change: a new commit is a
+//! new value, so the script runs again. Without the variable the script
+//! asks git, but only when it runs for another reason (build.rs or the icon
+//! changed, a clean build); so a bare `cargo build` keeps the commit of the
+//! last time it ran. The `+` is SemVer build metadata, which never changes
+//! how two versions compare, so a snapshot is still "0.1.0" to anything
+//! that cares.
 
 use std::process::Command;
 
