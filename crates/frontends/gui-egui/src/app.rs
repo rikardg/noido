@@ -14,7 +14,7 @@ use noido_settings::{Settings, SettingsFile};
 use noido_state::{DocState, Slot, Store};
 
 use crate::frame;
-use crate::image::PageImage;
+use crate::image::{Fades, PageImage, paint_page};
 use crate::info;
 use crate::instance::Activation;
 use crate::links::{FLASH_SECONDS, Links, Named};
@@ -61,6 +61,8 @@ pub struct NoidoApp {
     view: View,
     tracker: RenderTracker,
     textures: HashMap<usize, PageImage>,
+    /// Full renders fading in over their thumbnails.
+    fades: Fades,
     keymap: Keymap,
     last_scroll: Option<ScrollState>,
     /// Trackpad distance scrolled towards the next flip, positive downwards.
@@ -215,6 +217,7 @@ impl NoidoApp {
             view: View::new(info.page_sizes),
             tracker: RenderTracker::new(page_count),
             textures: HashMap::new(),
+            fades: Fades::default(),
             keymap: Keymap::native(),
             last_scroll: None,
             flip_distance: 0.0,
@@ -521,12 +524,16 @@ impl NoidoApp {
     }
 
     /// The best image of `page`: its full render, else its thumbnail.
+    #[cfg(test)]
     fn page_image(&self, page: usize) -> Option<&PageImage> {
-        self.textures.get(&page).or_else(|| {
-            self.thumbnails
-                .as_ref()
-                .and_then(|thumbnails| thumbnails.textures.get(&page))
-        })
+        self.textures.get(&page).or_else(|| self.thumbnail(page))
+    }
+
+    /// The thumbnail shown in place of `page` until it renders.
+    fn thumbnail(&self, page: usize) -> Option<&PageImage> {
+        self.thumbnails
+            .as_ref()
+            .and_then(|thumbnails| thumbnails.textures.get(&page))
     }
 
     /// Follows the OS theme while the app runs.
@@ -1046,13 +1053,21 @@ impl NoidoApp {
     }
 
     fn receive_renders(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        self.fades.forget_finished(now);
         while let Some(rendered) = self.renderer.try_recv() {
             match rendered.result {
                 Ok(image) => {
                     let name = format!("page-{}", rendered.page);
                     let size = self.view.layout().page_size(rendered.page);
                     let texture = PageImage::load(ctx, name, &image, size, rendered.scale);
-                    self.textures.insert(rendered.page, texture);
+                    // The first render over the thumbnail fades in; one
+                    // over an older render (a zoom), or with no thumbnail
+                    // to fade from, shows at once.
+                    let stand_in = self.thumbnail(rendered.page).is_some();
+                    if self.textures.insert(rendered.page, texture).is_none() && stand_in {
+                        self.fades.start(rendered.page, now);
+                    }
                     self.tracker.mark_ready(rendered.page, rendered.scale);
                 }
                 Err(e) => {
@@ -1212,19 +1227,21 @@ impl NoidoApp {
         let painter = ui.painter();
         let hits = &self.search_state.hits;
         let paper = self.paper_tint(ui.ctx());
+        let now = ui.input(|i| i.time);
+        let mut fading = false;
         for page in visible {
             let Some(r) = layout.page_rect(page) else {
                 continue;
             };
             let rect = Rect::from_min_size(content.min + vec2(r.x, r.y), vec2(r.width, r.height));
-            match self.page_image(page) {
-                Some(image) => {
-                    painter.image(image.texture.id(), rect, image.uv, paper);
-                }
-                None => {
-                    painter.rect_filled(rect, 0.0, paper);
-                }
-            }
+            fading |= paint_page(
+                painter,
+                rect,
+                self.textures.get(&page),
+                self.thumbnail(page),
+                self.fades.alpha(page, now),
+                paper,
+            );
             // Matches over the page, the current one stronger.
             let first = hits.first_on(page).unwrap_or(0);
             let warning = ui.visuals().warn_fg_color;
@@ -1240,6 +1257,10 @@ impl NoidoApp {
                     painter.rect_filled(Rect::from_min_size(min, size), 0.0, fill);
                 }
             }
+        }
+
+        if fading {
+            ui.ctx().request_repaint();
         }
 
         if let Some((page, link)) = hovered
@@ -1374,7 +1395,8 @@ impl NoidoApp {
         }
         self.come_forward(&ctx);
         self.receive_renders(&ctx);
-        self.sidebar_view.receive(&ctx, self.view.layout());
+        let lowres = self.thumbnails.as_ref().map(|t| &t.textures);
+        self.sidebar_view.receive(&ctx, self.view.layout(), lowres);
         self.sync_from_egui();
         self.receive_reload(&ctx);
         // After a reload, so an answer about the old version is dropped; and
@@ -3669,6 +3691,108 @@ mod tests {
         drop(gate);
     }
 
+    /// The textures the last frame drew, in order, within `area` if given.
+    fn drawn_textures(h: &Harness, area: Option<Rect>) -> Vec<egui::TextureId> {
+        h.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Mesh(mesh)
+                    if mesh.texture_id != egui::TextureId::default()
+                        && area.is_none_or(|area| {
+                            area.contains(clipped.shape.visual_bounding_rect().center())
+                        }) =>
+                {
+                    Some(mesh.texture_id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Long enough for any fade to finish.
+    const FADE_FRAMES: usize = (crate::image::FADE_SECONDS * 60.0) as usize + 2;
+
+    #[test]
+    fn full_render_fades_in_over_its_thumbnail() {
+        let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
+        let engine = Arc::new(GatedEngine(Arc::new(std::sync::Mutex::new(gate_rx))));
+        let mut h = Harness::build_with(engine, |app| {
+            let thumbnailer =
+                Thumbnailer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}));
+            app.with_thumbnails(thumbnailer)
+        });
+        let has_thumbnail =
+            |h: &Harness| h.app.thumbnails.as_ref().unwrap().textures.contains_key(&0);
+        h.until(has_thumbnail);
+        assert!(has_thumbnail(&h), "no thumbnail");
+        let thumbnail = h.app.thumbnails.as_ref().unwrap().textures[&0].texture.id();
+        drop(gate);
+        h.until(|h| h.app.textures.contains_key(&0));
+        let full = h.app.textures[&0].texture.id();
+        h.frames(1, vec![]);
+        let drawn = drawn_textures(&h, None);
+        let under = drawn.iter().position(|id| *id == thumbnail);
+        let over = drawn.iter().position(|id| *id == full);
+        assert!(
+            matches!((under, over), (Some(u), Some(o)) if u < o),
+            "thumbnail under the render: {drawn:?}"
+        );
+        assert!(
+            h.repaint_delay < Duration::from_millis(20),
+            "no repaint while fading"
+        );
+        h.frames(FADE_FRAMES, vec![]);
+        let drawn = drawn_textures(&h, None);
+        assert!(
+            drawn.contains(&full) && !drawn.contains(&thumbnail),
+            "{drawn:?}"
+        );
+    }
+
+    #[test]
+    fn render_before_its_thumbnail_does_not_fade() {
+        let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
+        let gated = Arc::new(GatedEngine(Arc::new(std::sync::Mutex::new(gate_rx))));
+        let mut h = Harness::build(|app| {
+            let thumbnailer = Thumbnailer::start(gated, Arc::new(Vec::new()), Box::new(|| {}));
+            app.with_thumbnails(thumbnailer)
+        });
+        h.until(|h| h.app.textures.contains_key(&0));
+        let full = h.app.textures[&0].texture.id();
+        drop(gate);
+        let has_thumbnail =
+            |h: &Harness| h.app.thumbnails.as_ref().unwrap().textures.contains_key(&0);
+        h.until(has_thumbnail);
+        assert!(has_thumbnail(&h), "no thumbnail");
+        h.frames(1, vec![]);
+        assert_eq!(drawn_textures(&h, None), [full]);
+    }
+
+    #[test]
+    fn rerender_does_not_fade() {
+        let mut h = Harness::build(|app| {
+            let thumbnailer =
+                Thumbnailer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}));
+            app.with_thumbnails(thumbnailer)
+        });
+        h.until(|h| {
+            h.app.textures.contains_key(&0)
+                && h.app.thumbnails.as_ref().unwrap().textures.contains_key(&0)
+        });
+        h.frames(FADE_FRAMES, vec![]);
+        let thumbnail = h.app.thumbnails.as_ref().unwrap().textures[&0].texture.id();
+        let before = h.app.textures[&0].texture.id();
+        h.press(egui::Key::Plus, Modifiers::COMMAND);
+        h.until(|h| h.app.textures.get(&0).map(|t| t.texture.id()) != Some(before));
+        let after = h.app.textures[&0].texture.id();
+        assert_ne!(after, before, "no re-render");
+        for _ in 0..3 {
+            let drawn = drawn_textures(&h, None);
+            assert!(!drawn.contains(&thumbnail), "{drawn:?}");
+            h.frames(1, vec![]);
+        }
+    }
+
     #[test]
     fn renders_the_window_ahead_and_keeps_within_reach() {
         // 30 pages, so the window doesn't reach both ends.
@@ -4504,6 +4628,8 @@ mod tests {
             .insert(0, lowres.clone());
         h.press(egui::Key::F9, Modifiers::NONE);
         h.until(|h| images(h).len() > 1);
+        // Pages fading in over the thumbnail are tinted lighter until done.
+        h.frames(FADE_FRAMES, vec![]);
         let thumbnail = h.shapes.iter().any(|clipped| {
             matches!(&clipped.shape, egui::Shape::Mesh(mesh) if mesh.texture_id == lowres.texture.id())
         });
@@ -4664,6 +4790,79 @@ mod tests {
             _ => false,
         });
         assert!(shown);
+    }
+
+    #[test]
+    fn sidebar_render_fades_in_over_lowres() {
+        let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
+        let gated = Arc::new(GatedEngine(Arc::new(std::sync::Mutex::new(gate_rx))));
+        let mut h = Harness::build(|app| {
+            let thumbnailer = Thumbnailer::start(
+                Arc::new(UnopenableEngine),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            );
+            let sidebar = Renderer::start_background(gated, Arc::new(Vec::new()), Box::new(|| {}));
+            app.with_thumbnails(thumbnailer)
+                .with_sidebar_renderer(sidebar)
+        });
+        let lowres = blank_texture(&h.ctx, "lowres");
+        h.app
+            .thumbnails
+            .as_mut()
+            .unwrap()
+            .textures
+            .insert(0, lowres.clone());
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        let (_, first) = h.app.sidebar_view.drawn()[0];
+        assert_eq!(drawn_textures(&h, Some(first)), [lowres.texture.id()]);
+        drop(gate);
+        h.until(|h| h.app.sidebar_view.sharp_pages().contains(&0));
+        h.frames(1, vec![]);
+        let drawn = drawn_textures(&h, Some(first));
+        assert_eq!(drawn.len(), 2, "{drawn:?}");
+        assert_eq!(drawn[0], lowres.texture.id(), "lowres under the render");
+        assert!(
+            h.repaint_delay < Duration::from_millis(20),
+            "no repaint while fading"
+        );
+        h.frames(FADE_FRAMES, vec![]);
+        let drawn = drawn_textures(&h, Some(first));
+        assert_eq!(drawn.len(), 1, "{drawn:?}");
+        assert_ne!(drawn[0], lowres.texture.id());
+    }
+
+    #[test]
+    fn sidebar_render_before_lowres_does_not_fade() {
+        let mut h = Harness::build(|app| {
+            let thumbnailer = Thumbnailer::start(
+                Arc::new(UnopenableEngine),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            );
+            let sidebar = Renderer::start_background(
+                Arc::new(BlankEngine),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            );
+            app.with_thumbnails(thumbnailer)
+                .with_sidebar_renderer(sidebar)
+        });
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.until(|h| h.app.sidebar_view.sharp_pages().contains(&0));
+        let lowres = blank_texture(&h.ctx, "lowres");
+        h.app
+            .thumbnails
+            .as_mut()
+            .unwrap()
+            .textures
+            .insert(0, lowres.clone());
+        h.frames(1, vec![]);
+        let (_, first) = h.app.sidebar_view.drawn()[0];
+        let drawn = drawn_textures(&h, Some(first));
+        assert_eq!(drawn.len(), 1, "{drawn:?}");
+        assert_ne!(drawn[0], lowres.texture.id());
     }
 
     /// An engine that opens nothing.
