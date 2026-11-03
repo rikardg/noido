@@ -1454,15 +1454,22 @@ impl NoidoApp {
 
         // The page area changes size this frame when the sidebar opens or
         // closes; lay the pages out for it now, not a frame late.
-        let frame = crate::theme::Theme::current(&ctx).frame(
+        let mut frame = crate::theme::Theme::current(&ctx).frame(
             ctx.theme(),
             crate::theme::Surface::Central,
             ui.style(),
         );
+        let bar = crate::theme::solid_bar(ui);
+        if cfg!(target_os = "macos") && bar.is_some() {
+            // Solid bars meet the window's edge, as AppKit's do. Not
+            // elsewhere: noido's resize edges there would take presses on
+            // a bar's outer side.
+            frame = frame.inner_margin(0);
+        }
         let area = ui.available_rect_before_wrap() - frame.total_margin();
         // Solid bars take room from the pages: lay them out beside the bars
         // they need there.
-        let solid = crate::theme::solid_bar(ui).map(|bar| {
+        let solid = bar.map(|bar| {
             let outer = (area.width(), area.height());
             let bars = noido_core::scroll_bars(outer, bar, |(width, height)| {
                 self.view.content_size_at(width, height)
@@ -1508,6 +1515,9 @@ impl NoidoApp {
                     .on_drag_cursor(egui::CursorIcon::Grabbing);
             }
             let output = crate::theme::scope(ui, crate::theme::Role::Scrollbar, |ui| {
+                if let Some((bars, _)) = solid {
+                    crate::theme::paint_grooves(ui, ui.available_rect_before_wrap(), bars);
+                }
                 scroll_area.show_viewport(ui, |ui, viewport| self.pages(ui, viewport))
             });
             // The pointing hand over a link, unless a drag is under way.
@@ -2663,6 +2673,98 @@ mod tests {
         let inner = h.app.last_scroll.unwrap().inner;
         assert_eq!(h.app.view.viewport_size(), (inner.width(), inner.height()));
         assert!(h.app.view.layout().content_width() > inner.width());
+    }
+
+    /// With both bars, the corner where their grooves meet has no hairline
+    /// through it: the vertical one ends where the horizontal groove begins.
+    #[test]
+    fn groove_hairlines_stop_at_the_corner() {
+        let mut h = Harness::new().solid_bars();
+        for _ in 0..3 {
+            h.press(egui::Key::Equals, Modifiers::COMMAND);
+        }
+        h.frames(3, vec![]);
+        let inner = h.app.last_scroll.unwrap().inner;
+        let vertical: Vec<[egui::Pos2; 2]> = h
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::LineSegment { points, .. }
+                    if (points[0].x - inner.max.x).abs() < 0.5
+                        && (points[1].x - inner.max.x).abs() < 0.5 =>
+                {
+                    Some(*points)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(!vertical.is_empty(), "no hairline beside the pages");
+        for points in vertical {
+            assert!(
+                points[0].y.max(points[1].y) <= inner.max.y + 0.5,
+                "hairline runs to {} through the corner below {}",
+                points[0].y.max(points[1].y),
+                inner.max.y
+            );
+        }
+    }
+
+    /// Filled rects the last frame painted with this x range (within half a
+    /// point), as (top, bottom).
+    fn strips(h: &Harness, left: f32, right: f32) -> Vec<(f32, f32)> {
+        h.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect) if rect.fill != Color32::TRANSPARENT => Some(rect.rect),
+                _ => None,
+            })
+            .filter(|rect| (rect.min.x - left).abs() < 0.5 && (rect.max.x - right).abs() < 0.5)
+            .map(|rect| (rect.min.y, rect.max.y))
+            .collect()
+    }
+
+    /// A solid bar runs in a groove the bar's width, down the whole page
+    /// area and sidebar; overlay bars have none.
+    #[test]
+    fn solid_bars_run_in_a_groove() {
+        let mut h = Harness::new().solid_bars();
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(3, vec![]);
+        let inner = h.app.last_scroll.unwrap().inner;
+        let pages = strips(&h, inner.max.x, inner.max.x + 17.0);
+        assert!(
+            pages.contains(&(inner.min.y, inner.max.y)),
+            "no groove beside the pages: {pages:?}"
+        );
+        // Inside the panel's 1-point border on its right.
+        let right = h.app.sidebar.width - 1.0;
+        let sidebar = strips(&h, right - 17.0, right);
+        assert!(
+            sidebar.iter().any(|(top, bottom)| bottom - top > 500.0),
+            "no groove in the sidebar: {sidebar:?}"
+        );
+
+        let mut h = Harness::new();
+        h.frames(3, vec![]);
+        let inner = h.app.last_scroll.unwrap().inner;
+        assert!(strips(&h, inner.max.x - 17.0, inner.max.x).is_empty());
+    }
+
+    /// On macOS solid bars meet the window's edge; elsewhere the resize
+    /// edges keep them off it, and overlay bars keep the margin everywhere.
+    #[test]
+    fn solid_bars_meet_the_edge_on_macos() {
+        let mut h = Harness::new().solid_bars();
+        h.frames(3, vec![]);
+        let inner = h.app.last_scroll.unwrap().inner;
+        let margin = if cfg!(target_os = "macos") { 0.0 } else { 8.0 };
+        assert_eq!(inner.max.x + 17.0, h.size.x - margin);
+
+        // Overlay bars keep the margin everywhere.
+        let mut h = Harness::new();
+        h.frames(3, vec![]);
+        let inner = h.app.last_scroll.unwrap().inner;
+        assert_eq!(inner.max.x, h.size.x - 8.0);
     }
 
     /// The sidebar's thumbnails are laid out beside its solid bar, not

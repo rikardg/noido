@@ -272,6 +272,9 @@ impl SidebarView {
             area = theme::with_solid_bars(ui.ctx(), area, bars, self.scroll_id);
         }
         let shown = theme::scope(ui, theme::Role::Scrollbar, |ui| {
+            if let Some((bars, _)) = solid {
+                theme::paint_grooves(ui, ui.available_rect_before_wrap(), bars);
+            }
             area.show_viewport(ui, |ui, viewport| self.column(ui, viewport, &column, input))
         });
         self.scroll_id = Some(shown.id);
