@@ -351,6 +351,7 @@ impl NoidoApp {
                 Ok(image) if keep.contains(&thumbnail.page) => {
                     let name = format!("thumbnail-{}", thumbnail.page);
                     let size = self.view.layout().page_size(thumbnail.page);
+                    let image = crate::image::soften(&image);
                     let texture = PageImage::load(ctx, name, &image, size, thumbnail.scale);
                     thumbnails.textures.insert(thumbnail.page, texture);
                 }
