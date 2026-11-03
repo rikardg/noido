@@ -731,6 +731,18 @@ mod tests {
         view
     }
 
+    /// Fitted to the width, the pages can come out a float's breadth wider
+    /// than the viewport (640.00006 in 640); that is no room to scroll.
+    #[test]
+    fn fitted_width_float_noise_does_not_scroll() {
+        for width in [640.0, 641.0, 653.0, 700.0, 777.0, 1001.0] {
+            let mut view = View::new(vec![size(612.0, 792.0); 10]);
+            view.set_viewport_size(width, 960.0);
+            view.apply(Action::ScrollRight);
+            assert_eq!(view.offset().0, 0.0, "at width {width}");
+        }
+    }
+
     #[test]
     fn content_size_at_is_the_size_a_viewport_would_give_and_changes_nothing() {
         let view = letter_view();
