@@ -12,7 +12,7 @@ publish.workspace = true
 block2.workspace = true
 objc2.workspace = true
 objc2-app-kit = { workspace = true, features = ["NSApplication", "NSResponder", "NSRunningApplication", "NSWorkspace", "block2", "libc"] }
-objc2-foundation = { workspace = true, features = ["NSArray", "NSError", "NSNotification", "NSObject", "NSString", "NSURL", "NSThread", "NSEnumerator", "block2"] }
+objc2-foundation = { workspace = true, features = ["NSAppleEventDescriptor", "NSAppleEventManager", "NSArray", "NSError", "NSNotification", "NSObject", "NSString", "NSURL", "NSThread", "NSEnumerator", "block2", "objc2-core-services"] }
 
 [lints.rust]
 unsafe_code = "deny"
