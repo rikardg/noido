@@ -429,6 +429,23 @@ fn scrollbar(theme: &ResolvedTheme, style: &mut egui::Style) {
     style.spacing.scroll.floating_width = scrollbar.thumb_width;
     style.spacing.scroll.handle_min_length = scrollbar.min_thumb_length;
     style.spacing.scroll.foreground_color = true;
+    if !scrollbar.overlay_mode {
+        // A solid bar: a capsule thumb centred in the groove, as AppKit
+        // draws it. egui draws its thumb the bar's whole width, so the bar is
+        // the thumb and the rest of the groove its margins. egui's track,
+        // only as wide as the thumb, is not drawn; the groove is painted
+        // separately.
+        let thumb = scrollbar.thumb_width;
+        let side = ((scrollbar.groove_width - thumb) / 2.0).max(0.0);
+        style.spacing.scroll.bar_width = thumb;
+        style.spacing.scroll.bar_inner_margin = side;
+        style.spacing.scroll.bar_outer_margin = side;
+        style.visuals.extreme_bg_color = Color32::TRANSPARENT;
+        let radius = egui::CornerRadius::same((thumb / 2.0).round() as u8);
+        style.visuals.widgets.inactive.corner_radius = radius;
+        style.visuals.widgets.hovered.corner_radius = radius;
+        style.visuals.widgets.active.corner_radius = radius;
+    }
     style.visuals.widgets.inactive.fg_stroke =
         Stroke::new(1.0, convert::color(scrollbar.thumb_color));
     style.visuals.widgets.hovered.fg_stroke =
@@ -592,6 +609,43 @@ mod tests {
             style.visuals.widgets.hovered.weak_bg_fill,
             Color32::from_rgb(0x36, 0x36, 0x3a)
         );
+    }
+
+    /// A solid bar (windows-11: a 17 groove, a 6 thumb) draws a capsule
+    /// thumb centred in its groove, and not egui's thumb-wide track.
+    #[test]
+    fn solid_scrollbar_role_draws_a_thin_thumb_in_the_groove() {
+        let theme = Theme::preset("windows-11").expect("windows-11");
+        let mut style = theme.style(egui::Theme::Light);
+        theme.apply_role(egui::Theme::Light, &mut style, Role::Scrollbar);
+        let scroll = &style.spacing.scroll;
+        assert!(!scroll.floating);
+        assert_eq!(scroll.bar_width, 6.0);
+        assert_eq!(scroll.bar_inner_margin, 5.5);
+        assert_eq!(scroll.bar_outer_margin, 5.5);
+        assert_eq!(scroll.allocated_width(), 17.0);
+        assert_eq!(style.visuals.extreme_bg_color, Color32::TRANSPARENT);
+        for widget in [
+            &style.visuals.widgets.inactive,
+            &style.visuals.widgets.hovered,
+            &style.visuals.widgets.active,
+        ] {
+            assert_eq!(widget.corner_radius, egui::CornerRadius::same(3));
+        }
+    }
+
+    /// Overlay bars (Adwaita: a 12 groove, an 8 thumb) float as before.
+    #[test]
+    fn overlay_scrollbar_role_floats() {
+        let theme = Theme::preset("adwaita").expect("adwaita");
+        let mut style = theme.style(egui::Theme::Dark);
+        let track = style.visuals.extreme_bg_color;
+        theme.apply_role(egui::Theme::Dark, &mut style, Role::Scrollbar);
+        let scroll = &style.spacing.scroll;
+        assert!(scroll.floating);
+        assert_eq!(scroll.bar_width, 12.0);
+        assert_eq!(scroll.floating_width, 8.0);
+        assert_eq!(style.visuals.extreme_bg_color, track);
     }
 
     #[test]
