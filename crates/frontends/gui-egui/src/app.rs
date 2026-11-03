@@ -1843,6 +1843,14 @@ mod tests {
             self
         }
 
+        /// The harness with the OS asking for reduced motion.
+        fn reduced_motion(mut self) -> Self {
+            let theme = crate::theme::Theme::current(&self.ctx);
+            (*theme).clone().with_reduce_motion(true).install(&self.ctx);
+            self.frames(3, vec![]);
+            self
+        }
+
         fn frames(&mut self, count: usize, mut events: Vec<Event>) {
             for _ in 0..count {
                 let mut viewports = egui::ViewportIdMap::default();
@@ -5495,6 +5503,175 @@ mod tests {
             "{before:?} {after:?}"
         );
         assert_eq!(h.app.chosen, None, "the drag counted as a click");
+    }
+
+    /// The top of the sidebar's thumb (solid bars), drawn last frame.
+    fn sidebar_thumb_top(h: &Harness) -> f32 {
+        // Inside the panel's 1-point border; the 6-point thumb centred in
+        // the 17-point groove.
+        let groove = h.app.sidebar.width - 1.0 - 17.0;
+        let thumbs = strips(h, groove + 5.5, groove + 11.5);
+        assert_eq!(thumbs.len(), 1, "{thumbs:?}");
+        thumbs[0].0
+    }
+
+    /// Pages forward until the sidebar has to follow, and lets it settle.
+    fn page_until_the_sidebar_follows(h: &mut Harness) {
+        h.frames(1, vec![Event::PointerMoved(pos2(600.0, 500.0))]);
+        for _ in 0..30 {
+            let before = h.app.sidebar_view.offset();
+            h.press(egui::Key::PageDown, Modifiers::NONE);
+            h.frames(30, vec![]);
+            if h.app.sidebar_view.offset() > before + 1.0 {
+                return;
+            }
+        }
+        panic!("the sidebar never followed");
+    }
+
+    /// After a PageDown that makes the sidebar follow: the thumb's top
+    /// before, then each frame from the press's own the sidebar's offset,
+    /// the thumb's top, and whether the frame asked for another at once.
+    fn follow_frames(h: &mut Harness, frames: usize) -> (f32, Vec<f32>, Vec<f32>, Vec<bool>) {
+        page_until_the_sidebar_follows(h);
+        let start = sidebar_thumb_top(h);
+        let (mut offsets, mut tops, mut repaints) = (vec![], vec![], vec![]);
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        for frame in 0..frames {
+            if frame > 0 {
+                h.frames(1, vec![]);
+            }
+            offsets.push(h.app.sidebar_view.offset());
+            tops.push(sidebar_thumb_top(h));
+            repaints.push(h.repaint_delay == Duration::ZERO);
+        }
+        (start, offsets, tops, repaints)
+    }
+
+    #[test]
+    fn sidebar_thumb_glides_while_the_thumbnails_jump() {
+        let mut h = sidebar_on(Arc::new(BlankEngine30)).solid_bars();
+        let (start, offsets, tops, repaints) = follow_frames(&mut h, 30);
+        // The thumbnails are there at once.
+        assert!(offsets.iter().all(|o| *o == offsets[0]), "{offsets:?}");
+        let end = *tops.last().unwrap();
+        assert!(end > start + 1.0, "{start} {tops:?}");
+        // The thumb is on its way from the press's own frame.
+        assert!(tops[0] > start && tops[0] < end - 0.5, "{start} {tops:?}");
+        // Drawn again until there, without input.
+        assert!(repaints[..15].iter().all(|r| *r), "{repaints:?}");
+        // There within a third of a second.
+        assert_eq!(tops[20], end, "{start} {tops:?}");
+        for pair in tops.windows(2) {
+            assert!(pair[1] >= pair[0], "{start} {tops:?}");
+        }
+    }
+
+    /// Mid-glide, the pointer coming over the groove puts the thumb where
+    /// egui takes presses on it.
+    #[test]
+    fn sidebar_thumb_is_in_place_under_the_pointer() {
+        let mut h = sidebar_on(Arc::new(BlankEngine30)).solid_bars();
+        page_until_the_sidebar_follows(&mut h);
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        let on_its_way = sidebar_thumb_top(&h);
+        let groove = h.app.sidebar.width - 1.0 - 17.0;
+        h.frames(1, vec![Event::PointerMoved(pos2(groove + 8.0, 500.0))]);
+        let at = sidebar_thumb_top(&h);
+        h.frames(30, vec![]);
+        assert!(on_its_way < at - 0.5, "{on_its_way} {at}");
+        assert_eq!(at, sidebar_thumb_top(&h));
+    }
+
+    /// Back from the list of matches, the thumb is drawn where it is, as
+    /// on opening the sidebar: it was out of sight.
+    #[test]
+    fn sidebar_thumb_jumps_back_from_the_matches() {
+        let mut pages: Vec<&[&str]> = vec![&["a dog"]; 30];
+        pages[25] = &["a cat"];
+        let mut h = searching(&TextEngine::new(&pages)).solid_bars();
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        let top = sidebar_thumb_top(&h);
+        // Off to page 25 from the list of matches.
+        search_for(&mut h, "cat");
+        h.frames(2, vec![]);
+        let (_, row) = h.app.sidebar_view.result_rows()[0];
+        h.click(row.center());
+        h.frames(2, vec![]);
+        assert_eq!(h.app.view.centre_page(), Some(25));
+        focus_search(&mut h);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(h.app.search_state.searched(), None);
+        let first = sidebar_thumb_top(&h);
+        assert!(first > top + 100.0, "{top} {first}");
+        h.frames(30, vec![]);
+        assert_eq!(first, sidebar_thumb_top(&h));
+    }
+
+    #[test]
+    fn sidebar_thumb_jumps_with_reduced_motion() {
+        let mut h = sidebar_on(Arc::new(BlankEngine30))
+            .solid_bars()
+            .reduced_motion();
+        let (start, _, tops, _) = follow_frames(&mut h, 3);
+        assert!(tops[0] > start + 1.0, "{start} {tops:?}");
+        assert_eq!(tops[0], tops[2], "{start} {tops:?}");
+    }
+
+    /// Closed mid-glide and opened again, the thumb is drawn in place, as
+    /// on any opening.
+    #[test]
+    fn sidebar_thumb_is_in_place_on_reopening() {
+        let mut h = sidebar_on(Arc::new(BlankEngine30)).solid_bars();
+        page_until_the_sidebar_follows(&mut h);
+        let start = sidebar_thumb_top(&h);
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        assert!(sidebar_thumb_top(&h) > start, "no glide");
+        h.press(egui::Key::F9, Modifiers::NONE);
+        assert!(!h.app.sidebar.open);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        let first = sidebar_thumb_top(&h);
+        h.frames(30, vec![]);
+        assert_eq!(first, sidebar_thumb_top(&h));
+    }
+
+    #[test]
+    fn sidebar_thumb_goes_with_the_reader_scrolling_mid_glide() {
+        let mut h = sidebar_on(Arc::new(BlankEngine30)).solid_bars();
+        // Settled, the thumb's top is linear in the offset: two points.
+        let (offset0, top0) = (h.app.sidebar_view.offset(), sidebar_thumb_top(&h));
+        page_until_the_sidebar_follows(&mut h);
+        let (offset1, top1) = (h.app.sidebar_view.offset(), sidebar_thumb_top(&h));
+        let in_place =
+            |offset: f32| top0 + (offset - offset0) * (top1 - top0) / (offset1 - offset0);
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        h.frames(1, vec![Event::PointerMoved(pos2(100.0, 500.0))]);
+        let step = wheel(
+            egui::MouseWheelUnit::Point,
+            300.0,
+            egui::MouseWheelSource::Wheel,
+        );
+        let mut last = h.app.sidebar_view.offset();
+        h.frames(1, vec![step]);
+        let mut moved = 0;
+        for _ in 0..30 {
+            let offset = h.app.sidebar_view.offset();
+            if offset != last {
+                // The reader moved it: the thumb is with the thumbnails
+                // that very frame, not gliding.
+                moved += 1;
+                let top = sidebar_thumb_top(&h);
+                assert!(
+                    (top - in_place(offset)).abs() < 0.5,
+                    "at {offset} the thumb is at {top}, in place {}",
+                    in_place(offset)
+                );
+            }
+            last = offset;
+            h.frames(1, vec![]);
+        }
+        assert!(moved > 0, "the wheel never moved the sidebar");
     }
 
     // ---- Search ----

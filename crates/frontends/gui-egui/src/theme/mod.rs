@@ -94,6 +94,8 @@ pub struct Theme {
     layout: Layout,
     fonts: fonts::Fonts,
     mode: egui::Theme,
+    /// The OS asks for less motion: things jump instead of gliding.
+    reduce_motion: bool,
 }
 
 impl Theme {
@@ -108,6 +110,7 @@ impl Theme {
             layout: Layout::default(),
             fonts: fonts::Fonts::default(),
             mode: egui::Theme::Dark,
+            reduce_motion: false,
         })
     }
 
@@ -153,7 +156,19 @@ impl Theme {
             },
             fonts,
             mode,
+            reduce_motion: system.accessibility.reduce_motion,
         }
+    }
+
+    /// Whether the OS asks for reduced motion.
+    pub fn reduce_motion(&self) -> bool {
+        self.reduce_motion
+    }
+
+    #[cfg(test)]
+    pub fn with_reduce_motion(mut self, reduce_motion: bool) -> Self {
+        self.reduce_motion = reduce_motion;
+        self
     }
 
     /// The theme currently installed on `ctx`.
@@ -324,6 +339,17 @@ pub fn paint_thumbs<R>(
     shown: &egui::scroll_area::ScrollAreaOutput<R>,
     bars: noido_core::Bars,
 ) {
+    paint_thumbs_at(ui, shown, bars, shown.state.clamped_offset());
+}
+
+/// [`paint_thumbs`], placed for the scroll `offset` given rather than the
+/// area's own: drawn on the way to it while it eases there.
+pub fn paint_thumbs_at<R>(
+    ui: &egui::Ui,
+    shown: &egui::scroll_area::ScrollAreaOutput<R>,
+    bars: noido_core::Bars,
+    offset: egui::Vec2,
+) {
     let theme = Theme::current(ui.ctx());
     let scrollbar = &theme.variant(ui.ctx().theme()).scrollbar;
     let scroll = ui.style().spacing.scroll;
@@ -331,7 +357,6 @@ pub fn paint_thumbs<R>(
     let thumb = scrollbar.thumb_width.min(groove);
     let inner = shown.inner_rect;
     let content = shown.content_size;
-    let offset = shown.state.clamped_offset();
     for (d, needed) in [(0, bars.horizontal), (1, bars.vertical)] {
         if !needed {
             continue;
