@@ -296,8 +296,13 @@ someone else's; nothing from inside the bundle.
   becomes one GUI, in order: a `file:` URL as its path, any other URL
   (`noido:`) as its text, started as under "Coming to the front". Then
   this process exits 0. No URL by `applicationDidFinishLaunching` (a
-  double-click on the app itself, which sends no open event): exit 0 at
-  once, quietly.
+  double-click on the app itself, which sends no open event): the
+  launcher comes to the front and shows the standard Open panel for PDFs,
+  several allowed; each picked file opens as if Finder had sent it, and
+  Cancel exits 0. (The hand test found that exiting quietly, as first
+  designed, reads as nothing happening; Preview shows its Open panel
+  here.) With noido already running, the double-click goes to it instead
+  and brings it forward, as macOS does for any running app.
 - No argument, otherwise: the clap error, as now. A symlink started from
   a terminal keeps the symlink's path, so plain `noido` there is the clap
   error rather than a process waiting for a document no one will send.
@@ -427,7 +432,7 @@ What this design found that the release-job design should start from:
   `noido <that file>`; a click on a different one while noido runs opens
   a second window; a click on a second file while the first noido is
   still starting; a `noido:` link opens; double-clicking the app itself
-  exits quietly; `noido --version` and `noido <file>` from a terminal
+  shows the Open panel, and Cancel leaves nothing running; `noido --version` and `noido <file>` from a terminal
   behave; the Dock shows the app's name; the launcher's bounce and the
   first window's flash forward are tolerable; `codesign -dv` says ad hoc;
   after a version bump the terminal `noido` prints the stale-app hint
