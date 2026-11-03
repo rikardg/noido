@@ -285,6 +285,36 @@ pub fn with_solid_bars(
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
 }
 
+/// Paints the grooves the solid `bars` run in, along the right and bottom
+/// of `outer`: a strip a shade toward the text colour, with a hairline on
+/// its inner edge, as AppKit draws them. Call it under the scrollbar role,
+/// before the scroll area, so the bars are drawn over it.
+pub fn paint_grooves(ui: &egui::Ui, outer: egui::Rect, bars: noido_core::Bars) {
+    let width = ui.style().spacing.scroll.allocated_width();
+    let palette = Theme::current(ui.ctx()).palette(ui.ctx().theme());
+    let fill = palette.panel.lerp_to_gamma(palette.text, 0.04);
+    let line = egui::Stroke::new(1.0 / ui.ctx().pixels_per_point(), palette.border);
+    let painter = ui.painter();
+    let mut right = outer.max.x;
+    if bars.vertical {
+        let groove = outer.with_min_x(outer.max.x - width);
+        painter.rect_filled(groove, 0.0, fill);
+        // Not through the corner, where the horizontal groove meets it.
+        let bottom = if bars.horizontal {
+            outer.max.y - width
+        } else {
+            outer.max.y
+        };
+        painter.vline(groove.min.x, groove.min.y..=bottom, line);
+        right = groove.min.x;
+    }
+    if bars.horizontal {
+        let groove = outer.with_min_y(outer.max.y - width).with_max_x(right);
+        painter.rect_filled(groove, 0.0, fill);
+        painter.hline(groove.x_range(), groove.min.y, line);
+    }
+}
+
 /// Shows `text` over `response` with the tooltip role.
 pub fn hover_text(response: egui::Response, text: impl Into<egui::WidgetText>) -> egui::Response {
     tooltip(response, text.into(), false)
