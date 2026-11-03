@@ -315,6 +315,73 @@ pub fn paint_grooves(ui: &egui::Ui, outer: egui::Rect, bars: noido_core::Bars) {
     }
 }
 
+/// Paints the thumbs of the solid `bars` of the scroll area `shown`: a
+/// capsule the theme's thumb width, centred in the groove where egui's own
+/// (transparent) thumb is, lit while hovered or dragged. Call it under the
+/// scrollbar role, after the scroll area.
+pub fn paint_thumbs<R>(
+    ui: &egui::Ui,
+    shown: &egui::scroll_area::ScrollAreaOutput<R>,
+    bars: noido_core::Bars,
+) {
+    let theme = Theme::current(ui.ctx());
+    let scrollbar = &theme.variant(ui.ctx().theme()).scrollbar;
+    let scroll = ui.style().spacing.scroll;
+    let groove = scroll.allocated_width();
+    let thumb = scrollbar.thumb_width.min(groove);
+    let inner = shown.inner_rect;
+    let content = shown.content_size;
+    let offset = shown.state.clamped_offset();
+    for (d, needed) in [(0, bars.horizontal), (1, bars.vertical)] {
+        if !needed {
+            continue;
+        }
+        // Along the bar, as egui places its thumb.
+        let (start, end) = (inner.min[d], inner.max[d]);
+        let view = inner.size()[d];
+        let from_content = |c: f32| {
+            if content[d] > 0.0 {
+                egui::remap_clamp(c, 0.0..=content[d], start..=end)
+            } else {
+                start
+            }
+        };
+        let length = (from_content(offset[d] + view) - from_content(offset[d]))
+            .max(scroll.handle_min_length)
+            .min(end - start);
+        let max_offset = content[d] - view;
+        let along = if max_offset > 0.0 {
+            egui::remap_clamp(offset[d], 0.0..=max_offset, start..=end - length)
+        } else {
+            start
+        };
+        // Across it: the whole groove for hovering, the thumb centred in it.
+        let groove_start = inner.max[1 - d];
+        let across = groove_start + (groove - thumb) / 2.0;
+        let rect = |from: f32, to: f32| {
+            if d == 0 {
+                egui::Rect::from_min_max(egui::pos2(along, from), egui::pos2(along + length, to))
+            } else {
+                egui::Rect::from_min_max(egui::pos2(from, along), egui::pos2(to, along + length))
+            }
+        };
+        let colour = if ui.ctx().is_being_dragged(shown.id.with(d)) {
+            scrollbar
+                .thumb_active_color
+                .unwrap_or(scrollbar.thumb_hover_color)
+        } else if ui.rect_contains_pointer(rect(groove_start, groove_start + groove)) {
+            scrollbar.thumb_hover_color
+        } else {
+            scrollbar.thumb_color
+        };
+        ui.painter().rect_filled(
+            rect(across, across + thumb),
+            thumb / 2.0,
+            convert::color(colour),
+        );
+    }
+}
+
 /// Shows `text` over `response` with the tooltip role.
 pub fn hover_text(response: egui::Response, text: impl Into<egui::WidgetText>) -> egui::Response {
     tooltip(response, text.into(), false)

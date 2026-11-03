@@ -1518,7 +1518,11 @@ impl NoidoApp {
                 if let Some((bars, _)) = solid {
                     crate::theme::paint_grooves(ui, ui.available_rect_before_wrap(), bars);
                 }
-                scroll_area.show_viewport(ui, |ui, viewport| self.pages(ui, viewport))
+                let shown = scroll_area.show_viewport(ui, |ui, viewport| self.pages(ui, viewport));
+                if let Some((bars, _)) = solid {
+                    crate::theme::paint_thumbs(ui, &shown, bars);
+                }
+                shown
             });
             // The pointing hand over a link, unless a drag is under way.
             if cursor_free
@@ -2748,6 +2752,37 @@ mod tests {
         h.frames(3, vec![]);
         let inner = h.app.last_scroll.unwrap().inner;
         assert!(strips(&h, inner.max.x - 17.0, inner.max.x).is_empty());
+    }
+
+    /// A press anywhere across the groove, below the thumb, scrolls down.
+    #[test]
+    fn the_whole_groove_takes_clicks() {
+        for dx in [0.5, 2.0, 8.5, 15.0, 16.5] {
+            let mut h = Harness::new().solid_bars();
+            h.frames(3, vec![]);
+            let inner = h.app.last_scroll.unwrap().inner;
+            let before = h.app.view.offset().1;
+            h.click(pos2(inner.max.x + dx, inner.max.y - 20.0));
+            h.frames(3, vec![]);
+            assert!(
+                h.app.view.offset().1 > before,
+                "a press {dx} into the groove did not scroll"
+            );
+        }
+    }
+
+    /// The thumb is a capsule the theme's thumb width (windows-11: 6),
+    /// centred in the 17-point groove.
+    #[test]
+    fn solid_bars_have_a_thin_thumb() {
+        let mut h = Harness::new().solid_bars();
+        h.frames(3, vec![]);
+        let inner = h.app.last_scroll.unwrap().inner;
+        let thumbs = strips(&h, inner.max.x + 5.5, inner.max.x + 11.5);
+        assert_eq!(thumbs.len(), 1, "{thumbs:?}");
+        let (top, bottom) = thumbs[0];
+        assert_eq!(top, inner.min.y);
+        assert!(bottom < inner.max.y);
     }
 
     /// On macOS solid bars meet the window's edge; elsewhere the resize
