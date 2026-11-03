@@ -27,6 +27,13 @@ use objc2_foundation::{
 /// How long the launcher waits for NSWorkspace before giving up.
 const GRACE: Duration = Duration::from_secs(5);
 
+/// How long the launcher stays after its last launch has finished, so a
+/// click Launch Services sends it then is still launched.
+const QUIET: Duration = Duration::from_millis(300);
+
+/// How often the launcher checks whether it is time to exit.
+const TICK: Duration = Duration::from_millis(50);
+
 /// Starts a new instance of the app at `app` with `args`, in front. `done`
 /// runs from the completion handler, on some thread.
 pub fn launch_in_bundle(
@@ -67,13 +74,15 @@ pub fn launch_in_bundle(
 }
 
 /// The launcher's bookkeeping: which URLs wait for launching to finish,
-/// how many launches are still on their way, and when the last one began.
+/// how many launches are still on their way, and when the last one began
+/// and ended.
 #[derive(Default)]
 struct Launches {
     finished: bool,
     waiting: Vec<String>,
     running: usize,
     last_start: Option<Instant>,
+    last_done: Option<Instant>,
 }
 
 impl Launches {
@@ -106,15 +115,21 @@ impl Launches {
         urls
     }
 
-    /// One launch has finished; true when it was the last one.
-    fn launched(&mut self) -> bool {
+    /// One launch has finished, at `now`.
+    fn launched(&mut self, now: Instant) {
         self.running = self.running.saturating_sub(1);
-        self.running == 0
+        self.last_done = Some(now);
     }
 
-    /// When the launcher gives up waiting for NSWorkspace.
-    fn deadline(&self) -> Instant {
-        self.last_start.unwrap_or_else(Instant::now) + GRACE
+    /// When the launcher exits: GRACE after the latest start while
+    /// launches are on their way, QUIET after the last one finished once
+    /// none are.
+    fn exit_at(&self) -> Instant {
+        let start = self.last_start.unwrap_or_else(Instant::now);
+        match self.last_done {
+            Some(done) if self.running == 0 => done + QUIET,
+            _ => start + GRACE,
+        }
     }
 }
 
@@ -154,15 +169,19 @@ define_class!(
                 exit(0);
             }
             let launches = self.ivars().launches.clone();
-            // Gives up on NSWorkspace once nothing has started for GRACE.
+            // The one place the launcher exits once it has launched. It
+            // checks often: the last launch finishing brings the time
+            // forward.
             thread::spawn(move || {
                 loop {
-                    let deadline = lock(&launches).deadline();
-                    let left = deadline.saturating_duration_since(Instant::now());
+                    let launches = lock(&launches);
+                    let left = launches.exit_at().saturating_duration_since(Instant::now());
                     if left.is_zero() {
+                        // Under the lock: no URL is counted and then lost.
                         exit(0);
                     }
-                    thread::sleep(left);
+                    drop(launches);
+                    thread::sleep(left.min(TICK));
                 }
             });
             self.launch(to_launch);
@@ -187,7 +206,7 @@ impl Delegate {
         lock(&self.ivars().launches)
     }
 
-    /// Starts one GUI per URL; the launcher exits after the last one.
+    /// Starts one GUI per URL.
     fn launch(&self, urls: Vec<String>) {
         for url in urls {
             let launches = self.ivars().launches.clone();
@@ -195,9 +214,7 @@ impl Delegate {
                 if let Err(e) = result {
                     eprintln!("noido: cannot open a document: {e}");
                 }
-                if lock(&launches).launched() {
-                    exit(0);
-                }
+                lock(&launches).launched(Instant::now());
             });
         }
     }
@@ -253,25 +270,50 @@ mod tests {
     }
 
     #[test]
-    fn the_launcher_is_done_after_the_last_launch_late_ones_included() {
-        let now = Instant::now();
-        let mut launches = Launches::default();
-        launches.opened(urls(&["a"]), now);
-        launches.finished_launching(now);
-        launches.opened(urls(&["b"]), now);
-        assert!(!launches.launched());
-        assert!(launches.launched());
-    }
-
-    #[test]
-    fn the_timeout_counts_from_the_latest_start() {
+    fn while_launches_run_the_timeout_counts_from_the_latest_start() {
         let start = Instant::now();
         let mut launches = Launches::default();
         launches.opened(urls(&["a"]), start);
         launches.finished_launching(start);
-        assert_eq!(launches.deadline(), start + GRACE);
+        assert_eq!(launches.exit_at(), start + GRACE);
         let later = start + Duration::from_millis(80);
         launches.opened(urls(&["b"]), later);
-        assert_eq!(launches.deadline(), later + GRACE);
+        assert_eq!(launches.exit_at(), later + GRACE);
+    }
+
+    #[test]
+    fn one_launch_done_keeps_waiting_for_the_other() {
+        let start = Instant::now();
+        let mut launches = Launches::default();
+        launches.opened(urls(&["a", "b"]), start);
+        launches.finished_launching(start);
+        launches.launched(start + Duration::from_millis(50));
+        assert_eq!(launches.exit_at(), start + GRACE);
+    }
+
+    #[test]
+    fn after_the_last_launch_the_launcher_stays_a_quiet_spell() {
+        let start = Instant::now();
+        let mut launches = Launches::default();
+        launches.opened(urls(&["a"]), start);
+        launches.finished_launching(start);
+        let done = start + Duration::from_millis(50);
+        launches.launched(done);
+        assert_eq!(launches.exit_at(), done + QUIET);
+    }
+
+    #[test]
+    fn a_url_in_the_quiet_spell_is_launched_and_waited_for() {
+        let start = Instant::now();
+        let mut launches = Launches::default();
+        launches.opened(urls(&["a"]), start);
+        launches.finished_launching(start);
+        launches.launched(start + Duration::from_millis(50));
+        let late = start + Duration::from_millis(200);
+        assert_eq!(launches.opened(urls(&["b"]), late), urls(&["b"]));
+        assert_eq!(launches.exit_at(), late + GRACE);
+        let done = late + Duration::from_millis(40);
+        launches.launched(done);
+        assert_eq!(launches.exit_at(), done + QUIET);
     }
 }
