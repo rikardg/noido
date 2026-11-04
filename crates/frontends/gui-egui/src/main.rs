@@ -28,6 +28,8 @@ mod windows;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 
 use clap::Parser;
 use eframe::egui;
@@ -39,6 +41,14 @@ const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 300.0];
 /// UI points scrolled per mouse wheel step (egui's default is 40).
 const WHEEL_SCROLL_SPEED: f32 = 125.0;
 
+/// How long a terminal launch waits for the app it started to listen.
+#[cfg(target_os = "macos")]
+const START_WAIT: Duration = Duration::from_secs(5);
+
+/// How often it checks.
+#[cfg(target_os = "macos")]
+const START_POLL: Duration = Duration::from_millis(50);
+
 #[derive(Parser)]
 #[command(
     name = "noido",
@@ -47,7 +57,14 @@ const WHEEL_SCROLL_SPEED: f32 = 125.0;
 )]
 struct Args {
     /// PDF file, or a file: or noido: link, to open
-    #[arg(required_unless_present_any = ["install", "uninstall", "app_bundle"])]
+    #[cfg_attr(
+        target_os = "macos",
+        arg(required_unless_present_any = ["install", "uninstall", "app_bundle", "foreground"])
+    )]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        arg(required_unless_present_any = ["install", "uninstall", "app_bundle"])
+    )]
     path: Option<OsString>,
     /// Page to open at, from 1
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..),
@@ -62,6 +79,10 @@ struct Args {
     /// Build an ad-hoc signed noido.app in DIR (macOS)
     #[arg(long, value_name = "DIR", conflicts_with = "path")]
     app_bundle: Option<PathBuf>,
+    /// Run in this terminal, which Ctrl-C quits, instead of in the
+    /// background (macOS; elsewhere noido always does)
+    #[arg(long, conflicts_with_all = ["install", "uninstall", "app_bundle"])]
+    foreground: bool,
 }
 
 /// Drops the `-psn_…` argument older Finders add to a launch.
@@ -98,11 +119,15 @@ fn main() -> ExitCode {
         _ if args.install => desktop::install(),
         #[cfg(not(target_os = "macos"))]
         _ if args.uninstall => desktop::uninstall(),
+        #[cfg(target_os = "macos")]
         Some(_) => opening(&args).and_then(|opening| {
-            #[cfg(target_os = "macos")]
             hint_if_stale();
-            run(opening)
+            run(Some(opening), args.foreground)
         }),
+        #[cfg(target_os = "macos")]
+        None if args.foreground => run(None, true),
+        #[cfg(not(target_os = "macos"))]
+        Some(_) => opening(&args).and_then(run),
         None => unreachable!("clap requires a file without --install or --uninstall"),
     };
     match result {
@@ -170,24 +195,116 @@ fn configure(ctx: &egui::Context) {
     });
 }
 
-/// On macOS: hands the file to this executable's running app, or becomes
-/// that app, a hidden root with a window per document.
+/// On macOS: hands the file to this executable's running app, or starts
+/// that app in the background and hands it over; with `foreground`, this
+/// launch becomes the app, a hidden root with a window per document.
 #[cfg(target_os = "macos")]
-fn run(opening: Opening) -> Result<(), String> {
+fn run(opening: Option<Opening>, foreground: bool) -> Result<(), String> {
     use instance::{AppClaim, OpenRequest};
 
-    // The running app has another working directory.
-    let path = std::path::absolute(&opening.path).unwrap_or(opening.path);
     let exe = std::env::current_exe().map_err(|e| format!("cannot find noido itself: {e}"))?;
-    let request = OpenRequest {
-        path: path.clone(),
+    let request = opening.map(|opening| OpenRequest {
+        // The running app has another working directory.
+        path: std::path::absolute(&opening.path).unwrap_or(opening.path),
         target: opening.target,
-    };
-    let listener = match instance::claim_app(&exe, Some(&request)) {
-        AppClaim::Running(answer) => return handed_to_app(&path, request.target.as_ref(), answer),
+    });
+    let listener = match instance::claim_app(&exe, request.as_ref()) {
+        AppClaim::Running(answer) => {
+            let Some(request) = request else {
+                eprintln!("noido: noido is running already");
+                return Ok(());
+            };
+            return handed_to_app(&request, answer);
+        }
         AppClaim::First(listener) => Some(listener),
+        // No socket to hand over through: this launch is the app.
         AppClaim::Unavailable => None,
     };
+    match (listener, request) {
+        (Some(listener), Some(request)) if !foreground => {
+            // The app started next binds the address itself.
+            drop(listener);
+            let answer = start_app(&exe, &request)?;
+            handed_to_app(&request, answer)
+        }
+        (listener, request) => run_app(listener, request),
+    }
+}
+
+/// Starts this executable's app detached from the terminal and hands it
+/// `request` once it listens; `None` if it never answered.
+#[cfg(target_os = "macos")]
+fn start_app(
+    exe: &Path,
+    request: &instance::OpenRequest,
+) -> Result<Option<instance::Answer>, String> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    let mut child = None;
+    if let Some(app) = app_bundle::bundle_of(exe) {
+        noido_macos::launch_in_bundle(&app, &["--foreground".into()], |_| {});
+    } else {
+        let started = Command::new(exe)
+            .arg("--foreground")
+            .current_dir("/")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            // Out of the terminal's process group: its Ctrl-C stays here.
+            .process_group(0)
+            .spawn()
+            .map_err(|e| format!("cannot start noido: {e}"))?;
+        child = Some(started);
+    }
+    await_app(
+        || instance::send(exe, request),
+        || child.as_mut().and_then(|c| c.try_wait().ok().flatten()),
+        START_WAIT,
+        START_POLL,
+    )
+}
+
+/// Hands a request to the app a launch started, with `send`, once it
+/// listens; `exited` says whether the started process has ended. `None`
+/// if nothing answered within `wait`. A process that quit well found
+/// another app running, which is asked once more.
+#[cfg(target_os = "macos")]
+fn await_app(
+    mut send: impl FnMut() -> Option<instance::Answer>,
+    mut exited: impl FnMut() -> Option<std::process::ExitStatus>,
+    wait: Duration,
+    poll: Duration,
+) -> Result<Option<instance::Answer>, String> {
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(answer) = send() {
+            return Ok(Some(answer));
+        }
+        if let Some(status) = exited() {
+            // Quitting well, it found another app, started by a launch at
+            // the same moment: that one listens.
+            if status.success()
+                && let Some(answer) = send()
+            {
+                return Ok(Some(answer));
+            }
+            return Err(format!("the noido it started quit at once ({status})"));
+        }
+        if start.elapsed() >= wait {
+            return Ok(None);
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// Runs the app in this process: a hidden root with a window per
+/// document, opening `request` first.
+#[cfg(target_os = "macos")]
+fn run_app(
+    listener: Option<instance::AppListener>,
+    request: Option<instance::OpenRequest>,
+) -> Result<(), String> {
     let shared = document::Shared::load();
     let ctx = egui::Context::default();
     // Each document its own native window: eframe says so only on a
@@ -217,7 +334,9 @@ fn run(opening: Opening) -> Result<(), String> {
         shell = shell.with_app_requests(listener.serve(document::shared_waker(&ctx, root)));
     }
     interrupt::quit_on_interrupt(shell.requests());
-    shell.open(&ctx, &path, request.target)?;
+    if let Some(request) = request {
+        shell.open(&ctx, &request.path, request.target)?;
+    }
     let options = eframe::NativeOptions {
         viewport: root_viewport(),
         persist_window: false,
@@ -232,33 +351,43 @@ fn run(opening: Opening) -> Result<(), String> {
     .map_err(|e| format!("cannot open window: {e}"))
 }
 
-/// What a launch that handed `path` to the running app says, from its
+/// What a launch that handed `request` to the running app says, from its
 /// answer; the running app is brought to the front.
 #[cfg(target_os = "macos")]
 fn handed_to_app(
-    path: &Path,
-    target: Option<&Target>,
+    request: &instance::OpenRequest,
     answer: Option<instance::Answer>,
 ) -> Result<(), String> {
     use instance::Answer;
-    let pid = match &answer {
-        Some(Answer::Opened { pid } | Answer::Forward { pid }) => *pid,
-        _ => None,
+    let Some(answer) = answer else {
+        return Err("the running noido did not answer".into());
     };
-    if let Some(pid) = pid {
+    if let Answer::Opened { pid: Some(pid) } | Answer::Forward { pid: Some(pid) } = answer {
         noido_macos::activate_pid(pid);
     }
+    let message = answered(&request.path, request.target.as_ref(), &answer);
     match answer {
-        Some(Answer::Opened { .. }) => {
-            eprintln!("noido: opened {} in the running noido", path.display());
+        Answer::Opened { .. } | Answer::Forward { .. } => {
+            eprintln!("{message}");
             Ok(())
         }
-        Some(Answer::Forward { .. }) => {
-            eprintln!("{}", handed_over(path, target));
-            Ok(())
+        Answer::Failed(_) => Err(message),
+    }
+}
+
+/// What a launch on macOS says about the running app's `answer` for
+/// `path`; for a failure, the app's own message.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn answered(path: &Path, target: Option<&Target>, answer: &instance::Answer) -> String {
+    use instance::Answer;
+    let at = at(target);
+    let path = path.display();
+    match answer {
+        Answer::Opened { .. } => format!("noido: opened {path}{at} in the running noido"),
+        Answer::Forward { .. } => {
+            format!("noido: {path} is already open; brought its window forward{at}")
         }
-        Some(Answer::Failed(message)) => Err(message),
-        None => Err("the running noido did not answer".into()),
+        Answer::Failed(message) => message.clone(),
     }
 }
 
@@ -326,16 +455,22 @@ fn run(opening: Opening) -> Result<(), String> {
 
 /// What a launch on an already open file prints. The running noido answered,
 /// but whether its window gets focus is up to the window manager.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn handed_over(path: &Path, target: Option<&Target>) -> String {
-    let at = match target {
-        Some(Target::Page(page)) => format!(" at page {}", page + 1),
-        Some(Target::Named(name)) => format!(" at {name:?}"),
-        None => String::new(),
-    };
+    let at = at(target);
     format!(
         "noido: {} is already open; asked its window to come forward{at}",
         path.display()
     )
+}
+
+/// Where a launch asked to go, as the end of a message.
+fn at(target: Option<&Target>) -> String {
+    match target {
+        Some(Target::Page(page)) => format!(" at page {}", page + 1),
+        Some(Target::Named(name)) => format!(" at {name:?}"),
+        None => String::new(),
+    }
 }
 
 /// noido draws its own title bar: on macOS under the system's transparent
@@ -449,6 +584,53 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn foreground_takes_a_file_or_none_on_macos() {
+        let none = Args::try_parse_from(["noido", "--foreground"]).unwrap();
+        assert!(none.foreground && none.path.is_none());
+        let file = Args::try_parse_from(["noido", "--foreground", "a.pdf"]).unwrap();
+        assert!(file.foreground);
+        assert_eq!(file.path, Some(OsString::from("a.pdf")));
+        assert!(!Args::try_parse_from(["noido", "a.pdf"]).unwrap().foreground);
+        assert!(Args::try_parse_from(["noido", "--foreground", "--install"]).is_err());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn foreground_is_accepted_on_linux() {
+        let file = Args::try_parse_from(["noido", "--foreground", "a.pdf"]).unwrap();
+        assert!(file.foreground);
+        assert_eq!(file.path, Some(OsString::from("a.pdf")));
+    }
+
+    #[test]
+    fn answer_messages_name_the_file_and_target() {
+        use instance::Answer;
+        let path = Path::new("papers/a.pdf");
+        let page = Some(&Target::Page(50));
+        assert_eq!(
+            answered(path, page, &Answer::Opened { pid: None }),
+            "noido: opened papers/a.pdf at page 51 in the running noido"
+        );
+        assert_eq!(
+            answered(path, None, &Answer::Opened { pid: Some(7) }),
+            "noido: opened papers/a.pdf in the running noido"
+        );
+        assert_eq!(
+            answered(path, page, &Answer::Forward { pid: Some(7) }),
+            "noido: papers/a.pdf is already open; brought its window forward at page 51"
+        );
+        assert_eq!(
+            answered(
+                path,
+                None,
+                &Answer::Failed("cannot read papers/a.pdf".into())
+            ),
+            "cannot read papers/a.pdf"
+        );
+    }
+
     fn opening_of(args: &[&str]) -> Opening {
         opening(&Args::try_parse_from(args).unwrap()).unwrap()
     }
@@ -517,5 +699,64 @@ mod tests {
             opening_of(&["noido", "file:///b/a%20b%20%C3%A9%23.pdf"]).path,
             PathBuf::from("/b/a b é#.pdf")
         );
+    }
+
+    /// The started app's exit `code`, as `try_wait` gives it.
+    #[cfg(target_os = "macos")]
+    fn exit(code: i32) -> std::process::ExitStatus {
+        std::os::unix::process::ExitStatusExt::from_raw(code << 8)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_started_app_that_lost_a_race_hands_over_to_the_winner() {
+        use instance::Answer;
+        // The started app found another one, started by a launch at the
+        // same moment, and quit well; that one listens by now.
+        let mut sends = 0;
+        let answer = await_app(
+            || {
+                sends += 1;
+                (sends > 1).then_some(Answer::Opened { pid: Some(7) })
+            },
+            || Some(exit(0)),
+            Duration::from_secs(5),
+            Duration::ZERO,
+        );
+        assert_eq!(answer, Ok(Some(Answer::Opened { pid: Some(7) })));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_started_app_that_quit_with_nobody_listening_is_a_failure() {
+        for code in [0, 1] {
+            let answer = await_app(
+                || None,
+                || Some(exit(code)),
+                Duration::from_secs(5),
+                Duration::ZERO,
+            );
+            assert!(
+                matches!(&answer, Err(e) if e.contains("quit at once")),
+                "{code}: {answer:?}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_started_app_that_fails_is_not_asked_again() {
+        let mut sends = 0;
+        let answer = await_app(
+            || {
+                sends += 1;
+                None
+            },
+            || Some(exit(1)),
+            Duration::from_secs(5),
+            Duration::ZERO,
+        );
+        assert!(answer.is_err());
+        assert_eq!(sends, 1);
     }
 }
