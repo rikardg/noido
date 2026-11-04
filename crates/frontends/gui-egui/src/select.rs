@@ -18,15 +18,14 @@ pub struct Drag {
     /// For a handle drag, which end (0 start, 1 end), and the pointer's
     /// offset from that end's caret at the press.
     pub handle: Option<(usize, Vec2)>,
+    /// Shift was held at the press.
+    pub shift: bool,
 }
 
 /// The radius of a handle's knob, in points.
 pub const HANDLE_RADIUS: f32 = 6.0;
 /// How near a handle's knob a press takes the handle, in points.
 pub const HANDLE_REACH: f32 = 12.0;
-
-/// How far the pointer moves before a press is a drag, in points.
-pub const DRAG_THRESHOLD: f32 = 3.0;
 
 #[derive(Default)]
 pub struct State {
@@ -121,9 +120,15 @@ impl State {
         };
         let (pointer, released) =
             ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_released()));
+        // A release that never came (the window lost the pointer) ends the
+        // drag too.
+        let released = released || !ui.input(|i| i.pointer.primary_down());
+        // egui's own click distance: a press that moves less is a click,
+        // as it is for links.
+        let threshold = ui.ctx().options(|o| o.input_options.max_click_dist);
         if let Some(drag) = &mut self.drag {
             if let Some(pos) = pointer
-                && (pos - drag.origin).length() > DRAG_THRESHOLD
+                && (pos - drag.origin).length() > threshold
             {
                 drag.moved = true;
             }
@@ -162,12 +167,45 @@ impl State {
             selection.resolve(|page| texts.get(page));
         }
         if released && let Some(drag) = self.drag.take() {
-            let empty = self
-                .selection
-                .is_some_and(|s| s.is_empty(|page| texts.get(page)));
             let click = !drag.moved && drag.kind != DragKind::Handle;
-            if click || (drag.kind != DragKind::Pan && empty) {
-                self.selection = None;
+            let (double, triple) = ui.input(|i| {
+                (
+                    i.pointer
+                        .button_double_clicked(egui::PointerButton::Primary),
+                    i.pointer
+                        .button_triple_clicked(egui::PointerButton::Primary),
+                )
+            });
+            let point =
+                layout.doc_point(drag.origin.x - content.min.x, drag.origin.y - content.min.y);
+            if click && drag.kind == DragKind::Select && (double || triple) {
+                self.selection = point.and_then(|p| {
+                    let PageTextState::Known(text) = texts.get(p.page) else {
+                        return None;
+                    };
+                    let range = if triple {
+                        text.line_range_at(p.x, p.y)
+                    } else {
+                        text.word_at(p.x, p.y)
+                    }?;
+                    let at = |char| Spot::At(Caret { page: p.page, char });
+                    Some(Selection {
+                        anchor: at(range.start),
+                        focus: at(range.end),
+                    })
+                });
+            } else if click && drag.shift && self.selection.is_some() {
+                // Shift+click extends, tool on or off.
+                if let (Some(selection), Some(to)) = (&mut self.selection, spot(drag.origin)) {
+                    selection.extend_to(to);
+                }
+            } else {
+                let empty = self
+                    .selection
+                    .is_some_and(|s| s.is_empty(|page| texts.get(page)));
+                if click || (drag.kind != DragKind::Pan && empty) {
+                    self.selection = None;
+                }
             }
         }
         let hover = ui

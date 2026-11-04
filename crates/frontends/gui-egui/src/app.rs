@@ -903,6 +903,7 @@ impl NoidoApp {
         // frame's focus that tells.
         if !editing
             && !self.select.widget_focused
+            && !egui::Popup::is_any_open(ctx)
             && ctx.input(|i| i.key_pressed(egui::Key::Escape))
         {
             self.select.selection = None;
@@ -1398,7 +1399,9 @@ impl NoidoApp {
                     egui::StrokeKind::Outside,
                 );
             }
-            if response.clicked() && !on_handle {
+            // Shift+click with a selection extends it instead.
+            let extends = ui.input(|i| i.modifiers.shift) && self.select.selection.is_some();
+            if response.clicked() && !extends && !on_handle {
                 self.clicked_link = Some(link.clone());
             }
             if let noido_engine::LinkTarget::Web(uri) = &link.target {
@@ -1479,6 +1482,7 @@ impl NoidoApp {
                 moved: false,
                 started: false,
                 handle,
+                shift,
             });
         }
     }
@@ -8342,6 +8346,114 @@ mod tests {
         assert_eq!(h.copied, vec!["the cat sat on the mat a d".to_owned()]);
     }
 
+    /// Clicks `count` times at page point (`x`, `y`) on page 0 with
+    /// `modifiers` held.
+    fn click_times(h: &mut Harness, (x, y): (f32, f32), count: usize, modifiers: Modifiers) {
+        let at = screen_pos(h, 0, x, y);
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers,
+        };
+        h.modifiers = modifiers;
+        h.frames(1, vec![Event::PointerMoved(at)]);
+        for _ in 0..count {
+            h.frames(1, vec![button(true)]);
+            h.frames(1, vec![button(false)]);
+        }
+        h.frames(1, vec![]);
+        h.modifiers = Modifiers::NONE;
+    }
+
+    #[test]
+    fn double_click_selects_word_with_tool() {
+        let (mut h, _) = selecting();
+        h.press(egui::Key::S, Modifiers::NONE);
+        click_times(&mut h, (99.0, 95.0), 2, Modifiers::NONE);
+        assert_eq!(selected_on(&h, 0), Some(4..7));
+    }
+
+    #[test]
+    fn triple_click_selects_line_with_shift() {
+        let (mut h, _) = selecting();
+        click_times(&mut h, (80.0, 115.0), 3, Modifiers::SHIFT);
+        assert_eq!(selected_on(&h, 0), Some(12..22));
+    }
+
+    #[test]
+    fn double_click_with_tool_off_selects_nothing() {
+        let (mut h, _) = selecting();
+        click_times(&mut h, (99.0, 95.0), 2, Modifiers::NONE);
+        assert_eq!(h.app.select.selection, None);
+    }
+
+    #[test]
+    fn shift_click_extends() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.frames(10, vec![]);
+        click_times(&mut h, (127.0, 95.0), 1, Modifiers::SHIFT);
+        assert_eq!(selected_on(&h, 0), Some(0..9));
+    }
+
+    /// A harness on `link_engine()` with its links and its text.
+    fn linking_text() -> Harness {
+        linking_text_with(link_engine())
+    }
+
+    /// The app on `engine`, with links and text, once page 0's text is in.
+    fn linking_text_with(engine: TextEngine) -> Harness {
+        let (linker, searcher) = (engine.clone(), engine.clone());
+        let mut h = Harness::build_with(Arc::new(engine), move |app| {
+            app.with_linker(noido_render::Linker::start(
+                Arc::new(linker),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+            .with_searcher(TextSearcher::start(
+                Arc::new(searcher),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+        });
+        h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
+        h
+    }
+
+    #[test]
+    fn shift_click_on_link_extends_and_does_not_follow() {
+        let mut h = linking_text();
+        drag_text(&mut h, 0, (73.0, 115.0), (130.0, 115.0), Modifiers::SHIFT);
+        assert_eq!(selected_on(&h, 0), Some(11..21));
+        // Left of the bar, which shows above the selection's end.
+        let at = screen_pos(&h, 0, 75.0, 96.0);
+        hover_link(&mut h, at);
+        h.frames(10, vec![]);
+        click_times(&mut h, (75.0, 96.0), 1, Modifiers::SHIFT);
+        assert_eq!(selected_on(&h, 0), Some(1..21));
+        assert_eq!(h.app.chosen, None);
+    }
+
+    #[test]
+    fn tool_click_on_link_follows() {
+        let mut h = linking_text();
+        h.press(egui::Key::S, Modifiers::NONE);
+        click_link(&mut h, 0, 100.0, 96.0);
+        assert_eq!(h.app.chosen, Some(5));
+    }
+
+    #[test]
+    fn tool_drag_from_link_selects_and_does_not_follow() {
+        let mut h = linking_text();
+        h.press(egui::Key::S, Modifiers::NONE);
+        let at = screen_pos(&h, 0, 73.0, 96.0);
+        hover_link(&mut h, at);
+        drag_text(&mut h, 0, (73.0, 96.0), (100.0, 96.0), Modifiers::NONE);
+        assert_eq!(selected_on(&h, 0), Some(0..5));
+        assert_eq!(h.app.chosen, None);
+    }
+
     #[test]
     fn press_on_scroll_bar_neither_selects_nor_clears() {
         let (mut h, _) = selecting();
@@ -8416,23 +8528,47 @@ mod tests {
         h.until(|h| !h.copied.is_empty());
         assert_eq!(h.copied, vec!["at sat on the mat a d".to_owned()]);
     }
-    /// The app on `engine`, with links and text, once page 0's text is in.
-    fn linking_text_with(engine: TextEngine) -> Harness {
-        let (linker, searcher) = (engine.clone(), engine.clone());
-        let mut h = Harness::build_with(Arc::new(engine), move |app| {
-            app.with_linker(noido_render::Linker::start(
-                Arc::new(linker),
-                Arc::new(Vec::new()),
-                Box::new(|| {}),
-            ))
-            .with_searcher(TextSearcher::start(
-                Arc::new(searcher),
-                Arc::new(Vec::new()),
-                Box::new(|| {}),
-            ))
+
+    #[test]
+    fn tool_click_with_a_wobble_on_link_follows_without_selecting() {
+        let mut h = linking_text();
+        h.press(egui::Key::S, Modifiers::NONE);
+        // Just left of a glyph's middle, so the wobble crosses it.
+        let at = screen_pos(&h, 0, 104.0, 96.0);
+        hover_link(&mut h, at);
+        h.drag(at, vec2(5.0, 0.0));
+        h.frames(1, vec![]);
+        assert_eq!(h.app.select.selection, None);
+        assert_eq!(h.app.chosen, Some(5));
+    }
+
+    #[test]
+    fn drag_without_a_button_held_ends() {
+        let (mut h, _) = selecting();
+        let origin = screen_pos(&h, 0, 73.0, 95.0);
+        h.app.select.drag = Some(select::Drag {
+            kind: DragKind::Select,
+            origin,
+            moved: true,
+            started: false,
+            handle: None,
+            shift: true,
         });
-        h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
-        h
+        h.frames(1, vec![Event::PointerMoved(screen_pos(&h, 0, 112.0, 95.0))]);
+        h.frames(1, vec![]);
+        assert!(h.app.select.drag.is_none());
+    }
+
+    #[test]
+    fn esc_closing_the_menu_keeps_selection() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.click(h.app.bar.menu.center());
+        h.frames(2, vec![]);
+        assert!(egui::Popup::is_any_open(&h.ctx), "the menu is open");
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(1, vec![]);
+        assert_eq!(selected_on(&h, 0), Some(0..7));
     }
 
     #[test]
