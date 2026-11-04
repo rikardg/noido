@@ -329,22 +329,29 @@ fn run_app(
 ) -> Result<(), String> {
     use std::sync::{Arc, Mutex, OnceLock};
 
+    use winit::platform::macos::EventLoopBuilderExtMacOS;
+
     let root = egui::ViewportId::ROOT;
     let event_loop = winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event()
+        // noido's own menu bar takes its place.
+        .with_default_menu(false)
         .build()
         .map_err(|e| format!("cannot open window: {e}"))?;
     // Between building the event loop and running it, or the documents
     // Finder started the app with are lost. They wait in the queue until
-    // the shell's first frame; later ones wake it.
+    // the shell's first frame; later ones wake it. The menu goes in here
+    // too, before the first window, so the Window menu lists them all.
     let woken: Arc<OnceLock<egui::Context>> = Arc::default();
-    {
+    let wake = {
         let woken = woken.clone();
-        noido_macos::install_open_urls(move || {
+        move || {
             if let Some(ctx) = woken.get() {
                 ctx.request_repaint_of(root);
             }
-        });
-    }
+        }
+    };
+    noido_macos::install_open_urls(wake.clone());
+    noido_macos::install_menu(wake);
     // Why the shell could not start: eframe keeps its own error.
     let failed: Arc<Mutex<Option<String>>> = Arc::default();
     let creator_failed = failed.clone();
@@ -363,7 +370,20 @@ fn run_app(
             .with_theme(theme_live)
             .with_incoming(app::Incoming {
                 take: Box::new(noido_macos::take_opened),
-            });
+            })
+            .with_menu(Box::new(|| {
+                use noido_macos::MenuCommand as Native;
+                use shell::MenuCommand;
+                noido_macos::take_commands()
+                    .into_iter()
+                    .map(|command| match command {
+                        Native::About => MenuCommand::About,
+                        Native::Settings => MenuCommand::Settings,
+                        Native::Open => MenuCommand::Open,
+                        Native::Reopen => MenuCommand::Reopen,
+                    })
+                    .collect()
+            }));
         if open_panel {
             shell = shell.with_open_panel_at_start();
         }

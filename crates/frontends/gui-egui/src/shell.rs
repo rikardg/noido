@@ -34,6 +34,23 @@ pub enum Request {
     Closed(ViewportId),
 }
 
+/// What the native menu (or a click on the Dock icon) asks of the shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub enum MenuCommand {
+    /// The focused window's document info.
+    About,
+    /// The focused window's settings.
+    Settings,
+    /// The Open panel.
+    Open,
+    /// The app was opened again with no window showing.
+    Reopen,
+}
+
+/// Where the shell takes the menu's commands from.
+pub type TakeMenu = Box<dyn FnMut() -> Vec<MenuCommand>>;
+
 /// A way to send [`Request`]s to the shell and wake it: the shell's
 /// hidden root only runs when woken.
 #[derive(Clone)]
@@ -134,6 +151,8 @@ pub struct Shell {
     windows: Windows<Window>,
     /// Finder's opens.
     incoming: Option<Incoming>,
+    /// The native menu's commands.
+    menu: Option<TakeMenu>,
     /// Launches handing their file over.
     app_requests: Option<AppRequests>,
     theme: Option<crate::theme::Live>,
@@ -161,6 +180,7 @@ impl Shell {
             received,
             windows: Windows::new(),
             incoming: None,
+            menu: None,
             app_requests: None,
             theme: None,
             frames: 0,
@@ -172,6 +192,12 @@ impl Shell {
     /// Opens what Finder sends.
     pub fn with_incoming(mut self, incoming: Incoming) -> Self {
         self.incoming = Some(incoming);
+        self
+    }
+
+    /// Carries out the native menu's commands.
+    pub fn with_menu(mut self, take: TakeMenu) -> Self {
+        self.menu = Some(take);
         self
     }
 
@@ -254,6 +280,31 @@ impl Shell {
         }
     }
 
+    /// Carries out the menu's `command`.
+    pub fn menu(&mut self, ctx: &egui::Context, command: MenuCommand) {
+        let action = match command {
+            MenuCommand::Open => {
+                self.requests.send(Request::OpenPanel);
+                return;
+            }
+            // A window, if only a minimized one, AppKit brings back itself.
+            MenuCommand::Reopen => {
+                if self.windows.is_empty() {
+                    self.requests.send(Request::OpenPanel);
+                }
+                return;
+            }
+            MenuCommand::Settings => noido_core::Action::OpenSettings,
+            MenuCommand::About => noido_core::Action::ShowDocumentInfo,
+        };
+        let Some((id, window)) = self.windows.iter().find(|(id, _)| focused(ctx, *id)) else {
+            return;
+        };
+        // In the window's own frame, where its keys are carried out too.
+        lock(&window.app).queue(action);
+        ctx.request_repaint_of(id);
+    }
+
     /// Opens `path` in a new window, or brings forward the window that has
     /// it; what to answer a launch that asked.
     pub fn open(
@@ -321,6 +372,10 @@ impl Shell {
                     Err(e) => eprintln!("noido: {e}"),
                 }
             }
+        }
+        let commands = self.menu.as_mut().map(|take| take()).unwrap_or_default();
+        for command in commands {
+            self.menu(ctx, command);
         }
         if let Some(requests) = &self.app_requests {
             for (request, reply) in requests.take() {
@@ -417,6 +472,11 @@ impl eframe::App for Shell {
 /// alone, a hidden root runs `logic` only.
 fn paint_root(ctx: &egui::Context) {
     ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::RequestPaintWhileHidden);
+}
+
+/// Whether the window `id` has the keyboard focus, as of its last frame.
+fn focused(ctx: &egui::Context, id: ViewportId) -> bool {
+    ctx.input(|i| i.raw.viewports.get(&id).and_then(|info| info.focused)) == Some(true)
 }
 
 /// Wakes the root, and so the shell.
@@ -775,6 +835,114 @@ mod tests {
         shell.settle_start(now + START_QUIET);
         assert!(shell.received.try_recv().is_err());
         assert_eq!(shell.open_paths().len(), 1);
+    }
+
+    /// Runs a root pass in which `focused` is the focused window.
+    fn focus(ctx: &egui::Context, focused: Option<ViewportId>) {
+        let mut viewports = egui::ViewportIdMap::default();
+        viewports.insert(ViewportId::ROOT, egui::ViewportInfo::default());
+        if let Some(id) = focused {
+            viewports.insert(
+                id,
+                egui::ViewportInfo {
+                    focused: Some(true),
+                    ..Default::default()
+                },
+            );
+        }
+        let output = ctx.run_ui(
+            RawInput {
+                viewports,
+                ..Default::default()
+            },
+            |_| {},
+        );
+        output.drop_without_applying_deltas();
+    }
+
+    fn id_of(path: &Path) -> ViewportId {
+        Windows::<Window>::id_for(&Windows::<Window>::canonical(path))
+    }
+
+    /// The actions each window was asked to carry out, in open order.
+    fn queued(shell: &Shell) -> Vec<Vec<noido_core::Action>> {
+        shell
+            .windows
+            .iter()
+            .map(|(_, window)| lock(&window.app).queued().to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn open_from_the_menu_asks_for_the_open_panel() {
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None);
+        shell.menu(&ctx, MenuCommand::Open);
+        assert!(matches!(shell.received.try_recv(), Ok(Request::OpenPanel)));
+        shell.handle(&ctx, open(fixture("text.pdf"), None));
+        shell.menu(&ctx, MenuCommand::Open);
+        assert!(matches!(shell.received.try_recv(), Ok(Request::OpenPanel)));
+    }
+
+    #[test]
+    fn a_reopen_shows_the_open_panel_only_with_no_window() {
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None);
+        shell.menu(&ctx, MenuCommand::Reopen);
+        assert!(matches!(shell.received.try_recv(), Ok(Request::OpenPanel)));
+        // A minimized window counts: AppKit brings it back itself.
+        shell.handle(&ctx, open(fixture("text.pdf"), None));
+        shell.menu(&ctx, MenuCommand::Reopen);
+        assert!(shell.received.try_recv().is_err());
+    }
+
+    #[test]
+    fn settings_and_about_go_to_the_focused_window() {
+        use noido_core::Action;
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None);
+        let (a, b) = (fixture("text.pdf"), fixture("two-pages.pdf"));
+        shell.handle(&ctx, open(a, None));
+        shell.handle(&ctx, open(b.clone(), None));
+        focus(&ctx, Some(id_of(&b)));
+        shell.menu(&ctx, MenuCommand::Settings);
+        shell.menu(&ctx, MenuCommand::About);
+        assert_eq!(
+            queued(&shell),
+            vec![vec![], vec![Action::OpenSettings, Action::ShowDocumentInfo]]
+        );
+        assert!(ctx.has_requested_repaint_for(&id_of(&b)));
+    }
+
+    #[test]
+    fn settings_and_about_with_no_focused_window_do_nothing() {
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None);
+        shell.menu(&ctx, MenuCommand::Settings);
+        shell.menu(&ctx, MenuCommand::About);
+        shell.handle(&ctx, open(fixture("text.pdf"), None));
+        focus(&ctx, None);
+        shell.menu(&ctx, MenuCommand::Settings);
+        shell.menu(&ctx, MenuCommand::About);
+        assert_eq!(queued(&shell), vec![Vec::<noido_core::Action>::new()]);
+        assert!(shell.received.try_recv().is_err());
+    }
+
+    #[test]
+    fn menu_commands_are_taken_in_with_the_rest() {
+        let ctx = egui::Context::default();
+        let queue: Arc<Mutex<Vec<MenuCommand>>> = Arc::default();
+        let mut shell = shell_with(&ctx, None).with_menu({
+            let queue = queue.clone();
+            Box::new(move || std::mem::take(&mut *queue.lock().unwrap()))
+        });
+        let path = fixture("text.pdf");
+        shell.handle(&ctx, open(path.clone(), None));
+        focus(&ctx, Some(id_of(&path)));
+        queue.lock().unwrap().push(MenuCommand::Settings);
+        shell.receive(&ctx);
+        assert_eq!(queued(&shell), vec![vec![noido_core::Action::OpenSettings]]);
+        assert!(queue.lock().unwrap().is_empty());
     }
 
     #[test]
