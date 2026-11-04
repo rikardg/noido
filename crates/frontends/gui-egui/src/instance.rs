@@ -410,18 +410,57 @@ fn claim_app_at(
     let Ok(name) = to_name(address) else {
         return AppClaim::Unavailable;
     };
-    if let Ok(stream) = Stream::connect(name.clone()) {
-        return AppClaim::Running(request.and_then(|r| exchange(stream, r, answer_timeout)));
+    // From the connect through the bind, one launch at a time: `bind`
+    // replaces a socket it finds, so two launches between them could each
+    // become an app.
+    // Released before the hand-over: the others need not wait for its
+    // answer.
+    let claimed = {
+        let Some(_lock) = claim_lock(address, timeout) else {
+            return AppClaim::Unavailable;
+        };
+        Stream::connect(name.clone()).map_err(|_| bind(address, name, timeout))
+    };
+    match claimed {
+        Ok(stream) => AppClaim::Running(request.and_then(|r| exchange(stream, r, answer_timeout))),
+        Err(Some(listener)) => AppClaim::First(AppListener(listener)),
+        Err(None) => AppClaim::Unavailable,
     }
-    match bind(address, name, timeout) {
-        Some(listener) => AppClaim::First(AppListener(listener)),
-        None => AppClaim::Unavailable,
+}
+
+/// An exclusive lock on a file beside the socket at `address`, waited for
+/// up to `timeout`; released when dropped.
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn claim_lock(address: &Address, timeout: Duration) -> Option<std::fs::File> {
+    make_room(address);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(address.with_extension("lock"))
+        .ok()?;
+    let start = std::time::Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Some(file),
+            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < timeout => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return None,
+        }
     }
+}
+
+/// Named pipes are created exclusively; nothing to lock.
+#[cfg(windows)]
+fn claim_lock(_address: &Address, _timeout: Duration) -> Option<()> {
+    Some(())
 }
 
 /// Hands `request` to the app of `exe`, which must run already: never
 /// binds. `None` when none listens, or none answers.
-#[allow(dead_code)] // until a detached launch hands over (Task 7)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn send(exe: &Path, request: &OpenRequest) -> Option<Answer> {
     send_at(&app_address(exe)?, request, ANSWER_TIMEOUT)
 }
@@ -772,6 +811,36 @@ mod tests {
             panic!("first claim");
         };
         listener
+    }
+
+    #[test]
+    fn two_racing_app_claims_make_one_app() {
+        // Repeated: the race is lost only now and then without the lock.
+        for _ in 0..20 {
+            let dir = tempfile::TempDir::new().unwrap();
+            let address = dir.path().join("a.sock");
+            let start = Arc::new(std::sync::Barrier::new(2));
+            let claims: Vec<_> = (0..2)
+                .map(|_| {
+                    let (address, start) = (address.clone(), start.clone());
+                    thread::spawn(move || {
+                        start.wait();
+                        claim_app_at(&address, TIMEOUT, ANSWER_TIMEOUT, None)
+                    })
+                })
+                .collect();
+            // Held until both are counted: a dropped listener frees the address.
+            let claims: Vec<AppClaim> = claims.into_iter().map(|t| t.join().unwrap()).collect();
+            let firsts = claims
+                .iter()
+                .filter(|c| matches!(c, AppClaim::First(_)))
+                .count();
+            let running = claims
+                .iter()
+                .filter(|c| matches!(c, AppClaim::Running(None)))
+                .count();
+            assert_eq!((firsts, running), (1, 1));
+        }
     }
 
     #[test]

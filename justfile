@@ -39,7 +39,7 @@ build:
 
 # run the release build with a scratch state dir
 run file: build
-    XDG_STATE_HOME="$(mktemp -d)" target/release/noido "{{file}}"
+    XDG_STATE_HOME="$(mktemp -d)" target/release/noido --foreground "{{file}}"
 
 # package a snapshot for one target: dist/noido-<target>-<version>.tar.gz
 snapshot target="x86_64-unknown-linux-gnu":
