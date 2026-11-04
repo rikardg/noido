@@ -12,6 +12,11 @@ pub const IDENTIFIER: &str = "io.github.rikardg.noido";
 /// The bundle's directory name.
 pub const APP_NAME: &str = "noido.app";
 
+/// The bundle's icon, `Contents/Resources/noido.icns`, rendered by build.rs
+/// from `assets/noido.svg`.
+const ICON_FILE: &str = "noido.icns";
+const ICON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/noido.icns"));
+
 /// The `Info.plist` of a bundle holding noido `version`: a viewer for PDFs
 /// (ranked below the default) and the owner of the `noido` URL scheme.
 ///
@@ -28,6 +33,7 @@ pub fn info_plist(version: &str) -> String {
 <key>CFBundleIdentifier</key><string>{IDENTIFIER}</string>
 <key>CFBundleName</key><string>noido</string>
 <key>CFBundleDisplayName</key><string>noido</string>
+<key>CFBundleIconFile</key><string>noido</string>
 <key>CFBundleShortVersionString</key><string>{numbers}</string>
 <key>NoidoVersion</key><string>{version}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
@@ -107,8 +113,8 @@ pub fn stale_hint(installed: Option<&Identity>, this_version: &str) -> Option<St
     ))
 }
 
-/// Writes the bundle at `app`, replacing whatever is there: the plist and
-/// a copy of `exe` (never a link) as `Contents/MacOS/noido`.
+/// Writes the bundle at `app`, replacing whatever is there: the plist, the
+/// icon, and a copy of `exe` (never a link) as `Contents/MacOS/noido`.
 pub fn write_bundle(exe: &Path, app: &Path, version: &str) -> Result<(), String> {
     let fail =
         |what: &str, path: &Path, e: std::io::Error| format!("{what} {}: {e}", path.display());
@@ -119,6 +125,10 @@ pub fn write_bundle(exe: &Path, app: &Path, version: &str) -> Result<(), String>
     std::fs::create_dir_all(&macos).map_err(|e| fail("cannot create", &macos, e))?;
     let plist = app.join("Contents/Info.plist");
     std::fs::write(&plist, info_plist(version)).map_err(|e| fail("cannot write", &plist, e))?;
+    let resources = app.join("Contents/Resources");
+    std::fs::create_dir_all(&resources).map_err(|e| fail("cannot create", &resources, e))?;
+    let icon = resources.join(ICON_FILE);
+    std::fs::write(&icon, ICON).map_err(|e| fail("cannot write", &icon, e))?;
     let target = macos.join("noido");
     std::fs::copy(exe, &target)
         .map_err(|e| format!("cannot copy {} to {}: {e}", exe.display(), target.display()))?;
@@ -226,6 +236,8 @@ pub enum Step {
     Remove {
         app: PathBuf,
         version: Option<String>,
+        /// Same version, replaced only because its icon is not this build's.
+        stale_icon: bool,
     },
     Write {
         app: PathBuf,
@@ -278,13 +290,17 @@ pub fn plan_install(places: &Places) -> Plan {
     let mut steps = Vec::new();
     match found(&app) {
         Found::Missing => {}
-        Found::Ours(v) if v == places.version => {
-            return Plan::Nothing(format!("Already installed: {}, version {v}", app.display()));
+        Found::Ours(v) => {
+            let stale_icon = v == places.version;
+            if stale_icon && has_our_icon(&app) {
+                return Plan::Nothing(format!("Already installed: {}, version {v}", app.display()));
+            }
+            steps.push(Step::Remove {
+                app: app.clone(),
+                version: Some(v),
+                stale_icon,
+            });
         }
-        Found::Ours(v) => steps.push(Step::Remove {
-            app: app.clone(),
-            version: Some(v),
-        }),
         Found::Foreign => return foreign(&app),
     }
     steps.push(Step::Write {
@@ -307,9 +323,16 @@ pub fn plan_uninstall(places: &Places) -> Plan {
             Step::Remove {
                 app,
                 version: Some(v),
+                stale_icon: false,
             },
         ]),
     }
+}
+
+/// Whether the bundle at `app` holds this build's icon: a bundle from
+/// before the icon, or from a build with another one, does not.
+fn has_our_icon(app: &Path) -> bool {
+    std::fs::read(app.join("Contents/Resources").join(ICON_FILE)).is_ok_and(|icon| icon == ICON)
 }
 
 fn foreign(app: &Path) -> Plan {
@@ -323,8 +346,18 @@ pub fn describe(step: &Step) -> String {
         Step::Remove {
             app,
             version: Some(v),
-        } => format!("Remove {} (noido {v})", app.display()),
-        Step::Remove { app, version: None } => format!("Remove {}", app.display()),
+            stale_icon,
+        } => {
+            let why = if *stale_icon {
+                "; its icon is out of date"
+            } else {
+                ""
+            };
+            format!("Remove {} (noido {v}{why})", app.display())
+        }
+        Step::Remove {
+            app, version: None, ..
+        } => format!("Remove {}", app.display()),
         Step::Sign(app) => format!("Sign {} ad hoc ({CODESIGN})", app.display()),
         Step::Register(_) => "Register it with Launch Services (lsregister)".into(),
         Step::Unregister(app) => format!("Unregister {} from Launch Services", app.display()),
@@ -546,6 +579,87 @@ mod tests {
     }
 
     #[test]
+    fn the_plist_names_the_icon() {
+        assert!(info_plist("1.2.3").contains("<key>CFBundleIconFile</key><string>noido</string>"));
+    }
+
+    /// The entries of an `.icns`: (type, data), checking the lengths.
+    fn icns_entries(icns: &[u8]) -> Vec<(String, &[u8])> {
+        assert_eq!(&icns[..4], b"icns");
+        let total = u32::from_be_bytes(icns[4..8].try_into().unwrap()) as usize;
+        assert_eq!(total, icns.len());
+        let mut entries = Vec::new();
+        let mut at = 8;
+        while at < total {
+            let kind = String::from_utf8(icns[at..at + 4].to_vec()).unwrap();
+            let len = u32::from_be_bytes(icns[at + 4..at + 8].try_into().unwrap()) as usize;
+            assert!(len > 8 && at + len <= total, "{kind}: length {len}");
+            entries.push((kind, &icns[at + 8..at + len]));
+            at += len;
+        }
+        entries
+    }
+
+    #[test]
+    fn the_icon_holds_a_png_of_each_size() {
+        let entries = icns_entries(ICON);
+        let wanted = [
+            ("icp4", 16),
+            ("icp5", 32),
+            ("ic11", 32),
+            ("ic12", 64),
+            ("ic07", 128),
+            ("ic13", 256),
+            ("ic08", 256),
+            ("ic14", 512),
+            ("ic09", 512),
+            ("ic10", 1024),
+        ];
+        let kinds: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(kinds, wanted.map(|(k, _)| k));
+        for ((kind, png), (_, side)) in entries.iter().zip(wanted) {
+            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "{kind} is not a PNG");
+            let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+            let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+            assert_eq!((width, height), (side, side), "{kind}");
+        }
+    }
+
+    #[test]
+    fn install_same_version_without_the_icon_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = places(dir.path());
+        install_at(&places, "2.0.0");
+        std::fs::remove_file(app_of(&places).join("Contents/Resources/noido.icns")).unwrap();
+        let mut steps = vec![Step::Remove {
+            app: app_of(&places),
+            version: Some("2.0.0".into()),
+            stale_icon: true,
+        }];
+        steps.extend(fresh_steps(&places));
+        assert_eq!(plan_install(&places), Plan::Steps(steps));
+    }
+
+    #[test]
+    fn install_same_version_with_another_icon_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let places = places(dir.path());
+        install_at(&places, "2.0.0");
+        std::fs::write(
+            app_of(&places).join("Contents/Resources/noido.icns"),
+            b"old",
+        )
+        .unwrap();
+        let mut steps = vec![Step::Remove {
+            app: app_of(&places),
+            version: Some("2.0.0".into()),
+            stale_icon: true,
+        }];
+        steps.extend(fresh_steps(&places));
+        assert_eq!(plan_install(&places), Plan::Steps(steps));
+    }
+
+    #[test]
     fn install_from_another_commit_replaces() {
         let dir = tempfile::tempdir().unwrap();
         let mut places = places(dir.path());
@@ -554,6 +668,7 @@ mod tests {
         let mut steps = vec![Step::Remove {
             app: app_of(&places),
             version: Some("2.0.0+aaaaaaaa".into()),
+            stale_icon: false,
         }];
         steps.extend(fresh_steps(&places));
         assert_eq!(plan_install(&places), Plan::Steps(steps));
@@ -576,6 +691,10 @@ mod tests {
             assert_ne!(meta.permissions().mode() & 0o111, 0);
         }
         assert_eq!(read_identity(&app).unwrap().version, "1.2.3");
+        assert_eq!(
+            std::fs::read(app.join("Contents/Resources/noido.icns")).unwrap(),
+            ICON
+        );
     }
 
     #[test]
@@ -672,6 +791,7 @@ mod tests {
         let mut steps = vec![Step::Remove {
             app: app_of(&places),
             version: Some("1.0.0".into()),
+            stale_icon: false,
         }];
         steps.extend(fresh_steps(&places));
         assert_eq!(plan_install(&places), Plan::Steps(steps));
@@ -743,7 +863,8 @@ mod tests {
                 Step::Unregister(app.clone()),
                 Step::Remove {
                     app,
-                    version: Some("1.0.0".into())
+                    version: Some("1.0.0".into()),
+                    stale_icon: false,
                 }
             ])
         );
@@ -779,9 +900,18 @@ mod tests {
         assert_eq!(
             describe(&Step::Remove {
                 app: app.clone(),
-                version: Some("1.0.0".into())
+                version: Some("1.0.0".into()),
+                stale_icon: false,
             }),
             "Remove /U/noido.app (noido 1.0.0)"
+        );
+        assert_eq!(
+            describe(&Step::Remove {
+                app: app.clone(),
+                version: Some("1.0.0".into()),
+                stale_icon: true,
+            }),
+            "Remove /U/noido.app (noido 1.0.0; its icon is out of date)"
         );
         assert_eq!(
             describe(&Step::Write {
@@ -834,6 +964,7 @@ mod tests {
         let remove = [Step::Remove {
             app: app.clone(),
             version: None,
+            stale_icon: false,
         }];
         carry_out(&remove, "noido-no-such-tool").unwrap();
         assert!(!app.exists());
