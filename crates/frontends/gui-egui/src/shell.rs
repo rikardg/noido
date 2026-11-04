@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, ViewportBuilder, ViewportCommand, ViewportId};
 use noido_core::Target;
@@ -24,8 +25,6 @@ pub enum Request {
         reply: Option<Reply>,
     },
     /// Show the file picker.
-    // Sent by the native menu and the Dock (Task 9).
-    #[allow(dead_code)]
     OpenPanel,
     /// Close every window and quit.
     Quit,
@@ -66,6 +65,57 @@ pub type OpenDoc = Box<dyn FnMut(&Path, Option<Target>, ViewportId) -> Result<No
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const HIDE_FRAMES: u32 = 3;
 
+/// How long after launching the shell still waits for documents before
+/// it shows the Open panel by itself: Finder's opens can come just after
+/// launching has finished.
+const START_QUIET: Duration = Duration::from_millis(300);
+
+/// Whether an app opened by itself, with no document, shows the Open
+/// panel: once launching has settled, if nothing was asked to open by
+/// then (Finder's opens, a launch handing over, documents restored).
+#[derive(Debug, Default)]
+struct StartPanel {
+    /// Still to decide: the app was opened with no document, and nothing
+    /// has been asked to open since.
+    wanted: bool,
+    /// When launching has settled.
+    settled_at: Option<Instant>,
+}
+
+impl StartPanel {
+    /// For an app opened with no document.
+    fn wanted() -> Self {
+        Self {
+            wanted: true,
+            settled_at: None,
+        }
+    }
+
+    /// Launching finished at `now`; only the first call counts. Whether
+    /// the shell has to be woken when launching has settled.
+    fn launched(&mut self, now: Instant) -> bool {
+        if !self.wanted || self.settled_at.is_some() {
+            return false;
+        }
+        self.settled_at = Some(now + START_QUIET);
+        true
+    }
+
+    /// Something was asked to open: no panel.
+    fn opened(&mut self) {
+        self.wanted = false;
+    }
+
+    /// Whether to show the panel now; true once at most.
+    fn due(&mut self, now: Instant) -> bool {
+        let due = self.wanted && self.settled_at.is_some_and(|at| now >= at);
+        if due {
+            self.wanted = false;
+        }
+        due
+    }
+}
+
 /// One document window.
 struct Window {
     /// Locked by the window's own callback, which must be `Send + Sync`;
@@ -91,6 +141,8 @@ pub struct Shell {
     frames: u32,
     /// The documents open at the last quit; Task 10 stores them.
     open_at_quit: Option<Vec<PathBuf>>,
+    /// Whether to show the Open panel once launching has settled.
+    start_panel: StartPanel,
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -113,12 +165,20 @@ impl Shell {
             theme: None,
             frames: 0,
             open_at_quit: None,
+            start_panel: StartPanel::default(),
         }
     }
 
     /// Opens what Finder sends.
     pub fn with_incoming(mut self, incoming: Incoming) -> Self {
         self.incoming = Some(incoming);
+        self
+    }
+
+    /// Shows the Open panel once launching has settled, unless a document
+    /// was asked to open by then: for an app opened with no document.
+    pub fn with_open_panel_at_start(mut self) -> Self {
+        self.start_panel = StartPanel::wanted();
         self
     }
 
@@ -202,6 +262,7 @@ impl Shell {
         path: &Path,
         target: Option<Target>,
     ) -> Result<Answer, String> {
+        self.start_panel.opened();
         let canonical = Windows::<Window>::canonical(path);
         if let Some(id) = self.windows.find(&canonical) {
             if let Some((_, window)) = self.windows.iter().find(|(i, _)| *i == id) {
@@ -250,9 +311,6 @@ impl Shell {
     fn receive(&mut self, ctx: &egui::Context) {
         let mut arrived = Vec::new();
         if let Some(incoming) = &mut self.incoming {
-            if let Some(start) = incoming.start.take() {
-                start(ctx);
-            }
             for arg in (incoming.take)() {
                 match noido_core::parse_argument(&arg) {
                     Ok(opening) => arrived.push(Request::Open {
@@ -276,6 +334,23 @@ impl Shell {
         arrived.extend(self.received.try_iter());
         for request in arrived {
             self.handle(ctx, request);
+        }
+    }
+
+    /// Asks for the Open panel once launching has settled at `now`, if
+    /// the app was opened with no document and none has come since; the
+    /// first call is when launching finished.
+    fn settle_start(&mut self, now: Instant) {
+        if self.start_panel.launched(now) {
+            // The hidden root runs only when woken.
+            let wake = self.requests.wake.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(START_QUIET);
+                wake();
+            });
+        }
+        if self.start_panel.due(now) {
+            self.requests.send(Request::OpenPanel);
         }
     }
 
@@ -319,6 +394,7 @@ impl eframe::App for Shell {
             }
         }
         self.receive(ctx);
+        self.settle_start(Instant::now());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -602,23 +678,19 @@ mod tests {
     #[derive(Default)]
     struct IncomingProbe {
         queue: Arc<Mutex<Vec<std::ffi::OsString>>>,
-        started: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl IncomingProbe {
         fn incoming(&self) -> Incoming {
-            let (queue, started) = (self.queue.clone(), self.started.clone());
+            let queue = self.queue.clone();
             Incoming {
-                start: Some(Box::new(move |_| {
-                    started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                })),
                 take: Box::new(move || std::mem::take(&mut *queue.lock().unwrap())),
             }
         }
     }
 
     #[test]
-    fn incoming_documents_open_in_order_and_start_once() {
+    fn incoming_documents_open_in_order() {
         let ctx = egui::Context::default();
         let probe = IncomingProbe::default();
         let mut shell = shell_with(&ctx, None).with_incoming(probe.incoming());
@@ -633,7 +705,6 @@ mod tests {
             .extend([url.into(), b.clone().into()]);
         shell.receive(&ctx);
         shell.receive(&ctx);
-        assert_eq!(probe.started.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(
             shell.open_paths(),
             vec![
@@ -641,5 +712,78 @@ mod tests {
                 Windows::<Window>::canonical(&b)
             ]
         );
+    }
+
+    #[test]
+    fn no_document_by_the_deadline_shows_the_open_panel_once() {
+        let now = Instant::now();
+        let mut panel = StartPanel::wanted();
+        assert!(!panel.due(now), "not before launching has finished");
+        assert!(panel.launched(now));
+        assert!(!panel.launched(now), "only the first launch counts");
+        assert!(!panel.due(now + START_QUIET / 2));
+        assert!(panel.due(now + START_QUIET));
+        assert!(!panel.due(now + START_QUIET * 2));
+    }
+
+    #[test]
+    fn a_document_before_the_deadline_shows_no_panel() {
+        let now = Instant::now();
+        let mut panel = StartPanel::wanted();
+        panel.launched(now);
+        panel.opened();
+        assert!(!panel.due(now + START_QUIET));
+        // Opened during launching: nothing to wake for.
+        let mut early = StartPanel::wanted();
+        early.opened();
+        assert!(!early.launched(now));
+        assert!(!early.due(now + START_QUIET));
+    }
+
+    #[test]
+    fn a_file_on_the_command_line_shows_no_panel() {
+        let now = Instant::now();
+        let mut panel = StartPanel::default();
+        assert!(!panel.launched(now));
+        assert!(!panel.due(now + START_QUIET));
+    }
+
+    #[test]
+    fn opened_with_nothing_the_shell_asks_for_the_open_panel_once_settled() {
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None).with_open_panel_at_start();
+        let now = Instant::now();
+        shell.settle_start(now);
+        assert!(shell.received.try_recv().is_err());
+        shell.settle_start(now + START_QUIET);
+        assert!(matches!(shell.received.try_recv(), Ok(Request::OpenPanel)));
+        shell.settle_start(now + START_QUIET * 2);
+        assert!(shell.received.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_finder_open_while_launching_means_no_open_panel() {
+        let ctx = egui::Context::default();
+        let probe = IncomingProbe::default();
+        let mut shell = shell_with(&ctx, None)
+            .with_open_panel_at_start()
+            .with_incoming(probe.incoming());
+        let now = Instant::now();
+        shell.settle_start(now);
+        probe.queue.lock().unwrap().push(fixture("text.pdf").into());
+        shell.receive(&ctx);
+        shell.settle_start(now + START_QUIET);
+        assert!(shell.received.try_recv().is_err());
+        assert_eq!(shell.open_paths().len(), 1);
+    }
+
+    #[test]
+    fn a_shell_started_with_a_file_asks_for_no_open_panel() {
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None);
+        let now = Instant::now();
+        shell.settle_start(now);
+        shell.settle_start(now + START_QUIET);
+        assert!(shell.received.try_recv().is_err());
     }
 }

@@ -104,9 +104,8 @@ fn main() -> ExitCode {
     #[cfg(target_os = "macos")]
     if let Ok(exe) = std::env::current_exe()
         && is_finder_launch(&args, &exe)
-        && let Some(bundle) = app_bundle::bundle_of(&exe)
     {
-        noido_macos::run_launcher(&bundle);
+        return exit_code(run_from_finder(&exe));
     }
     let args = Args::parse_from(args);
     let result = match &args.path {
@@ -130,6 +129,11 @@ fn main() -> ExitCode {
         Some(_) => opening(&args).and_then(run),
         None => unreachable!("clap requires a file without --install or --uninstall"),
     };
+    exit_code(result)
+}
+
+/// How noido exits after `result`, which it reports.
+fn exit_code(result: Result<(), String>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
@@ -227,8 +231,24 @@ fn run(opening: Option<Opening>, foreground: bool) -> Result<(), String> {
             let answer = start_app(&exe, &request)?;
             handed_to_app(&request, answer)
         }
-        (listener, request) => run_app(listener, request),
+        (listener, request) => run_app(listener, request, false),
     }
+}
+
+/// Started by Finder: noido.app opened by itself, or for documents, which
+/// come as Apple events once the app runs. This launch becomes the app,
+/// unless this executable's app runs already (Launch Services normally
+/// hands everything to that one instead of starting another).
+#[cfg(target_os = "macos")]
+fn run_from_finder(exe: &Path) -> Result<(), String> {
+    use instance::AppClaim;
+
+    let listener = match instance::claim_app(exe, None) {
+        AppClaim::Running(_) => return Ok(()),
+        AppClaim::First(listener) => Some(listener),
+        AppClaim::Unavailable => None,
+    };
+    run_app(listener, None, true)
 }
 
 /// Starts this executable's app detached from the terminal and hands it
@@ -299,56 +319,87 @@ fn await_app(
 }
 
 /// Runs the app in this process: a hidden root with a window per
-/// document, opening `request` first.
+/// document, opening `request` first. With `open_panel`, opened with no
+/// document, it shows the Open panel unless documents arrive as it starts.
 #[cfg(target_os = "macos")]
 fn run_app(
     listener: Option<instance::AppListener>,
     request: Option<instance::OpenRequest>,
+    open_panel: bool,
 ) -> Result<(), String> {
-    let shared = document::Shared::load();
-    let ctx = egui::Context::default();
-    // Each document its own native window: eframe says so only on a
-    // context it makes itself.
-    ctx.set_embed_viewports(false);
-    configure(&ctx);
-    let theme_live = theme::Live::start(&ctx);
-    let open_doc: shell::OpenDoc = {
-        let ctx = ctx.clone();
-        Box::new(move |path, target, viewport| {
-            document::open(path, target, &ctx, viewport, &shared).map(|opened| opened.app)
-        })
-    };
+    use std::sync::{Arc, Mutex, OnceLock};
+
     let root = egui::ViewportId::ROOT;
-    let mut shell = shell::Shell::new(&ctx, open_doc, std::sync::mpsc::channel())
-        .with_theme(theme_live)
-        .with_incoming(app::Incoming {
-            // In the first frame: Finder's opens that started the app wait
-            // for Task 8.
-            start: Some(Box::new(move |ctx| {
-                let ctx = ctx.clone();
-                noido_macos::install_open_urls(move || ctx.request_repaint_of(root));
-            })),
-            take: Box::new(noido_macos::take_opened),
+    let event_loop = winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event()
+        .build()
+        .map_err(|e| format!("cannot open window: {e}"))?;
+    // Between building the event loop and running it, or the documents
+    // Finder started the app with are lost. They wait in the queue until
+    // the shell's first frame; later ones wake it.
+    let woken: Arc<OnceLock<egui::Context>> = Arc::default();
+    {
+        let woken = woken.clone();
+        noido_macos::install_open_urls(move || {
+            if let Some(ctx) = woken.get() {
+                ctx.request_repaint_of(root);
+            }
         });
-    if let Some(listener) = listener {
-        shell = shell.with_app_requests(listener.serve(document::shared_waker(&ctx, root)));
     }
-    interrupt::quit_on_interrupt(shell.requests());
-    if let Some(request) = request {
-        shell.open(&ctx, &request.path, request.target)?;
-    }
+    // Why the shell could not start: eframe keeps its own error.
+    let failed: Arc<Mutex<Option<String>>> = Arc::default();
+    let creator_failed = failed.clone();
+    let create = move |ctx: &egui::Context| -> Result<shell::Shell, String> {
+        let _ = woken.set(ctx.clone());
+        let shared = document::Shared::load();
+        configure(ctx);
+        let theme_live = theme::Live::start(ctx);
+        let open_doc: shell::OpenDoc = {
+            let ctx = ctx.clone();
+            Box::new(move |path, target, viewport| {
+                document::open(path, target, &ctx, viewport, &shared).map(|opened| opened.app)
+            })
+        };
+        let mut shell = shell::Shell::new(ctx, open_doc, std::sync::mpsc::channel())
+            .with_theme(theme_live)
+            .with_incoming(app::Incoming {
+                take: Box::new(noido_macos::take_opened),
+            });
+        if open_panel {
+            shell = shell.with_open_panel_at_start();
+        }
+        if let Some(listener) = listener {
+            shell = shell.with_app_requests(listener.serve(document::shared_waker(ctx, root)));
+        }
+        interrupt::quit_on_interrupt(shell.requests());
+        if let Some(request) = request {
+            shell.open(ctx, &request.path, request.target)?;
+        }
+        Ok(shell)
+    };
     let options = eframe::NativeOptions {
         viewport: root_viewport(),
         persist_window: false,
         ..Default::default()
     };
-    eframe::run_native_ext(
+    let mut app = eframe::create_native(
         "noido",
         options,
-        Some(ctx),
-        Box::new(|_cc| Ok(Box::new(shell))),
-    )
-    .map_err(|e| format!("cannot open window: {e}"))
+        Box::new(move |cc| match create(&cc.egui_ctx) {
+            Ok(shell) => Ok(Box::new(shell)),
+            Err(message) => {
+                *creator_failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(message.clone());
+                Err(message.into())
+            }
+        }),
+        &event_loop,
+    );
+    event_loop
+        .run_app(&mut app)
+        .map_err(|e| format!("cannot open window: {e}"))?;
+    match failed.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        Some(message) => Err(message),
+        None => Ok(()),
+    }
 }
 
 /// What a launch that handed `request` to the running app says, from its

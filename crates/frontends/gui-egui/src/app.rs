@@ -66,14 +66,10 @@ struct ScrollState {
     offset: Vec2,
 }
 
-/// Runs once with the context to wake.
-pub type Start = Box<dyn FnOnce(&egui::Context) + Send>;
-
 /// Documents that arrive while the app runs, from outside its windows (on
-/// macOS, Finder's opens), for the shell to open. Tests use fakes.
+/// macOS, Finder's opens, including those that started the app), for the
+/// shell to open. Tests use fakes.
 pub struct Incoming {
-    /// Runs once, in the shell's first frame, with the context to wake.
-    pub start: Option<Start>,
     /// Drains what has arrived: links or paths, in arrival order.
     pub take: Box<dyn FnMut() -> Vec<std::ffi::OsString> + Send>,
 }
