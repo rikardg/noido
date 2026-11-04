@@ -207,7 +207,9 @@ impl Shell {
             if let Some((_, window)) = self.windows.iter().find(|(i, _)| *i == id) {
                 window.activation.request(target);
             }
-            // An occluded window gets no frames until it is shown.
+            // An occluded or minimized window gets no frames, so it cannot
+            // come forward by itself: the shell brings it.
+            ctx.send_viewport_cmd_to(id, ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
             return Ok(Answer::Forward { pid: None });
         }
@@ -433,9 +435,16 @@ mod tests {
             Ok(Answer::Forward { .. })
         ));
         assert_eq!(shell.open_paths().len(), 1);
-        let (_, window) = shell.windows.iter().next().unwrap();
+        let (id, window) = shell.windows.iter().next().unwrap();
         let request = window.activation.take().unwrap();
         assert_eq!(request.target, Some(Target::Page(1)));
+        // A minimized window gets no frames to come forward by itself.
+        ctx.set_embed_viewports(false);
+        let output = ctx.run_ui(RawInput::default(), |ui| shell.show_windows(ui.ctx()));
+        let commands = output.viewport_output[&id].commands.clone();
+        output.drop_without_applying_deltas();
+        assert!(commands.contains(&ViewportCommand::Minimized(false)));
+        assert!(commands.contains(&ViewportCommand::Focus));
     }
 
     #[test]
