@@ -115,7 +115,7 @@ fn pages(updates: &[SearchUpdate]) -> Vec<(usize, usize)> {
         .iter()
         .filter_map(|u| match u {
             SearchUpdate::Page { page, hits, .. } => Some((*page, hits.len())),
-            SearchUpdate::Done { .. } => None,
+            _ => None,
         })
         .collect()
 }
@@ -198,6 +198,7 @@ fn newer_search_drops_older() {
             SearchUpdate::Page { generation, .. } | SearchUpdate::Done { generation, .. } => {
                 *generation
             }
+            SearchUpdate::Text { .. } => continue,
         };
         assert_eq!(generation, second);
     }
@@ -308,4 +309,75 @@ fn wakes_per_update() {
     let updates = until_done(&searcher, generation);
     wait_for(|| wakes.load(Ordering::SeqCst) >= updates.len());
     assert_eq!(wakes.load(Ordering::SeqCst), updates.len());
+}
+
+/// Updates until a `Text` for `page` arrives.
+fn until_text(searcher: &TextSearcher, page: usize) -> Vec<SearchUpdate> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut updates = Vec::new();
+    loop {
+        match searcher.try_recv() {
+            Some(update) => {
+                let found = matches!(update, SearchUpdate::Text { page: p, .. } if p == page);
+                updates.push(update);
+                if found {
+                    return updates;
+                }
+            }
+            None => {
+                assert!(Instant::now() < deadline, "no text within 5 s");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+    }
+}
+
+#[test]
+fn text_is_answered_on_request() {
+    let engine = TextEngine::new(&["first", "second", "third"]);
+    let searcher = start(&engine);
+    searcher.request_text(2);
+    let updates = until_text(&searcher, 2);
+    let Some(SearchUpdate::Text { text, .. }) = updates.last() else {
+        unreachable!()
+    };
+    assert_eq!(text.text(), "third");
+    assert_eq!(engine.calls(), 1);
+}
+
+#[test]
+fn text_request_jumps_ahead_of_search() {
+    let pages: Vec<String> = (0..300).map(|i| format!("page {i}")).collect();
+    let pages: Vec<&str> = pages.iter().map(String::as_str).collect();
+    let engine = TextEngine::new(&pages);
+    let mut searcher = start(&engine);
+    let generation = searcher.search("nowhere", 0);
+    searcher.request_text(299);
+    let updates = until_done(&searcher, generation);
+    let text = updates
+        .iter()
+        .position(|u| matches!(u, SearchUpdate::Text { page: 299, .. }))
+        .expect("the text arrived");
+    assert!(text < 10, "text came after {text} updates");
+}
+
+#[test]
+fn text_shares_the_search_cache() {
+    let engine = TextEngine::new(&["a cat", "a dog"]);
+    let mut searcher = start(&engine);
+    searcher.request_text(1);
+    until_text(&searcher, 1);
+    let generation = searcher.search("dog", 0);
+    until_done(&searcher, generation);
+    assert_eq!(engine.calls(), 2);
+}
+
+#[test]
+fn text_request_out_of_range_is_ignored() {
+    let engine = TextEngine::new(&["a"]);
+    let searcher = start(&engine);
+    searcher.request_text(5);
+    searcher.request_text(0);
+    let updates = until_text(&searcher, 0);
+    assert_eq!(updates.len(), 1);
 }

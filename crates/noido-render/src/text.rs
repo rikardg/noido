@@ -1,6 +1,7 @@
 //! The text thread: extracts page text on its own copy of the document,
 //! keeps it, and searches it, so the window never waits for either.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
@@ -23,6 +24,8 @@ pub enum SearchUpdate {
     },
     /// Every page searched, or `cut_short` at [`MAX_HITS`].
     Done { generation: u64, cut_short: bool },
+    /// A page's text, as asked for with [`TextSearcher::request_text`].
+    Text { page: usize, text: Arc<PageText> },
 }
 
 enum Command {
@@ -33,6 +36,7 @@ enum Command {
         from_page: usize,
     },
     Cancel,
+    Text(usize),
 }
 
 /// Handle to the text thread. Dropping it stops the thread after its
@@ -100,6 +104,13 @@ impl TextSearcher {
         self.generation
     }
 
+    /// Asks for `page`'s text, answered with [`SearchUpdate::Text`] ahead
+    /// of any search or background extraction. Pages out of range are
+    /// ignored.
+    pub fn request_text(&self, page: usize) {
+        let _ = self.commands.send(Command::Text(page));
+    }
+
     pub fn try_recv(&self) -> Option<SearchUpdate> {
         self.results.try_recv().ok()
     }
@@ -120,7 +131,9 @@ struct Worker<'a> {
     results: &'a Sender<SearchUpdate>,
     waker: &'a dyn Fn(),
     /// Each page's text, once extracted.
-    texts: Vec<Option<PageText>>,
+    texts: Vec<Option<Arc<PageText>>>,
+    /// Pages whose text was asked for, to answer first.
+    requests: VecDeque<usize>,
     /// Extract every page when idle.
     extract: bool,
     job: Option<Job>,
@@ -137,6 +150,7 @@ impl<'a> Worker<'a> {
             results,
             waker,
             texts: (0..document.page_count()).map(|_| None).collect(),
+            requests: VecDeque::new(),
             extract: false,
             job: None,
         }
@@ -170,7 +184,9 @@ impl<'a> Worker<'a> {
 
     /// Whether there is work without a command.
     fn busy(&self) -> bool {
-        self.job.is_some() || (self.extract && self.texts.iter().any(Option::is_none))
+        !self.requests.is_empty()
+            || self.job.is_some()
+            || (self.extract && self.texts.iter().any(Option::is_none))
     }
 
     fn apply(&mut self, command: Command) {
@@ -199,11 +215,20 @@ impl<'a> Worker<'a> {
                 });
             }
             Command::Cancel => self.job = None,
+            Command::Text(page) => {
+                if page < self.texts.len() {
+                    self.requests.push_back(page);
+                }
+            }
         }
     }
 
     /// Searches or extracts one page; false once nobody listens.
     fn step(&mut self) -> bool {
+        if let Some(page) = self.requests.pop_front() {
+            let text = self.text(page).clone();
+            return self.send(SearchUpdate::Text { page, text });
+        }
         let Some(mut job) = self.job.take() else {
             if let Some(page) = self.texts.iter().position(Option::is_none) {
                 self.text(page);
@@ -238,14 +263,16 @@ impl<'a> Worker<'a> {
     }
 
     /// `page`'s text, extracted now if not yet.
-    fn text(&mut self, page: usize) -> &PageText {
+    fn text(&mut self, page: usize) -> &Arc<PageText> {
         let document = self.document;
-        self.texts[page].get_or_insert_with(|| match document.text(page) {
-            Ok(glyphs) => PageText::new(glyphs),
-            Err(e) => {
-                eprintln!("noido: text of page {}: {e}", page + 1);
-                PageText::new(Vec::new())
-            }
+        self.texts[page].get_or_insert_with(|| {
+            Arc::new(match document.text(page) {
+                Ok(glyphs) => PageText::new(glyphs),
+                Err(e) => {
+                    eprintln!("noido: text of page {}: {e}", page + 1);
+                    PageText::new(Vec::new())
+                }
+            })
         })
     }
 
