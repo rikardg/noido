@@ -1,8 +1,8 @@
-//! Documents Finder sends to a running noido. Launch Services delivers
-//! them as `application:openURLs:` to the app delegate, which is winit's
-//! and lacks the method; it is added to that class here, once. A link
-//! (`noido:`) comes as a `GURL` Apple event, which AppKit does not hand
-//! to a method added this late, so it gets a handler of its own.
+//! Documents Finder sends to noido, those that start it included.
+//! Launch Services delivers them as `application:openURLs:` to the app
+//! delegate, which is winit's and lacks the method; it is added to that
+//! class here, once. A link (`noido:`) comes as a `GURL` Apple event,
+//! which gets a handler of its own.
 
 use std::ffi::OsString;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -90,8 +90,11 @@ fn queue(texts: impl IntoIterator<Item = String>) {
 
 /// Makes the app delegate accept `application:openURLs:`, and links
 /// their `GURL` event, queueing each URL for [`take_opened`] and calling
-/// `wake`. Main thread only; the delegate must be set (winit does that
-/// before the first frame). A second call does nothing.
+/// `wake`. Main thread only. Call it after winit's event loop is built,
+/// which sets the delegate, and before it runs: AppKit hands over the
+/// documents that started the app while it finishes launching, and
+/// drops them if the method is not there yet. A second call does
+/// nothing.
 pub fn install_open_urls(wake: impl Fn() + Send + Sync + 'static) {
     let mtm = MainThreadMarker::new().expect("open URLs are installed on the main thread");
     if INSTALLED.swap(true, Ordering::SeqCst) {

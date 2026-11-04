@@ -11,7 +11,7 @@ use objc2_foundation::{MainThreadMarker, NSArray, NSString, NSURL};
 use objc2_uniform_type_identifiers::UTType;
 
 /// The PDF type, the one noido.app claims in its Info.plist.
-pub(crate) fn pdf_type() -> Option<Retained<UTType>> {
+fn pdf_type() -> Option<Retained<UTType>> {
     UTType::typeWithIdentifier(&NSString::from_str("com.adobe.pdf"))
 }
 

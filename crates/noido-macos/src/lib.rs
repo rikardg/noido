@@ -16,7 +16,7 @@ mod open_urls;
 pub use activate::activate_pid;
 
 #[cfg(target_os = "macos")]
-pub use launch::{launch_in_bundle, run_launcher};
+pub use launch::launch_in_bundle;
 
 #[cfg(target_os = "macos")]
 pub use open_panel::pick_pdfs;

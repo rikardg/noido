@@ -1,6 +1,6 @@
 [package]
 name = "noido-macos"
-description = "noido on macOS: the launcher that opens what Finder sends"
+description = "noido on macOS: what AppKit has and winit does not"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
