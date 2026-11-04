@@ -8,7 +8,7 @@ use std::sync::Arc;
 /// as the dialog's parent, the dialog opens in the directory of the
 /// open document when there is one, and a picked file is handed to
 /// [`OnPicked`].
-pub type Pick = Box<dyn Fn(Option<&eframe::Frame>, Option<PathBuf>, OnPicked)>;
+pub type Pick = Box<dyn Fn(Option<&eframe::Frame>, Option<PathBuf>, OnPicked) + Send>;
 
 /// What a picked file opens in: a new window.
 pub type OnPicked = Arc<dyn Fn(&Path) + Send + Sync>;

@@ -67,7 +67,7 @@ struct ScrollState {
 }
 
 /// Runs once with the context to wake.
-pub type Start = Box<dyn FnOnce(&egui::Context)>;
+pub type Start = Box<dyn FnOnce(&egui::Context) + Send>;
 
 /// Documents that arrive while the app runs, from outside the window (on
 /// macOS, Finder's opens). Tests use fakes.
@@ -75,7 +75,7 @@ pub struct Incoming {
     /// Runs once, in the first frame, with the context to wake.
     pub start: Option<Start>,
     /// Drains what has arrived: links or paths, in arrival order.
-    pub take: Box<dyn FnMut() -> Vec<std::ffi::OsString>>,
+    pub take: Box<dyn FnMut() -> Vec<std::ffi::OsString> + Send>,
 }
 
 pub struct NoidoApp {
@@ -183,6 +183,8 @@ pub struct NoidoApp {
     page_key_repeated: bool,
     /// Documents sent to the running app; see [`Incoming`].
     incoming: Option<Incoming>,
+    /// Where to ask the shell to open and quit, when there is one.
+    requests: Option<crate::shell::Requests>,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -288,6 +290,7 @@ impl NoidoApp {
             hovered_link: None,
             clicked_link: None,
             pick: Box::new(open::pick_pdf),
+            requests: None,
             open: Arc::new(open::open),
             screen_edge: None,
             page_key_repeated: false,
@@ -588,6 +591,42 @@ impl NoidoApp {
     pub fn with_incoming(mut self, incoming: Incoming) -> Self {
         self.incoming = Some(incoming);
         self
+    }
+
+    /// Asks the shell, not the window, to quit and to open documents, and
+    /// tells it about saved settings.
+    #[allow(dead_code)] // until the shell uses it
+    pub fn with_requests(mut self, requests: crate::shell::Requests) -> Self {
+        let to_open = requests.clone();
+        self.open = Arc::new(move |path| {
+            to_open.send(crate::shell::Request::Open {
+                path: path.to_path_buf(),
+                target: None,
+            });
+        });
+        self.requests = Some(requests);
+        self
+    }
+
+    /// Takes settings saved in another window.
+    #[allow(dead_code)] // until the shell uses it
+    pub fn set_settings(&mut self, settings: Settings) {
+        self.settings = settings;
+    }
+
+    /// The activation the window was given, if any.
+    #[allow(dead_code)] // until the shell uses it
+    pub fn activation(&self) -> Option<Activation> {
+        self.activation.clone()
+    }
+
+    /// Saves the document's state now, unsettled or not.
+    pub fn save_now(&mut self) {
+        if let (Some(state), Some(persistence)) = (self.doc_state(), &mut self.persistence)
+            && persistence.saved.as_ref() != Some(&state)
+        {
+            persistence.save(state);
+        }
     }
 
     /// Comes forward when `activation` is set.
@@ -1043,6 +1082,11 @@ impl NoidoApp {
             Action::Forward => self.go_forward(),
             Action::CopyLink => self.copy_link(ctx, false),
             Action::CopyMarkdownLink => self.copy_link(ctx, true),
+            Action::Quit if self.requests.is_some() => {
+                if let Some(requests) = &self.requests {
+                    requests.send(crate::shell::Request::Quit);
+                }
+            }
             Action::CloseWindow | Action::Quit => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close)
             }
@@ -1639,11 +1683,7 @@ impl eframe::App for NoidoApp {
     }
 
     fn on_exit(&mut self) {
-        if let (Some(state), Some(persistence)) = (self.doc_state(), &mut self.persistence)
-            && persistence.saved.as_ref() != Some(&state)
-        {
-            persistence.save(state);
-        }
+        self.save_now();
     }
 
     /// The window file holds only the window; egui's own memory isn't wanted.
@@ -1933,10 +1973,13 @@ impl NoidoApp {
         if output.changed
             && let Some(file) = &self.settings_file
         {
-            page.error = file
-                .save(&self.settings)
-                .err()
-                .map(|e| format!("Couldn't save settings: {e}"));
+            let saved = file.save(&self.settings);
+            if saved.is_ok()
+                && let Some(requests) = &self.requests
+            {
+                requests.send(crate::shell::Request::SettingsSaved(self.settings));
+            }
+            page.error = saved.err().map(|e| format!("Couldn't save settings: {e}"));
         }
         if output.close {
             self.settings_page = None;
@@ -3280,6 +3323,116 @@ mod tests {
         h.frames(3, vec![]);
         assert!(h.app.sidebar.width <= 450.0, "{}", h.app.sidebar.width);
         assert!(h.app.view.viewport_size().0 >= 400.0);
+    }
+
+    #[test]
+    fn the_app_is_send() {
+        fn send<T: Send>() {}
+        send::<NoidoApp>();
+    }
+
+    /// A shell's end of a harness: what the windows asked, and how often
+    /// the shell was woken.
+    fn shell_end() -> (
+        crate::shell::Requests,
+        std::sync::mpsc::Receiver<crate::shell::Request>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = woken.clone();
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        (crate::shell::Requests::new(tx, wake), rx, woken)
+    }
+
+    #[test]
+    fn with_requests_quit_asks_the_shell() {
+        let (requests, rx, woken) = shell_end();
+        let mut h = Harness::build(|app| app.with_requests(requests));
+        h.press(egui::Key::Q, Modifiers::COMMAND);
+        assert!(matches!(rx.try_recv(), Ok(crate::shell::Request::Quit)));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(woken.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            !h.commands.contains(&egui::ViewportCommand::Close),
+            "{:?}",
+            h.commands
+        );
+    }
+
+    #[test]
+    fn close_window_with_requests_still_closes_its_window() {
+        let (requests, rx, _) = shell_end();
+        let mut h = Harness::build(|app| app.with_requests(requests));
+        h.press(egui::Key::W, Modifiers::COMMAND);
+        assert!(h.commands.contains(&egui::ViewportCommand::Close));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn with_requests_a_picked_file_is_a_request_to_open() {
+        let (requests, rx, _) = shell_end();
+        let mut h = Harness::build(|app| app.with_requests(requests));
+        h.app.pick = Box::new(|_, _, on_picked| on_picked(Path::new("/tmp/picked.pdf")));
+        h.press(egui::Key::O, Modifiers::COMMAND);
+        match rx.try_recv() {
+            Ok(crate::shell::Request::Open { path, target }) => {
+                assert_eq!(path, PathBuf::from("/tmp/picked.pdf"));
+                assert!(target.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_requests_a_saved_settings_page_is_announced() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = SettingsFile::at(dir.path());
+        let (requests, rx, _) = shell_end();
+        let mut h = Harness::build(|app| {
+            app.with_requests(requests)
+                .with_settings(Some(file), Settings::default())
+        });
+        open_settings(&mut h);
+        assert!(rx.try_recv().is_err(), "sent before any change");
+        h.click_text("Gapless mode (default: off)");
+        h.frames(2, vec![]);
+        match rx.try_recv() {
+            Ok(crate::shell::Request::SettingsSaved(settings)) => {
+                assert!(settings.new_documents.gapless);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn save_now_saves_a_fresh_change() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let mut h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), None)
+        });
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        assert_eq!(store.load(test_key()).1, None, "saved before the delay");
+        h.app.save_now();
+        assert_eq!(
+            store.load(test_key()).1.map(|state| state.view),
+            h.app.view.state()
+        );
+    }
+
+    #[test]
+    fn set_settings_replaces_the_window_settings() {
+        let mut h = Harness::new();
+        let mut s = Settings::default();
+        s.new_documents.sidebar = !s.new_documents.sidebar;
+        assert_ne!(h.app.settings, s);
+        h.app.set_settings(s);
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, None, Action::OpenSettings);
+        assert_eq!(h.app.settings, s);
     }
 
     #[test]
