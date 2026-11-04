@@ -36,6 +36,8 @@ pub struct Bar<'a> {
     pub dual: bool,
     pub odd_left: bool,
     pub gapless: bool,
+    /// The select tool is on.
+    pub select_tool: bool,
     pub keymap: &'a Keymap,
     /// The match counter, shown beside the search field; empty for none.
     pub counter: String,
@@ -46,6 +48,8 @@ pub struct Bar<'a> {
 pub struct Rects {
     pub search: Rect,
     pub menu: Rect,
+    /// The select tool's button.
+    pub select: Rect,
     /// The close button; nothing on macOS, which has its own.
     pub close: Rect,
 }
@@ -55,6 +59,7 @@ impl Default for Rects {
         Self {
             search: Rect::NOTHING,
             menu: Rect::NOTHING,
+            select: Rect::NOTHING,
             close: Rect::NOTHING,
         }
     }
@@ -125,6 +130,14 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         );
         if toggle.clicked() {
             output.actions.push(Action::ToggleSidebar);
+        }
+        let select = theme::hover_text(
+            icon_button(ui, bar.select_tool, paint_select_icon),
+            "Select text (S)",
+        );
+        output.rects.select = select.rect;
+        if select.clicked() {
+            output.actions.push(Action::ToggleSelectTool);
         }
 
         let width = if bar.sidebar.open {
@@ -219,7 +232,7 @@ fn menu_entries(ui: &mut egui::Ui, bar: &Bar, actions: &mut Vec<Action>) {
                 Some(Check::OddLeft) => bar.odd_left,
                 Some(Check::Gapless) => bar.gapless,
                 Some(Check::Sidebar) => bar.sidebar.open,
-                Some(Check::SelectTool) => false,
+                Some(Check::SelectTool) => bar.select_tool,
                 None => false,
             };
             // An invisible mark keeps all labels aligned.
@@ -330,6 +343,17 @@ fn paint_sidebar_icon(painter: &Painter, rect: Rect, colour: Color32) {
 }
 
 /// Three horizontal lines.
+/// An I-beam: a stem with serifs at both ends.
+fn paint_select_icon(painter: &Painter, rect: Rect, colour: Color32) {
+    let stroke = Stroke::new(1.5, colour);
+    let (top, bottom, x) = (rect.top() + 1.0, rect.bottom() - 1.0, rect.center().x);
+    let serif = rect.width() * 0.2;
+    painter.line_segment([pos2(x, top), pos2(x, bottom)], stroke);
+    for y in [top, bottom] {
+        painter.line_segment([pos2(x - serif, y), pos2(x + serif, y)], stroke);
+    }
+}
+
 fn paint_menu_icon(painter: &Painter, rect: Rect, colour: Color32) {
     let stroke = Stroke::new(1.5, colour);
     for y in [rect.top() + 2.0, rect.center().y, rect.bottom() - 2.0] {

@@ -18,6 +18,7 @@ engine-hayro.workspace = true
 noido-render.workspace = true
 noido-core.workspace = true
 noido-state.workspace = true
+noido-text.workspace = true
 noido-settings.workspace = true
 eframe.workspace = true
 native-theme.workspace = true
