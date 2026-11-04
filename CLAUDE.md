@@ -61,13 +61,15 @@ is the daily driver; macOS and Windows build but are unchecked.
   writing it down.
 - Larger work: brainstorm → spec → plan → execute inline with a ledger in
   `.superpowers/sdd/<plan>/progress.md` (git-ignored; delete when done) →
-  final review → minors to an issue.
+  final review → minors settled as below.
 - Small changes: a short spec, agreed with the user, then the change.
 - Always TDD: the failing test first, watched failing.
 - After a change: a review by a fresh subagent on the most capable model.
-  Critical and Important findings are fixed test-first; minors are first
-  presented to the user in chat to determine whether they go to an issue. They
-  do not go into the code.
+  Critical and Important findings are fixed test-first. Minors are
+  presented to the user in chat, each with a recommendation, and the user
+  picks one of three for each: fix it now (test-first, squashed into the
+  commit it corrects), put it on the backlog (the review-minors issue), or
+  drop it.
 - Rebuild release after anything the user will try, and tell them what to
   check by hand.
 
