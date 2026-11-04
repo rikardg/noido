@@ -63,6 +63,7 @@ pub struct DocState {
 }
 
 /// The state directory and the documents' files in it.
+#[derive(Clone)]
 pub struct Store {
     docs: PathBuf,
 }

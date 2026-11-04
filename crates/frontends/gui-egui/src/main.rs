@@ -4,6 +4,7 @@
 mod app;
 mod app_bundle;
 mod desktop;
+mod document;
 mod frame;
 mod icon;
 mod image;
@@ -25,23 +26,12 @@ mod watch;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use clap::Parser;
 use eframe::egui;
-use engine_hayro::HayroEngine;
 use noido_core::{Opening, Target, parse_argument};
-use noido_render::{Linker, Renderer, TextSearcher, Thumbnailer};
-use noido_settings::{Settings, SettingsFile};
-use noido_state::{DocKey, Store};
 
-use crate::app::NoidoApp;
 use crate::instance::Claim;
-use crate::load::load_document;
-use crate::watch::Watcher;
-
-/// Documents whose state is kept; older ones are forgotten.
-const REMEMBERED_DOCUMENTS: usize = 1000;
 
 /// The smallest window in which the title bar's controls all fit.
 const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 300.0];
@@ -182,25 +172,7 @@ fn run(opening: Opening) -> Result<(), String> {
         Claim::First(listener) => Some(listener),
         Claim::Unavailable => None,
     };
-    let bytes = load_document(path)?;
-    let key = DocKey::new(&bytes, path);
-    // Read before the window file is asked for: the entry names it.
-    let session = Store::open_default().map(|store| {
-        store.prune(REMEMBERED_DOCUMENTS);
-        let (slot, restored) = store.load(key.clone());
-        (store, slot, restored)
-    });
-
-    let settings_file = SettingsFile::open_default();
-    let settings = settings_file
-        .as_ref()
-        .map_or_else(Settings::default, |file| {
-            file.load().unwrap_or_else(|e| {
-                let path = file.path().display();
-                eprintln!("noido: cannot read settings ({path}): {e}; using the defaults");
-                Settings::default()
-            })
-        });
+    let shared = document::Shared::load();
 
     // Created up front so the render thread can wake the UI when a page is ready.
     let ctx = egui::Context::default();
@@ -220,38 +192,10 @@ fn run(opening: Opening) -> Result<(), String> {
         o.input_options.scroll_zoom_speed /= factor;
     });
     interrupt::close_on_interrupt(ctx.clone());
-    let waker = |ctx: &egui::Context| {
-        let ctx = ctx.clone();
-        Box::new(move || ctx.request_repaint())
-    };
-    // Shares the document bytes with the renderer; opens it in the background.
-    let thumbnailer = Thumbnailer::start(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
-    let sidebar_renderer =
-        Renderer::start_background(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
-    let searcher = TextSearcher::start(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
-    let linker = Linker::start(Arc::new(HayroEngine), bytes.clone(), waker(&ctx));
-    let source = info::Source {
-        engine: Arc::new(HayroEngine),
-        bytes: bytes.clone(),
-        // The info page shows the folder: a relative one says little.
-        path: std::path::absolute(path).unwrap_or_else(|_| path.to_owned()),
-    };
-    let (renderer, info) = Renderer::start(Arc::new(HayroEngine), bytes, waker(&ctx))
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-
-    let wake: watch::Waker = {
-        let ctx = ctx.clone();
-        Arc::new(move || ctx.request_repaint())
-    };
-    let activation = listener.map(|listener| listener.serve(wake.clone()));
-    let watcher = Watcher::start(path, key, Arc::new(HayroEngine), wake)
-        .inspect_err(|e| eprintln!("noido: cannot watch {}: {e}", path.display()))
-        .ok();
-
-    let name = path.file_name().map_or_else(
-        || path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
+    let root = egui::ViewportId::ROOT;
+    let opened = document::open(path, target, &ctx, root, &shared)?;
+    let activation = listener.map(|listener| listener.serve(document::shared_waker(&ctx, root)));
+    let name = &opened.name;
     let options = eframe::NativeOptions {
         viewport: own_title_bar(
             egui::ViewportBuilder::default()
@@ -265,31 +209,16 @@ fn run(opening: Opening) -> Result<(), String> {
                 .with_min_inner_size(MIN_WINDOW_SIZE),
         ),
         persist_window: true,
-        persistence_path: session
+        persistence_path: shared
+            .store
             .as_ref()
-            .map(|(store, slot, _)| store.window_file(slot)),
+            .zip(opened.slot.as_ref())
+            .map(|(store, slot)| store.window_file(slot)),
         ..Default::default()
     };
-    let app = NoidoApp::new(renderer, info)
-        .with_name(name.clone())
-        .with_link_path(std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned()))
-        .with_thumbnails(thumbnailer)
-        .with_sidebar_renderer(sidebar_renderer)
-        .with_searcher(searcher)
-        .with_linker(linker)
-        .with_source(source);
-    let app = app.with_theme(theme_live);
+    let app = opened.app.with_theme(theme_live);
     let app = match activation {
         Some(activation) => app.with_activation(activation),
-        None => app,
-    };
-    let app = match watcher {
-        Some(watcher) => app.with_watcher(watcher),
-        None => app,
-    };
-    let app = app.with_settings(settings_file, settings);
-    let app = match session {
-        Some((store, slot, restored)) => app.with_persistence(store, slot, restored),
         None => app,
     };
     #[cfg(target_os = "macos")]
@@ -300,7 +229,6 @@ fn run(opening: Opening) -> Result<(), String> {
         })),
         take: Box::new(noido_macos::take_opened),
     });
-    let app = app.opening_at(target);
     eframe::run_native_ext(
         "noido",
         options,

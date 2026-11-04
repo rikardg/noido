@@ -23,6 +23,7 @@ pub struct Settings {
 }
 
 /// The settings file.
+#[derive(Clone)]
 pub struct SettingsFile {
     path: PathBuf,
 }
