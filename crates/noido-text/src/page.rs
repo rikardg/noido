@@ -118,7 +118,7 @@ impl PageText {
     }
 
     /// Each line's bounds by line index; `None` for a line without glyphs.
-    fn lines(&self) -> Vec<Option<Rect>> {
+    pub(crate) fn lines(&self) -> Vec<Option<Rect>> {
         let mut lines: Vec<Option<Rect>> = Vec::new();
         for info in &self.chars {
             let Some(glyph) = info.glyph else {

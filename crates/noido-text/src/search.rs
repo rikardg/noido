@@ -139,7 +139,7 @@ fn fold(chars: &[char], dehyphenate: bool) -> Folds {
     out
 }
 
-enum Hyphen {
+pub(crate) enum Hyphen {
     /// It breaks a word in two: "inter-" / "preter".
     Breaks,
     /// It belongs to the word: "Anglo-" / "Saxon".
@@ -152,7 +152,7 @@ enum Hyphen {
 /// Before a lowercase letter it breaks the word; before another letter it is
 /// the word's own, except OCR's `¬` and the soft hyphen, which always mark a
 /// break.
-fn line_end_hyphen(chars: &[char], i: usize) -> Option<(Hyphen, usize)> {
+pub(crate) fn line_end_hyphen(chars: &[char], i: usize) -> Option<(Hyphen, usize)> {
     let hyphen = chars[i];
     if !matches!(hyphen, '-' | '\u{2010}' | '¬' | '\u{ad}')
         || i == 0
