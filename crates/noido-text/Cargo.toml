@@ -12,5 +12,9 @@ publish.workspace = true
 noido-engine.workspace = true
 unicode-normalization.workspace = true
 
+[features]
+# The glyph builders tests use, for other crates' tests.
+testing = []
+
 [lints]
 workspace = true

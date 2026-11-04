@@ -3,8 +3,8 @@
 
 mod page;
 mod search;
-#[cfg(test)]
-mod testing;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 pub use page::*;
 pub use search::*;

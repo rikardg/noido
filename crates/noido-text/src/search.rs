@@ -7,6 +7,7 @@ use std::ops::Range;
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
+use crate::page::union;
 use crate::{PageText, Rect};
 
 /// Characters of context before and after a hit, about.
@@ -230,14 +231,14 @@ impl PageText {
 
     fn hit(&self, chars: &[char], range: Range<usize>) -> TextHit {
         TextHit {
-            rects: self.rects(range.clone()),
+            rects: self.hit_rects(range.clone()),
             context: context(chars, range.clone()),
             range,
         }
     }
 
     /// One rectangle per line `range` touches: the union of its glyphs there.
-    fn rects(&self, range: Range<usize>) -> Vec<Rect> {
+    fn hit_rects(&self, range: Range<usize>) -> Vec<Rect> {
         let mut rects: Vec<(usize, Rect)> = Vec::new();
         for c in range {
             let Some(bounds) = self.glyph_bounds(c) else {
@@ -250,17 +251,6 @@ impl PageText {
             }
         }
         rects.into_iter().map(|(_, rect)| rect).collect()
-    }
-}
-
-fn union(a: Rect, b: Rect) -> Rect {
-    let x = a.x.min(b.x);
-    let y = a.y.min(b.y);
-    Rect {
-        x,
-        y,
-        width: (a.x + a.width).max(b.x + b.width) - x,
-        height: (a.y + a.height).max(b.y + b.height) - y,
     }
 }
 
