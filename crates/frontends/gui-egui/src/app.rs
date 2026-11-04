@@ -1711,6 +1711,7 @@ fn core_key(key: egui::Key) -> Option<Key> {
         egui::Key::O => Some(Key::O),
         egui::Key::Q => Some(Key::Q),
         egui::Key::G => Some(Key::G),
+        egui::Key::S => Some(Key::S),
         egui::Key::I => Some(Key::I),
         egui::Key::L => Some(Key::L),
         egui::Key::Comma => Some(Key::Comma),

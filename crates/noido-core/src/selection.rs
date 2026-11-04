@@ -72,6 +72,53 @@ pub fn resolve<'a>(spot: Spot, text_of: impl Fn(usize) -> PageTextState<'a>) -> 
     }
 }
 
+/// What a drag on the pages does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragKind {
+    Pan,
+    Select,
+    /// Moves one end of the selection.
+    Handle,
+}
+
+/// The drag a press starts: a handle always adjusts; otherwise Shift swaps
+/// the plain drag (panning, or selecting with the select tool) for the
+/// other.
+pub fn drag_kind(tool: bool, shift: bool, on_handle: bool) -> DragKind {
+    if on_handle {
+        DragKind::Handle
+    } else if tool != shift {
+        DragKind::Select
+    } else {
+        DragKind::Pan
+    }
+}
+
+/// How far inside the viewport's edge, in points, a selection drag starts
+/// scrolling.
+pub const EDGE_MARGIN: f32 = 24.0;
+/// How far past the edge it reaches full speed.
+pub const EDGE_RAMP: f32 = 100.0;
+/// Full speed, in points per second.
+pub const EDGE_MAX_SPEED: f32 = 2400.0;
+
+/// Points per second to scroll by, per axis, while a selection drag is at
+/// `pos` in a viewport `(min_x, min_y, max_x, max_y)`: none further than
+/// [`EDGE_MARGIN`] inside, growing linearly to [`EDGE_MAX_SPEED`] at
+/// [`EDGE_RAMP`] past the edge.
+pub fn edge_scroll(pos: (f32, f32), viewport: (f32, f32, f32, f32)) -> (f32, f32) {
+    let axis = |at: f32, min: f32, max: f32| {
+        let speed = |into: f32| (into / (EDGE_MARGIN + EDGE_RAMP)).clamp(0.0, 1.0) * EDGE_MAX_SPEED;
+        let low = speed(EDGE_MARGIN - (at - min));
+        let high = speed(EDGE_MARGIN - (max - at));
+        high - low
+    };
+    (
+        axis(pos.0, viewport.0, viewport.2),
+        axis(pos.1, viewport.1, viewport.3),
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Selection {
     pub anchor: Spot,
@@ -233,6 +280,35 @@ mod tests {
 
     fn selection(anchor: Spot, focus: Spot) -> Selection {
         Selection { anchor, focus }
+    }
+
+    #[test]
+    fn drag_kind_table() {
+        use DragKind::*;
+        for tool in [false, true] {
+            for shift in [false, true] {
+                assert_eq!(drag_kind(tool, shift, true), Handle);
+            }
+        }
+        assert_eq!(drag_kind(false, false, false), Pan);
+        assert_eq!(drag_kind(false, true, false), Select);
+        assert_eq!(drag_kind(true, false, false), Select);
+        assert_eq!(drag_kind(true, true, false), Pan);
+    }
+
+    #[test]
+    fn edge_scroll_zones() {
+        let viewport = (0.0, 0.0, 800.0, 600.0);
+        assert_eq!(edge_scroll((400.0, 300.0), viewport), (0.0, 0.0));
+        let (_, near) = edge_scroll((400.0, 590.0), viewport);
+        assert!(near > 0.0 && near < EDGE_MAX_SPEED, "{near}");
+        assert_eq!(edge_scroll((400.0, 800.0), viewport), (0.0, EDGE_MAX_SPEED));
+        let (left, _) = edge_scroll((5.0, 300.0), viewport);
+        assert!(left < 0.0);
+        assert_eq!(
+            edge_scroll((400.0, -500.0), viewport),
+            (0.0, -EDGE_MAX_SPEED)
+        );
     }
 
     #[test]

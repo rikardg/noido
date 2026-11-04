@@ -17,6 +17,7 @@ pub enum Key {
     G,
     I,
     L,
+    S,
     Comma,
     F3,
     F9,
@@ -81,6 +82,12 @@ pub enum Action {
     FirstPage,
     /// Shows the last page.
     LastPage,
+    /// Turns the select tool on or off: with it on, a plain drag selects
+    /// text and Shift+drag pans.
+    ToggleSelectTool,
+    /// Copies the selected text. Not bound: the window acts on the
+    /// toolkit's own copy event (Mod+C), which text fields also use.
+    Copy,
     /// Closes the window; for now the same as quitting.
     CloseWindow,
     Quit,
@@ -131,6 +138,7 @@ impl Keymap {
             (plain(Key::D), Action::ToggleDual),
             (plain(Key::O), Action::ToggleOddLeft),
             (plain(Key::G), Action::ToggleGapless),
+            (plain(Key::S), Action::ToggleSelectTool),
             (plain(Key::F9), Action::ToggleSidebar),
             (command(Key::F), Action::FocusSearch),
             (command(Key::G), Action::NextHit),
@@ -201,6 +209,7 @@ pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
         Key::G => "G",
         Key::I => "I",
         Key::L => "L",
+        Key::S => "S",
         Key::Comma => ",",
         Key::F3 => "F3",
         Key::F9 => "F9",
@@ -337,6 +346,17 @@ mod tests {
         );
         assert_eq!(keymap.action(press(Key::G, false), true), None);
         assert_eq!(shortcut_label(press(Key::G, false), Platform::Other), "G");
+    }
+
+    #[test]
+    fn s_toggles_select_tool() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::S, false), false),
+            Some(Action::ToggleSelectTool)
+        );
+        assert_eq!(keymap.action(press(Key::S, false), true), None);
+        assert_eq!(shortcut_label(press(Key::S, false), Platform::Other), "S");
     }
 
     #[test]

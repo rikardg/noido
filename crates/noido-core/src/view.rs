@@ -376,6 +376,8 @@ impl View {
             | Action::Back
             | Action::Forward
             | Action::CopyLink
+            | Action::Copy
+            | Action::ToggleSelectTool
             | Action::CopyMarkdownLink
             | Action::OpenDocument
             | Action::ShowDocumentInfo
