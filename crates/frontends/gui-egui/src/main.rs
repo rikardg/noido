@@ -23,6 +23,7 @@ mod texts;
 mod theme;
 mod titlebar;
 mod watch;
+mod windows;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
