@@ -1441,6 +1441,31 @@ impl NoidoApp {
         }
     }
 
+    /// While a selection drag is near or past the pages' edge, scrolls
+    /// toward it, faster the further out the pointer is.
+    fn edge_scroll(&mut self, ctx: &egui::Context) {
+        let Some(drag) = self.select.drag else {
+            return;
+        };
+        if drag.kind == DragKind::Pan || !drag.moved {
+            return;
+        }
+        let (Some(last), Some(pos)) = (self.last_scroll, ctx.input(|i| i.pointer.latest_pos()))
+        else {
+            return;
+        };
+        let r = last.inner;
+        let (vx, vy) =
+            noido_core::edge_scroll((pos.x, pos.y), (r.min.x, r.min.y, r.max.x, r.max.y));
+        if vx == 0.0 && vy == 0.0 {
+            return;
+        }
+        let dt = ctx.input(|i| i.stable_dt).min(0.1);
+        let (x, y) = self.view.offset();
+        self.view.scrolled_to(x + vx * dt, y + vy * dt);
+        ctx.request_repaint();
+    }
+
     /// Starts the screen edge's flash once PageUp and PageDown are let go,
     /// unless one was held down long enough to repeat.
     fn start_screen_edge(&mut self, ctx: &egui::Context) {
@@ -1549,6 +1574,7 @@ impl NoidoApp {
             self.texts.insert(page, text);
         }
         self.start_drag(&ctx);
+        self.edge_scroll(&ctx);
         if self.sidebar.open {
             let input = sidebar::Input {
                 layout: self.view.layout(),
@@ -7959,5 +7985,91 @@ mod tests {
         h.reload(Arc::new(TextEngine::new(&[&["short"]])), recompiled_key());
         h.frames(3, vec![]);
         assert_eq!(h.app.select.selection, None);
+    }
+
+    /// Presses at page point (`x`, `y`) on page 0 with `modifiers`, moves
+    /// to screen point `to` and holds there for `frames` frames, then
+    /// releases. Returns the offset before the release.
+    fn hold_drag(
+        h: &mut Harness,
+        (x, y): (f32, f32),
+        to: egui::Pos2,
+        modifiers: Modifiers,
+        frames: usize,
+    ) -> (f32, f32) {
+        let from = screen_pos(h, 0, x, y);
+        let button = |pos, pressed| Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers,
+        };
+        h.modifiers = modifiers;
+        h.frames(1, vec![Event::PointerMoved(from)]);
+        h.frames(1, vec![button(from, true)]);
+        h.frames(1, vec![Event::PointerMoved(from + (to - from) * 0.5)]);
+        h.frames(1, vec![Event::PointerMoved(to)]);
+        h.frames(frames, vec![]);
+        let offset = h.app.view.offset();
+        h.frames(1, vec![button(to, false)]);
+        h.modifiers = Modifiers::NONE;
+        offset
+    }
+
+    #[test]
+    fn drag_past_bottom_scrolls_and_extends() {
+        let (mut h, _) = selecting();
+        let before = h.app.view.offset();
+        let below = h.app.last_scroll.unwrap().inner.center_bottom() + vec2(0.0, 50.0);
+        let after = hold_drag(&mut h, (73.0, 95.0), below, Modifiers::SHIFT, 30);
+        assert!(after.1 > before.1 + 100.0, "{before:?} → {after:?}");
+        let (start, end) = h.app.select.selection.unwrap().carets().unwrap();
+        assert!(end.page > start.page, "{start:?}..{end:?}");
+    }
+
+    #[test]
+    fn drag_past_right_edge_scrolls_sideways() {
+        let (mut h, _) = selecting();
+        for _ in 0..4 {
+            h.press(egui::Key::Equals, Modifiers::COMMAND);
+        }
+        h.frames(3, vec![]);
+        let before = h.app.view.offset();
+        let inner = h.app.last_scroll.unwrap().inner;
+        let right = egui::pos2(inner.right() + 50.0, inner.center().y);
+        let at = (inner.left() + 20.0, inner.center().y);
+        let p = h
+            .app
+            .view
+            .layout()
+            .doc_point(
+                at.0 - inner.left() + before.0,
+                at.1 - inner.top() + before.1,
+            )
+            .unwrap();
+        let after = hold_drag(&mut h, (p.x, p.y), right, Modifiers::SHIFT, 30);
+        assert!(after.0 > before.0 + 100.0, "{before:?} → {after:?}");
+    }
+
+    #[test]
+    fn no_edge_scroll_when_panning() {
+        let (mut h, _) = selecting();
+        let below = h.app.last_scroll.unwrap().inner.center_bottom() + vec2(0.0, 50.0);
+        let from = screen_pos(&h, 0, 73.0, 400.0);
+        h.frames(1, vec![Event::PointerMoved(from)]);
+        h.frames(
+            1,
+            vec![Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        h.frames(1, vec![Event::PointerMoved(below)]);
+        h.frames(3, vec![]);
+        let held = h.app.view.offset();
+        h.frames(20, vec![]);
+        assert_eq!(h.app.view.offset(), held);
     }
 }
