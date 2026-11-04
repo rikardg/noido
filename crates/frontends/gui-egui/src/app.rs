@@ -5,9 +5,9 @@ use std::time::Duration;
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Vec2, pos2, vec2};
 use noido_core::{
-    Action, Defaults, Direction, History, Keep, Key, KeyPress, Keymap, MAX_RENDER_SIDE,
-    RenderTracker, SidebarState, THUMBNAIL_BUDGET, Target, View, ViewState, render_scale,
-    window_keep, window_order,
+    Action, Defaults, Direction, DragKind, History, Keep, Key, KeyPress, Keymap, MAX_RENDER_SIDE,
+    PageTextState, RenderTracker, SidebarState, THUMBNAIL_BUDGET, Target, View, ViewState,
+    drag_kind, render_scale, window_keep, window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
 use noido_settings::{Settings, SettingsFile};
@@ -20,8 +20,10 @@ use crate::instance::Activation;
 use crate::links::{FLASH_SECONDS, Links, Named};
 use crate::open;
 use crate::search::{self, Search};
+use crate::select;
 use crate::settings;
 use crate::sidebar::{self, SidebarView};
+use crate::texts::Texts;
 use crate::titlebar::{self, TITLE_BAR_HEIGHT};
 use crate::watch::{Reload, Watcher};
 
@@ -47,6 +49,8 @@ const SAVE_DELAY: f64 = 2.0;
 const LINK_OUTLINE_WIDTH: f32 = 1.5;
 /// The outline flashed at a link's target, in points.
 const FLASH_OUTLINE_WIDTH: f32 = 2.5;
+/// How strongly selected text is tinted with the selection colour.
+const SELECTION_OPACITY: f32 = 0.35;
 
 /// What egui's scroll area reported at the end of the last frame.
 #[derive(Clone, Copy)]
@@ -150,6 +154,10 @@ pub struct NoidoApp {
     info_page: Option<info::Page>,
     /// The pages' links.
     links: Links,
+    /// The pages' text, for selecting.
+    texts: Texts,
+    /// The text selection and the select tool.
+    select: select::State,
     /// The link under the pointer this frame.
     hovered_link: Option<noido_engine::Link>,
     /// The link clicked last frame, followed at the start of the next:
@@ -271,6 +279,8 @@ impl NoidoApp {
             source: None,
             info_page: None,
             links: Links::new(page_count),
+            texts: Texts::new(page_count),
+            select: select::State::default(),
             hovered_link: None,
             clicked_link: None,
             pick: Box::new(open::pick_pdf),
@@ -712,6 +722,8 @@ impl NoidoApp {
         self.sidebar_view.replace(reload.sidebar, page_count);
         self.search_state.set_searcher(reload.searcher);
         self.links.set_linker(reload.linker, page_count);
+        self.texts.reset(page_count);
+        self.select.clear();
         let from = self.view.centre_page().unwrap_or(0);
         self.search_state.rerun(from);
         self.focus = None;
@@ -882,6 +894,15 @@ impl NoidoApp {
                 self.apply(ctx, parent, action);
             }
         }
+        // Esc on the pages clears the selection; in a field it's the
+        // field's. egui drops focus on Esc before this, so it's the last
+        // frame's focus that tells.
+        if !editing
+            && !self.select.widget_focused
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            self.select.selection = None;
+        }
         // The mouse's back and forward buttons, also while typing.
         let buttons: Vec<Action> = ctx.input(|i| {
             i.events
@@ -947,6 +968,7 @@ impl NoidoApp {
             dual: self.view.dual(),
             odd_left: self.view.odd_left(),
             gapless: self.view.gapless(),
+            select_tool: self.select.tool,
             keymap: &self.keymap,
             counter: self.search_state.counter(),
         };
@@ -999,6 +1021,7 @@ impl NoidoApp {
                 self.sidebar_opened_by_search = false;
             }
             Action::FocusSearch => self.search_focus_requested = true,
+            Action::ToggleSelectTool => self.select.tool = !self.select.tool,
             // Not view moves: going to a hit isn't the reader moving away.
             Action::NextHit => self.step_hit(true),
             Action::PreviousHit => self.step_hit(false),
@@ -1256,7 +1279,10 @@ impl NoidoApp {
 
         for page in visible.clone() {
             self.links.want(page);
+            let search = &self.search_state;
+            self.texts.want(page, |page| search.request_text(page));
         }
+        self.select.update(&self.texts, layout, ui, content);
         let visible_pages = visible.clone();
         // Not over a scroll bar, the sidebar or a popup: the response
         // isn't hovered there.
@@ -1284,6 +1310,22 @@ impl NoidoApp {
                 self.fades.alpha(page, now),
                 paper,
             );
+            // The selection, under the matches.
+            if let Some(selection) = &self.select.selection
+                && let PageTextState::Known(text) = self.texts.get(page)
+                && let Some(range) = selection.on_page(page, text.char_count())
+            {
+                let fill = ui
+                    .visuals()
+                    .selection
+                    .bg_fill
+                    .gamma_multiply(SELECTION_OPACITY);
+                for area in text.rects(range) {
+                    let min = rect.min + vec2(area.x, area.y) * layout.scale();
+                    let size = vec2(area.width, area.height) * layout.scale();
+                    painter.rect_filled(Rect::from_min_size(min, size), 0.0, fill);
+                }
+            }
             // Matches over the page, the current one stronger.
             let first = hits.first_on(page).unwrap_or(0);
             let warning = ui.visuals().warn_fg_color;
@@ -1366,6 +1408,36 @@ impl NoidoApp {
             } else {
                 self.screen_edge = None;
             }
+        }
+    }
+
+    /// Takes a press on the pages: what its drag will do is decided now,
+    /// before the pages' scroll area decides whether to pan.
+    fn start_drag(&mut self, ctx: &egui::Context) {
+        if self.settings_page.is_some() || self.info_page.is_some() {
+            return;
+        }
+        let (pressed, origin, shift) = ctx.input(|i| {
+            (
+                i.pointer.primary_pressed(),
+                i.pointer.press_origin(),
+                i.modifiers.shift,
+            )
+        });
+        let Some(origin) = origin.filter(|_| pressed) else {
+            return;
+        };
+        let on_pages = self
+            .last_scroll
+            .is_some_and(|last| last.inner.contains(origin))
+            && !egui::Popup::is_any_open(ctx);
+        if on_pages {
+            self.select.drag = Some(select::Drag {
+                kind: drag_kind(self.select.tool, shift, false),
+                origin,
+                moved: false,
+                started: false,
+            });
         }
     }
 
@@ -1473,6 +1545,10 @@ impl NoidoApp {
         }
         self.title_bar(ui, parent);
         self.update_search(&ctx);
+        for (page, text) in self.search_state.take_texts() {
+            self.texts.insert(page, text);
+        }
+        self.start_drag(&ctx);
         if self.sidebar.open {
             let input = sidebar::Input {
                 layout: self.view.layout(),
@@ -1546,9 +1622,14 @@ impl NoidoApp {
         frame.show(ui, |ui| {
             // egui fades the edges of scroll areas; on pages it reads as a shadow.
             ui.spacing_mut().scroll.fade.strength = 0.0;
-            // Left drag pans the document (until selection tools need the button).
+            // Left drag pans the document, unless it selects.
+            let panning = self.select.drag.is_none_or(|d| d.kind == DragKind::Pan);
             let source = ScrollSource {
-                drag: DragScroll::Always,
+                drag: if panning {
+                    DragScroll::Always
+                } else {
+                    DragScroll::Never
+                },
                 ..Default::default()
             };
             // No overscroll at the ends; it makes zoomed-in pages harder to
@@ -1587,6 +1668,19 @@ impl NoidoApp {
             {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
+            // The I-beam where a drag selects: over text, or while selecting.
+            let shift = ui.ctx().input(|i| i.modifiers.shift);
+            let selecting = match self.select.drag {
+                Some(drag) => drag.kind == DragKind::Select,
+                None => {
+                    self.select.over_text
+                        && self.hovered_link.is_none()
+                        && drag_kind(self.select.tool, shift, false) == DragKind::Select
+                }
+            };
+            if cursor_free && selecting {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+            }
 
             let moved = self.last_scroll.is_some_and(|last| {
                 (last.offset - output.state.clamped_offset())
@@ -1611,6 +1705,7 @@ impl NoidoApp {
         self.settings_page(&ctx);
         self.info_page(&ctx);
         self.persist(&ctx);
+        self.select.widget_focused = ctx.memory(|m| m.focused().is_some());
     }
 
     /// Shows the document info page while it is open.
@@ -1847,6 +1942,10 @@ mod tests {
         reloads: crate::watch::Newest,
         /// When the last frame asked for the next one.
         repaint_delay: Duration,
+        /// The modifiers held; a change is sent with the next frame.
+        modifiers: Modifiers,
+        /// The modifiers the app was last told of.
+        sent_modifiers: Modifiers,
     }
 
     impl Harness {
@@ -1894,6 +1993,8 @@ mod tests {
                 maximized: false,
                 reloads,
                 repaint_delay: Duration::MAX,
+                modifiers: Modifiers::NONE,
+                sent_modifiers: Modifiers::NONE,
             };
             harness.frames(3, vec![]);
             harness
@@ -1919,6 +2020,10 @@ mod tests {
 
         fn frames(&mut self, count: usize, mut events: Vec<Event>) {
             for _ in 0..count {
+                if self.modifiers != self.sent_modifiers {
+                    self.sent_modifiers = self.modifiers;
+                    events.insert(0, Event::ModifiersChanged(self.modifiers));
+                }
                 let mut viewports = egui::ViewportIdMap::default();
                 viewports.insert(
                     egui::ViewportId::ROOT,
@@ -2037,11 +2142,12 @@ mod tests {
 
         /// Presses the primary button at `at`, moves it by `by`, releases.
         fn drag(&mut self, at: egui::Pos2, by: Vec2) {
+            let modifiers = self.modifiers;
             let button = |pos, pressed| Event::PointerButton {
                 pos,
                 button: egui::PointerButton::Primary,
                 pressed,
-                modifiers: Modifiers::NONE,
+                modifiers,
             };
             self.frames(1, vec![Event::PointerMoved(at)]);
             self.frames(1, vec![button(at, true)]);
@@ -6168,12 +6274,17 @@ mod tests {
     }
 
     #[test]
-    fn opening_does_not_extract() {
+    fn opening_extracts_only_visible_pages() {
         let engine = TextEngine::cats();
         let mut h = searching(&engine);
         h.frames(20, vec![]);
         std::thread::sleep(std::time::Duration::from_millis(50));
-        assert_eq!(engine.calls(), 0);
+        h.frames(2, vec![]);
+        let (_, top) = h.app.view.offset();
+        let height = h.app.last_scroll.unwrap().inner.height();
+        let visible = h.app.view.layout().visible_pages(top, top + height).len();
+        assert!(visible > 0);
+        assert_eq!(engine.calls(), visible);
     }
 
     #[test]
@@ -6194,7 +6305,8 @@ mod tests {
         focus_search(&mut h);
         h.until(|_| new.calls() == 10);
         assert_eq!(new.calls(), 10);
-        assert_eq!(engine.calls(), 0);
+        // The old version only ever read the pages shown, for selecting.
+        assert!(engine.calls() < 10, "{}", engine.calls());
     }
 
     /// Types `text` into the search field and waits for the search to finish.
@@ -7675,5 +7787,177 @@ mod tests {
         let mut h = Harness::new();
         h.press(egui::Key::L, Modifiers::COMMAND);
         assert!(h.copied.is_empty());
+    }
+
+    // Text selection.
+
+    /// "the cat sat" / "on the mat" on page 0 (glyphs 6 pt wide from x 72,
+    /// baselines 100 and 120), "a dog" on page 1.
+    fn selecting() -> (Harness, TextEngine) {
+        let engine = TextEngine::new(&[&["the cat sat", "on the mat"], &["a dog"], &["one more"]]);
+        let mut h = searching(&engine);
+        h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
+        (h, engine)
+    }
+
+    /// Drags from page point (`x`, `y`) to (`to_x`, `to_y`) on `page` with
+    /// `modifiers` held.
+    fn drag_text(
+        h: &mut Harness,
+        page: usize,
+        (x, y): (f32, f32),
+        (to_x, to_y): (f32, f32),
+        modifiers: Modifiers,
+    ) {
+        let from = screen_pos(h, page, x, y);
+        let to = screen_pos(h, page, to_x, to_y);
+        h.modifiers = modifiers;
+        h.drag(from, to - from);
+        h.frames(1, vec![]);
+        h.modifiers = Modifiers::NONE;
+    }
+
+    fn selected_on(h: &Harness, page: usize) -> Option<std::ops::Range<usize>> {
+        let noido_core::PageTextState::Known(text) = h.app.texts.get(page) else {
+            return None;
+        };
+        h.app.select.selection?.on_page(page, text.char_count())
+    }
+
+    #[test]
+    fn shift_drag_selects_and_does_not_pan() {
+        let (mut h, _) = selecting();
+        let offset = h.app.view.offset();
+        drag_text(&mut h, 0, (73.0, 95.0), (100.0, 95.0), Modifiers::SHIFT);
+        assert_eq!(selected_on(&h, 0), Some(0..5));
+        assert_eq!(h.app.view.offset(), offset);
+    }
+
+    #[test]
+    fn plain_drag_pans_and_selects_nothing() {
+        let (mut h, _) = selecting();
+        let offset = h.app.view.offset();
+        drag_text(&mut h, 0, (73.0, 300.0), (100.0, 95.0), Modifiers::NONE);
+        assert_eq!(h.app.select.selection, None);
+        assert_ne!(h.app.view.offset(), offset);
+    }
+
+    #[test]
+    fn tool_drag_selects_and_shift_drag_pans_keeping_it() {
+        let (mut h, _) = selecting();
+        h.press(egui::Key::S, Modifiers::NONE);
+        drag_text(&mut h, 0, (73.0, 95.0), (100.0, 95.0), Modifiers::NONE);
+        assert_eq!(selected_on(&h, 0), Some(0..5));
+        let offset = h.app.view.offset();
+        drag_text(&mut h, 0, (73.0, 300.0), (100.0, 115.0), Modifiers::SHIFT);
+        assert_ne!(h.app.view.offset(), offset);
+        assert_eq!(selected_on(&h, 0), Some(0..5));
+    }
+
+    #[test]
+    fn s_menu_and_button_toggle_the_tool() {
+        let mut h = Harness::new();
+        h.press(egui::Key::S, Modifiers::NONE);
+        assert!(h.app.select.tool);
+        let entry = noido_core::menu()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.label == "Select text")
+            .unwrap();
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, None, entry.action);
+        assert!(!h.app.select.tool);
+        h.frames(2, vec![]);
+        h.click(h.app.bar.select.center());
+        h.frames(1, vec![]);
+        assert!(h.app.select.tool);
+    }
+
+    #[test]
+    fn selection_is_drawn() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 95.0), (100.0, 95.0), Modifiers::SHIFT);
+        let fill = h
+            .ctx
+            .global_style()
+            .visuals
+            .selection
+            .bg_fill
+            .gamma_multiply(SELECTION_OPACITY);
+        let drawn = filled_with(&h, fill);
+        let inside = screen_pos(&h, 0, 80.0, 95.0);
+        assert!(drawn.iter().any(|r| r.contains(inside)), "{drawn:?}");
+    }
+
+    #[test]
+    fn esc_clears_selection() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 95.0), (100.0, 95.0), Modifiers::SHIFT);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(h.app.select.selection, None);
+    }
+
+    #[test]
+    fn esc_in_search_field_keeps_selection() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 95.0), (100.0, 95.0), Modifiers::SHIFT);
+        focus_search(&mut h);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(1, vec![]);
+        assert_eq!(selected_on(&h, 0), Some(0..5));
+    }
+
+    #[test]
+    fn click_on_pages_clears_selection() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 95.0), (100.0, 95.0), Modifiers::SHIFT);
+        let at = screen_pos(&h, 0, 300.0, 400.0);
+        h.click(at);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.select.selection, None);
+    }
+
+    #[test]
+    fn ibeam_over_text_with_shift() {
+        let (mut h, _) = selecting();
+        let at = screen_pos(&h, 0, 80.0, 95.0);
+        h.modifiers = Modifiers::SHIFT;
+        h.frames(2, vec![Event::PointerMoved(at)]);
+        assert_eq!(h.cursor, egui::CursorIcon::Text);
+        h.modifiers = Modifiers::NONE;
+        h.frames(2, vec![Event::PointerMoved(at)]);
+        assert_eq!(h.cursor, egui::CursorIcon::Grab);
+    }
+
+    #[test]
+    fn selection_follows_zoom() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 95.0), (100.0, 95.0), Modifiers::SHIFT);
+        h.press(egui::Key::Equals, Modifiers::COMMAND);
+        h.frames(3, vec![]);
+        let fill = h
+            .ctx
+            .global_style()
+            .visuals
+            .selection
+            .bg_fill
+            .gamma_multiply(SELECTION_OPACITY);
+        let inside = screen_pos(&h, 0, 80.0, 95.0);
+        let outside = screen_pos(&h, 0, 120.0, 95.0);
+        let drawn = filled_with(&h, fill);
+        assert!(drawn.iter().any(|r| r.contains(inside)), "{drawn:?}");
+        assert!(!drawn.iter().any(|r| r.contains(outside)), "{drawn:?}");
+    }
+
+    #[test]
+    fn reload_clears_selection() {
+        let (mut h, _) = selecting();
+        go_to(&mut h, 2);
+        h.until(|h| matches!(h.app.texts.get(2), noido_core::PageTextState::Known(_)));
+        drag_text(&mut h, 2, (73.0, 95.0), (90.0, 95.0), Modifiers::SHIFT);
+        assert!(selected_on(&h, 2).is_some());
+        h.reload(Arc::new(TextEngine::new(&[&["short"]])), recompiled_key());
+        h.frames(3, vec![]);
+        assert_eq!(h.app.select.selection, None);
     }
 }

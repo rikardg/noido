@@ -3,7 +3,10 @@
 
 use eframe::egui::Color32;
 use noido_core::Hits;
+use std::sync::Arc;
+
 use noido_render::{SearchUpdate, TextSearcher};
+use noido_text::PageText;
 
 /// Seconds after the last change to the field before it is searched.
 pub const DELAY: f64 = 0.2;
@@ -60,6 +63,8 @@ pub struct Search {
     /// The view is where the current hit put it: next and previous go from
     /// that hit rather than from the view.
     pub at_hit: bool,
+    /// Pages' text that arrived, for [`Search::take_texts`].
+    texts: Vec<(usize, Arc<PageText>)>,
 }
 
 impl Search {
@@ -76,6 +81,7 @@ impl Search {
             done: None,
             first: First::Done,
             at_hit: false,
+            texts: Vec::new(),
         }
     }
 
@@ -188,10 +194,24 @@ impl Search {
                 } if generation == self.generation && self.searched.is_some() => {
                     self.done = Some(cut_short);
                 }
+                SearchUpdate::Text { page, text } => self.texts.push((page, text)),
                 _ => {}
             }
         }
         arrived
+    }
+
+    /// Asks the text thread for `page`'s text; it arrives through
+    /// [`Search::receive`] and [`Search::take_texts`].
+    pub fn request_text(&self, page: usize) {
+        if let Some(searcher) = &self.searcher {
+            searcher.request_text(page);
+        }
+    }
+
+    /// The pages' text that arrived since last asked.
+    pub fn take_texts(&mut self) -> Vec<(usize, Arc<PageText>)> {
+        std::mem::take(&mut self.texts)
     }
 
     /// The reader moved the page view: a jump still to come is dropped, and
