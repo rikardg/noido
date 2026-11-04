@@ -17,6 +17,7 @@ mod open;
 mod search;
 mod select;
 mod settings;
+mod shell;
 mod sidebar;
 mod texts;
 mod theme;
