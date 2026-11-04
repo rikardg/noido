@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use noido_core::{DocPoint, History, SidebarState, ViewState, ZoomMode};
-use noido_state::{DocKey, DocState, Slot, Store};
+use noido_state::{DocKey, DocState, Frame, Slot, Store};
 use tempfile::TempDir;
 
 fn state(page: usize) -> DocState {
@@ -435,4 +435,81 @@ fn no_open_list_is_empty() {
     assert!(store.load_open().is_empty());
     fs::write(dir.path().join("open.toml"), "not [ toml").unwrap();
     assert!(store.load_open().is_empty());
+}
+
+#[test]
+fn frame_round_trips() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let slot = slot(&store, &key);
+    assert_eq!(store.load_frame(&slot), None);
+    let frame = Frame {
+        x: 120.5,
+        y: -30.0,
+        width: 900.0,
+        height: 1100.5,
+    };
+    store.save_frame(&slot, frame).unwrap();
+    assert_eq!(store.load_frame(&slot), Some(frame));
+    // Only the frame file is left behind: no temporary.
+    assert_eq!(
+        names(&docs(&dir)),
+        vec![format!("{}.frame.toml", key.hex())]
+    );
+}
+
+#[test]
+fn a_new_document_takes_the_newest_size_only() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let a = slot(&store, &DocKey::new(b"a", Path::new("/a.pdf")));
+    let b = slot(&store, &DocKey::new(b"b", Path::new("/b.pdf")));
+    let c = slot(&store, &DocKey::new(b"c", Path::new("/c.pdf")));
+    let frame = |x: f32, width: f32| Frame {
+        x,
+        y: x,
+        width,
+        height: width + 1.0,
+    };
+    store.save_frame(&a, frame(10.0, 500.0)).unwrap();
+    store.save_frame(&b, frame(20.0, 600.0)).unwrap();
+    for (slot, age) in [(&a, 100), (&b, 10)] {
+        set_age(
+            &docs(&dir).join(format!("{}.frame.toml", slot.key().hex())),
+            age,
+        );
+    }
+    let loaded = store.load_frame(&c).unwrap();
+    assert_eq!((loaded.width, loaded.height), (600.0, 601.0));
+    assert!(!loaded.has_position());
+    // Looking does not give the document a frame of its own.
+    assert!(
+        !docs(&dir)
+            .join(format!("{}.frame.toml", c.key().hex()))
+            .exists()
+    );
+    assert!(store.load_frame(&b).unwrap().has_position());
+}
+
+#[test]
+fn prune_removes_frames() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let a = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let b = DocKey::new(b"pdf a, recompiled", Path::new("/papers/a.pdf"));
+    let mut slot = slot(&store, &a);
+    let frame = Frame {
+        x: 1.0,
+        y: 2.0,
+        width: 3.0,
+        height: 4.0,
+    };
+    store.save_frame(&slot, frame).unwrap();
+    // The frame stays with the document through a rekey.
+    store.rekey(&mut slot, b);
+    store.save(&slot, &state(1)).unwrap();
+    assert_eq!(store.load_frame(&slot), Some(frame));
+    store.prune(0);
+    assert_eq!(names(&docs(&dir)), Vec::<String>::new());
 }

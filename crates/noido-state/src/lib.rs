@@ -1,6 +1,8 @@
 //! Per-document view state, kept in the platform's directory for application
-//! state. Each document has up to two files in `docs/`: `<hash>.toml` with its
-//! [`DocState`], and eframe's saved window geometry in `<name>.window.ron`.
+//! state. Each document has up to three files in `docs/`: `<hash>.toml` with
+//! its [`DocState`], eframe's saved window geometry in `<name>.window.ron`,
+//! and (on macOS, where noido keeps the windows itself) its [`Frame`] in
+//! `<name>.frame.toml`.
 //! The entry names its window file: eframe keeps writing to the file it was
 //! given at launch, so the window file stays put when the document's hash
 //! changes (a file edited in place, or reloaded while open).
@@ -18,6 +20,7 @@ const VERSION: u32 = 1;
 const STATE_SUFFIX: &str = ".toml";
 const OPEN_FILE: &str = "open.toml";
 const WINDOW_SUFFIX: &str = ".window.ron";
+const FRAME_SUFFIX: &str = ".frame.toml";
 
 /// Identifies a document: the hash of its content, and its canonical path for
 /// finding the state of a file that was edited in place.
@@ -52,6 +55,39 @@ pub struct Slot {
 impl Slot {
     pub fn key(&self) -> &DocKey {
         &self.key
+    }
+}
+
+/// Where a document's window was, in points: its outer position and its
+/// inner size. A frame that has no position (see [`Frame::has_position`])
+/// only carries a size.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub struct Frame {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Frame {
+    /// A size and no place: where a window opens is left to the system.
+    pub fn sized(width: f32, height: f32) -> Self {
+        Self {
+            x: f32::NAN,
+            y: f32::NAN,
+            width,
+            height,
+        }
+    }
+
+    /// Whether the frame says where the window was, not only how big.
+    pub fn has_position(&self) -> bool {
+        self.x.is_finite() && self.y.is_finite()
+    }
+
+    /// Whether the numbers can be used: a size that is positive and finite.
+    pub fn has_size(&self) -> bool {
+        self.width.is_finite() && self.height.is_finite() && self.width > 0.0 && self.height > 0.0
     }
 }
 
@@ -200,8 +236,44 @@ impl Store {
             let state = self.docs.join(format!("{hex}{STATE_SUFFIX}"));
             let window = read_entry(&state).and_then(|entry| entry.window);
             let _ = fs::remove_file(&state);
-            let _ = fs::remove_file(self.window_path(window.as_deref().unwrap_or(&hex)));
+            let window = window.as_deref().unwrap_or(&hex);
+            let _ = fs::remove_file(self.window_path(window));
+            let _ = fs::remove_file(self.frame_path(window));
         }
+    }
+
+    /// Writes the document's window frame; the file is replaced atomically.
+    pub fn save_frame(&self, slot: &Slot, frame: Frame) -> io::Result<()> {
+        fs::create_dir_all(&self.docs)?;
+        let text = toml::to_string(&frame).map_err(io::Error::other)?;
+        let target = self.frame_path(&slot.window);
+        let temp = self
+            .docs
+            .join(format!("{}.frame-tmp-{}", slot.window, std::process::id()));
+        fs::write(&temp, text)?;
+        fs::rename(&temp, &target).inspect_err(|_| {
+            let _ = fs::remove_file(&temp);
+        })
+    }
+
+    /// The document's window frame. A document without one takes the size
+    /// of the most recently written frame, with no position, so a new
+    /// document opens as big as the last but not on top of it. None when
+    /// there is no frame at all or it is unreadable.
+    pub fn load_frame(&self, slot: &Slot) -> Option<Frame> {
+        let read = |path: PathBuf| -> Option<Frame> {
+            let frame: Frame = toml::from_str(&fs::read_to_string(path).ok()?).ok()?;
+            frame.has_size().then_some(frame)
+        };
+        if let Some(frame) = read(self.frame_path(&slot.window)) {
+            return Some(frame);
+        }
+        let mut frames = self.files_with(FRAME_SUFFIX);
+        frames.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
+        frames
+            .into_iter()
+            .find_map(|(window, _)| read(self.frame_path(&window)))
+            .map(|f| Frame::sized(f.width, f.height))
     }
 
     /// The window file for eframe that the slot names. A document without
@@ -224,6 +296,10 @@ impl Store {
 
     fn state_file(&self, key: &DocKey) -> PathBuf {
         self.docs.join(format!("{}{STATE_SUFFIX}", key.hex()))
+    }
+
+    fn frame_path(&self, window: &str) -> PathBuf {
+        self.docs.join(format!("{window}{FRAME_SUFFIX}"))
     }
 
     fn window_path(&self, hex: &str) -> PathBuf {
