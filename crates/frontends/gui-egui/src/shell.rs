@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, ViewportBuilder, ViewportCommand, ViewportId};
 use noido_core::Target;
 use noido_settings::Settings;
+use noido_state::{Frame, Slot, Store};
 
 use crate::app::{Incoming, NoidoApp};
 use crate::instance::{Activation, Answer, AppRequests, Reply};
@@ -158,6 +159,63 @@ struct Window {
     app: Arc<Mutex<NoidoApp>>,
     title: String,
     activation: Activation,
+    /// Where the document's state, and so its frame, is kept.
+    kept: Option<(Store, Slot)>,
+    /// The window's latest frame, written by its own callback every frame:
+    /// when it closes its viewport info may already be gone.
+    frame: Arc<Mutex<Option<Frame>>>,
+    /// The frame the window opens with.
+    opens_at: Option<Frame>,
+}
+
+impl Window {
+    /// Keeps the window's latest frame in its store.
+    fn save_frame(&self) {
+        let Some(frame) = *lock(&self.frame) else {
+            return;
+        };
+        if let Some((store, slot)) = &self.kept
+            && let Err(e) = store.save_frame(slot, frame)
+        {
+            eprintln!("noido: cannot save the window's place: {e}");
+        }
+    }
+}
+
+/// The size a window opens with when nothing says otherwise.
+const DEFAULT_WINDOW_SIZE: [f32; 2] = [900.0, 1100.0];
+
+/// `builder` with the place and size a window opens with: `frame` if
+/// there is one (its size at least the minimum), else the default size
+/// wherever the system puts it.
+fn window_builder(builder: ViewportBuilder, frame: Option<Frame>) -> ViewportBuilder {
+    let builder = builder.with_min_inner_size(crate::MIN_WINDOW_SIZE);
+    let Some(frame) = frame else {
+        return builder.with_inner_size(DEFAULT_WINDOW_SIZE);
+    };
+    let min = egui::Vec2::from(crate::MIN_WINDOW_SIZE);
+    let builder = builder.with_inner_size(egui::vec2(frame.width, frame.height).max(min));
+    if frame.has_position() {
+        builder.with_position(egui::pos2(frame.x, frame.y))
+    } else {
+        builder
+    }
+}
+
+/// A viewport's frame as it is kept: the outer position and the inner
+/// size, which is what [`window_builder`] gives back. None while the
+/// window is minimized or full screen, or not yet placed.
+fn frame_of(info: &egui::ViewportInfo) -> Option<Frame> {
+    if info.minimized == Some(true) || info.fullscreen == Some(true) {
+        return None;
+    }
+    let (outer, inner) = (info.outer_rect?, info.inner_rect?);
+    Some(Frame {
+        x: outer.min.x,
+        y: outer.min.y,
+        width: inner.width(),
+        height: inner.height(),
+    })
 }
 
 /// The app on macOS: every document window, and what feeds them.
@@ -301,6 +359,7 @@ impl Shell {
             Request::Closed(id) => {
                 if let Some(window) = self.windows.remove(id) {
                     lock(&window.app).save_now();
+                    window.save_frame();
                     paint_root(ctx);
                 }
             }
@@ -354,6 +413,10 @@ impl Shell {
         }
         let id = Windows::<Window>::id_for(&canonical);
         let app = (self.open_doc)(path, target, id)?;
+        let kept = app.persistence();
+        let opens_at = kept
+            .as_ref()
+            .and_then(|(store, slot)| store.load_frame(slot));
         let activation = Activation::default();
         let title = format!("{} — noido", app.name());
         let app = app
@@ -365,6 +428,9 @@ impl Shell {
                 app: Arc::new(Mutex::new(app)),
                 title,
                 activation,
+                kept,
+                frame: Arc::default(),
+                opens_at,
             },
         );
         paint_root(ctx);
@@ -375,6 +441,7 @@ impl Shell {
     fn shut_down(&mut self) {
         for (_, window) in self.windows.iter() {
             lock(&window.app).save_now();
+            window.save_frame();
         }
         self.record_open(self.open_paths());
     }
@@ -462,16 +529,17 @@ impl Shell {
         for (id, window) in self.windows.iter() {
             let app = window.app.clone();
             let requests = self.requests.clone();
-            let builder = crate::own_title_bar(
-                ViewportBuilder::default()
-                    .with_title(window.title.clone())
-                    // Used until the window's own place is kept.
-                    .with_inner_size([900.0, 1100.0])
-                    .with_min_inner_size(crate::MIN_WINDOW_SIZE),
-            );
+            let frame = window.frame.clone();
+            let builder = crate::own_title_bar(window_builder(
+                ViewportBuilder::default().with_title(window.title.clone()),
+                window.opens_at,
+            ));
             ctx.show_viewport_deferred(id, builder, move |ui, _class| {
                 if ui.ctx().input(|i| i.viewport().close_requested()) {
                     requests.send(Request::Closed(id));
+                }
+                if let Some(now) = ui.ctx().input(|i| frame_of(i.viewport())) {
+                    *lock(&frame) = Some(now);
                 }
                 let mut app = lock(&app);
                 app.logic_pass(ui.ctx());
@@ -533,14 +601,14 @@ fn root_waker(ctx: &egui::Context) -> Arc<dyn Fn() + Send + Sync> {
     Arc::new(move || ctx.request_repaint_of(ViewportId::ROOT))
 }
 
-fn lock(app: &Mutex<NoidoApp>) -> std::sync::MutexGuard<'_, NoidoApp> {
+fn lock<T>(app: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     app.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[cfg(test)]
 mod tests {
     use eframe::egui::RawInput;
-    use noido_state::{DocKey, Store};
+    use noido_state::{DocKey, Frame, Store};
 
     use super::*;
     use crate::app::tests::{blank_app, settings_of};
@@ -1084,5 +1152,111 @@ mod tests {
         shell.settle_start(now);
         shell.settle_start(now + START_QUIET);
         assert!(shell.received.try_recv().is_err());
+    }
+
+    /// Sets the frame the window `id` was last seen with.
+    fn seen_at(shell: &Shell, id: ViewportId, frame: Frame) {
+        let (_, window) = shell.windows.iter().find(|(i, _)| *i == id).unwrap();
+        *lock(&window.frame) = Some(frame);
+    }
+
+    fn some_frame() -> Frame {
+        Frame {
+            x: 40.0,
+            y: 60.0,
+            width: 700.0,
+            height: 800.0,
+        }
+    }
+
+    #[test]
+    fn closing_a_window_keeps_its_frame() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, Some(dir.path().to_path_buf()));
+        let path = fixture("text.pdf");
+        shell.handle(&ctx, open(path.clone(), None));
+        let id = id_of(&path);
+        seen_at(&shell, id, some_frame());
+        shell.handle(&ctx, Request::Closed(id));
+        let store = Store::at(dir.path());
+        let slot = store.load(DocKey::new(b"x", &path)).0;
+        assert_eq!(store.load_frame(&slot), Some(some_frame()));
+    }
+
+    #[test]
+    fn quitting_keeps_the_frames() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, Some(dir.path().to_path_buf()));
+        let path = fixture("text.pdf");
+        shell.handle(&ctx, open(path.clone(), None));
+        seen_at(&shell, id_of(&path), some_frame());
+        shell.handle(&ctx, Request::Quit);
+        let store = Store::at(dir.path());
+        let slot = store.load(DocKey::new(b"x", &path)).0;
+        assert_eq!(store.load_frame(&slot), Some(some_frame()));
+    }
+
+    #[test]
+    fn a_window_never_seen_leaves_no_frame() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, Some(dir.path().to_path_buf()));
+        let path = fixture("text.pdf");
+        shell.handle(&ctx, open(path.clone(), None));
+        shell.handle(&ctx, Request::Closed(id_of(&path)));
+        let store = Store::at(dir.path());
+        let slot = store.load(DocKey::new(b"x", &path)).0;
+        assert_eq!(store.load_frame(&slot), None);
+    }
+
+    #[test]
+    fn a_window_opens_where_it_was() {
+        let builder = window_builder(ViewportBuilder::default(), Some(some_frame()));
+        assert_eq!(builder.position, Some(egui::pos2(40.0, 60.0)));
+        assert_eq!(builder.inner_size, Some(egui::vec2(700.0, 800.0)));
+    }
+
+    #[test]
+    fn a_window_with_only_a_size_is_placed_by_the_system() {
+        let builder = window_builder(ViewportBuilder::default(), Some(Frame::sized(700.0, 800.0)));
+        assert_eq!(builder.position, None);
+        assert_eq!(builder.inner_size, Some(egui::vec2(700.0, 800.0)));
+        let builder = window_builder(ViewportBuilder::default(), None);
+        assert_eq!(builder.position, None);
+        assert_eq!(builder.inner_size, Some(egui::vec2(900.0, 1100.0)));
+    }
+
+    #[test]
+    fn a_window_is_never_opened_smaller_than_the_minimum() {
+        let frame = Frame {
+            width: 10.0,
+            height: 10.0,
+            ..some_frame()
+        };
+        let builder = window_builder(ViewportBuilder::default(), Some(frame));
+        let min = egui::Vec2::from(crate::MIN_WINDOW_SIZE);
+        assert_eq!(builder.inner_size, Some(min));
+    }
+
+    #[test]
+    fn the_frame_is_the_outer_position_and_the_inner_size() {
+        let mut info = egui::ViewportInfo::default();
+        assert_eq!(frame_of(&info), None);
+        info.outer_rect = Some(egui::Rect::from_min_size(
+            egui::pos2(40.0, 60.0),
+            egui::vec2(700.0, 828.0),
+        ));
+        info.inner_rect = Some(egui::Rect::from_min_size(
+            egui::pos2(40.0, 88.0),
+            egui::vec2(700.0, 800.0),
+        ));
+        assert_eq!(frame_of(&info), Some(some_frame()));
+        info.minimized = Some(true);
+        assert_eq!(frame_of(&info), None);
+        info.minimized = Some(false);
+        info.fullscreen = Some(true);
+        assert_eq!(frame_of(&info), None);
     }
 }
