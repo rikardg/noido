@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 const VERSION: u32 = 1;
 const STATE_SUFFIX: &str = ".toml";
+const OPEN_FILE: &str = "open.toml";
 const WINDOW_SUFFIX: &str = ".window.ron";
 
 /// Identifies a document: the hash of its content, and its canonical path for
@@ -78,12 +79,14 @@ fn state_dir(
 /// The state directory and the documents' files in it.
 #[derive(Clone)]
 pub struct Store {
+    dir: PathBuf,
     docs: PathBuf,
 }
 
 impl Store {
     pub fn at(dir: &Path) -> Self {
         Self {
+            dir: dir.to_path_buf(),
             docs: dir.join("docs"),
         }
     }
@@ -143,6 +146,42 @@ impl Store {
         fs::rename(&temp, &target).inspect_err(|_| {
             let _ = fs::remove_file(&temp);
         })
+    }
+
+    /// Writes the documents that are open, in order, for the next start to
+    /// reopen; the file is replaced atomically. An empty list clears it.
+    pub fn save_open(&self, paths: &[PathBuf]) -> io::Result<()> {
+        fs::create_dir_all(&self.dir)?;
+        let list = OpenList {
+            version: VERSION,
+            paths: paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+        };
+        let text = toml::to_string(&list).map_err(io::Error::other)?;
+        let target = self.dir.join(OPEN_FILE);
+        let temp = self
+            .dir
+            .join(format!("{OPEN_FILE}.tmp-{}", std::process::id()));
+        fs::write(&temp, text)?;
+        fs::rename(&temp, &target).inspect_err(|_| {
+            let _ = fs::remove_file(&temp);
+        })
+    }
+
+    /// The documents [`save_open`](Self::save_open) wrote; none when the
+    /// file is missing or unreadable.
+    pub fn load_open(&self) -> Vec<PathBuf> {
+        let Ok(text) = fs::read_to_string(self.dir.join(OPEN_FILE)) else {
+            return vec![];
+        };
+        match toml::from_str::<OpenList>(&text) {
+            Ok(list) if list.version == VERSION => {
+                list.paths.into_iter().map(PathBuf::from).collect()
+            }
+            _ => vec![],
+        }
     }
 
     /// Moves the slot's state to `key`, the document's new hash; the window
@@ -227,6 +266,13 @@ fn read_entry(path: &Path) -> Option<Entry> {
     let text = fs::read_to_string(path).ok()?;
     let entry: Entry = toml::from_str(&text).ok()?;
     (entry.version == VERSION).then_some(entry)
+}
+
+/// The TOML form of the list of open documents.
+#[derive(Serialize, Deserialize)]
+struct OpenList {
+    version: u32,
+    paths: Vec<String>,
 }
 
 /// The TOML form of a document's state.
