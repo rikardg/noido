@@ -1,8 +1,8 @@
 //! The window's text selection: the select tool, the selection, and the
 //! drag under way.
 
-use eframe::egui::{self, Pos2, Rect};
-use noido_core::{DragKind, Layout, PageTextState, Selection, spot_at};
+use eframe::egui::{self, Pos2, Rect, Vec2, vec2};
+use noido_core::{Caret, DragKind, Layout, PageTextState, Selection, Spot, spot_at};
 
 use crate::texts::Texts;
 
@@ -15,7 +15,15 @@ pub struct Drag {
     pub moved: bool,
     /// For a selecting drag, whether its anchor was placed.
     pub started: bool,
+    /// For a handle drag, which end (0 start, 1 end), and the pointer's
+    /// offset from that end's caret at the press.
+    pub handle: Option<(usize, Vec2)>,
 }
+
+/// The radius of a handle's knob, in points.
+pub const HANDLE_RADIUS: f32 = 6.0;
+/// How near a handle's knob a press takes the handle, in points.
+pub const HANDLE_REACH: f32 = 12.0;
 
 /// How far the pointer moves before a press is a drag, in points.
 pub const DRAG_THRESHOLD: f32 = 3.0;
@@ -30,6 +38,20 @@ pub struct State {
     pub over_text: bool,
     /// A widget had keyboard focus at the end of the last frame.
     pub widget_focused: bool,
+    /// The middle of each end's caret on screen, last frame (start, end).
+    pub carets: [Option<Pos2>; 2],
+    /// Each end's caret top and bottom on screen, last frame.
+    pub caret_lines: [Option<(Pos2, Pos2)>; 2],
+    /// Each end's handle knob on screen, where in view.
+    pub handles: [Option<Pos2>; 2],
+    /// Where the bar was drawn last frame.
+    pub bar_rect: Option<Rect>,
+    /// The pages (not a scroll bar, the sidebar or a popup over them) are
+    /// under the pointer.
+    pub pages_hovered: bool,
+    /// The selection Copy was asked for while a page's text in it was
+    /// still to come; dropped when the selection changes.
+    pub copy_pending: Option<Selection>,
 }
 
 impl State {
@@ -37,6 +59,55 @@ impl State {
     pub fn clear(&mut self) {
         self.selection = None;
         self.drag = None;
+        self.copy_pending = None;
+    }
+
+    /// The handle a press at `pos` takes, with the press's offset from its
+    /// caret.
+    pub fn handle_at(&self, pos: Pos2) -> Option<(usize, Vec2)> {
+        (0..2).find_map(|i| {
+            let knob = self.handles[i]?;
+            let caret = self.carets[i]?;
+            ((knob - pos).abs().max_elem() <= HANDLE_REACH).then_some((i, pos - caret))
+        })
+    }
+
+    /// Places the carets, handles of the selection on screen for the
+    /// pages' content at `content`, showing `viewport`.
+    pub fn place(&mut self, texts: &Texts, layout: &Layout, content: Rect, viewport: Rect) {
+        self.carets = [None, None];
+        self.caret_lines = [None, None];
+        self.handles = [None, None];
+        let Some(selection) = self.selection else {
+            return;
+        };
+        let Some((start, end)) = selection.carets() else {
+            return;
+        };
+        if selection.is_empty(|page| texts.get(page)) {
+            return;
+        }
+        for (i, caret) in [start, end].into_iter().enumerate() {
+            let Some((page, char)) = shown_caret(texts, caret, i == 1) else {
+                continue;
+            };
+            let (Some(r), PageTextState::Known(text)) = (layout.page_rect(page), texts.get(page))
+            else {
+                continue;
+            };
+            let Some(c) = text.caret_rect(char) else {
+                continue;
+            };
+            let scale = layout.scale();
+            let top = content.min + vec2(r.x + c.x * scale, r.y + c.y * scale);
+            let bottom = top + vec2(0.0, c.height * scale);
+            self.carets[i] = Some(top.lerp(bottom, 0.5));
+            self.caret_lines[i] = Some((top, bottom));
+            let knob = bottom + vec2(0.0, HANDLE_RADIUS);
+            if viewport.contains(knob) {
+                self.handles[i] = Some(knob);
+            }
+        }
     }
 
     /// Follows the drag under way on the pages, whose content starts at
@@ -55,6 +126,20 @@ impl State {
                 && (pos - drag.origin).length() > DRAG_THRESHOLD
             {
                 drag.moved = true;
+            }
+            if drag.kind == DragKind::Handle
+                && drag.moved
+                && let (Some((end, grab)), Some(selection)) = (drag.handle, &mut self.selection)
+            {
+                if !drag.started
+                    && let Some((start, last)) = selection.carets()
+                {
+                    drag.started = true;
+                    selection.anchor = Spot::At(if end == 0 { last } else { start });
+                }
+                if let Some(focus) = pointer.and_then(|pos| spot(pos - grab)) {
+                    selection.focus = focus;
+                }
             }
             if drag.kind == DragKind::Select && drag.moved {
                 if !drag.started
@@ -80,11 +165,15 @@ impl State {
             let empty = self
                 .selection
                 .is_some_and(|s| s.is_empty(|page| texts.get(page)));
-            if !drag.moved || (drag.kind == DragKind::Select && empty) {
+            let click = !drag.moved && drag.kind != DragKind::Handle;
+            if click || (drag.kind != DragKind::Pan && empty) {
                 self.selection = None;
             }
         }
-        self.over_text = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pos| {
+        let hover = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|_| self.pages_hovered);
+        self.over_text = hover.is_some_and(|pos| {
             layout
                 .doc_point(pos.x - content.min.x, pos.y - content.min.y)
                 .is_some_and(|p| match texts.get(p.page) {
@@ -100,4 +189,16 @@ impl State {
                 })
         });
     }
+}
+
+/// Where `caret` is drawn: an end at the start of a page after the
+/// selected text is drawn at the end of the page before it.
+fn shown_caret(texts: &Texts, caret: Caret, end: bool) -> Option<(usize, usize)> {
+    if end && caret.char == 0 && caret.page > 0 {
+        let page = caret.page - 1;
+        if let PageTextState::Known(text) = texts.get(page) {
+            return Some((page, text.char_count()));
+        }
+    }
+    Some((caret.page, caret.char))
 }

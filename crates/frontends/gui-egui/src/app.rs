@@ -51,6 +51,10 @@ const LINK_OUTLINE_WIDTH: f32 = 1.5;
 const FLASH_OUTLINE_WIDTH: f32 = 2.5;
 /// How strongly selected text is tinted with the selection colour.
 const SELECTION_OPACITY: f32 = 0.35;
+/// The gap between the selection's end and its bar, in points.
+const SELECTION_BAR_GAP: f32 = 8.0;
+/// About how tall the selection's bar is, to tell whether it fits above.
+const SELECTION_BAR_HEIGHT: f32 = 32.0;
 
 /// What egui's scroll area reported at the end of the last frame.
 #[derive(Clone, Copy)]
@@ -903,6 +907,14 @@ impl NoidoApp {
         {
             self.select.selection = None;
         }
+        // Mod+C reaches egui as a copy event, not a key; a field copies
+        // its own text.
+        if !editing
+            && !self.select.widget_focused
+            && ctx.input(|i| i.events.contains(&egui::Event::Copy))
+        {
+            self.copy_selection(ctx);
+        }
         // The mouse's back and forward buttons, also while typing.
         let buttons: Vec<Action> = ctx.input(|i| {
             i.events
@@ -1022,6 +1034,7 @@ impl NoidoApp {
             }
             Action::FocusSearch => self.search_focus_requested = true,
             Action::ToggleSelectTool => self.select.tool = !self.select.tool,
+            Action::Copy => self.copy_selection(ctx),
             // Not view moves: going to a hit isn't the reader moving away.
             Action::NextHit => self.step_hit(true),
             Action::PreviousHit => self.step_hit(false),
@@ -1162,6 +1175,8 @@ impl NoidoApp {
             vec2(layout.content_width(), layout.content_height()),
             Sense::CLICK,
         );
+        // Not over a scroll bar, the sidebar or a popup.
+        self.select.pages_hovered = response.hovered();
 
         // Until the first frame has measured the window, the layout is a placeholder.
         let (width, height) = self.view.viewport_size();
@@ -1282,7 +1297,18 @@ impl NoidoApp {
             let search = &self.search_state;
             self.texts.want(page, |page| search.request_text(page));
         }
+        // A press that took a handle is not a click on a link under it.
+        let on_handle = self
+            .select
+            .drag
+            .is_some_and(|drag| drag.kind == DragKind::Handle);
         self.select.update(&self.texts, layout, ui, content);
+        self.select.place(
+            &self.texts,
+            layout,
+            content,
+            viewport.translate(content.min.to_vec2()),
+        );
         let visible_pages = visible.clone();
         // Not over a scroll bar, the sidebar or a popup: the response
         // isn't hovered there.
@@ -1347,6 +1373,16 @@ impl NoidoApp {
             ui.ctx().request_repaint();
         }
 
+        // The selection's handles: a stem along each end's caret and a
+        // knob below it.
+        let colour = ui.visuals().selection.bg_fill;
+        for (line, knob) in self.select.caret_lines.iter().zip(self.select.handles) {
+            if let (Some((top, bottom)), Some(knob)) = (line, knob) {
+                painter.line_segment([*top, *bottom], egui::Stroke::new(2.0, colour));
+                painter.circle_filled(knob, select::HANDLE_RADIUS, colour);
+            }
+        }
+
         if let Some((page, link)) = hovered
             && let Some(r) = layout.page_rect(page)
         {
@@ -1362,7 +1398,7 @@ impl NoidoApp {
                     egui::StrokeKind::Outside,
                 );
             }
-            if response.clicked() {
+            if response.clicked() && !on_handle {
                 self.clicked_link = Some(link.clone());
             }
             if let noido_engine::LinkTarget::Web(uri) = &link.target {
@@ -1427,16 +1463,22 @@ impl NoidoApp {
         let Some(origin) = origin.filter(|_| pressed) else {
             return;
         };
-        let on_pages = self
-            .last_scroll
-            .is_some_and(|last| last.inner.contains(origin))
-            && !egui::Popup::is_any_open(ctx);
+        // Hovered as of last frame: the scroll bars and the sidebar's edge
+        // lie over the pages' rect.
+        let on_pages = self.select.pages_hovered
+            && self
+                .last_scroll
+                .is_some_and(|last| last.inner.contains(origin))
+            && !egui::Popup::is_any_open(ctx)
+            && !self.select.bar_rect.is_some_and(|bar| bar.contains(origin));
         if on_pages {
+            let handle = self.select.handle_at(origin);
             self.select.drag = Some(select::Drag {
-                kind: drag_kind(self.select.tool, shift, false),
+                kind: drag_kind(self.select.tool, shift, handle.is_some()),
                 origin,
                 moved: false,
                 started: false,
+                handle,
             });
         }
     }
@@ -1464,6 +1506,72 @@ impl NoidoApp {
         let (x, y) = self.view.offset();
         self.view.scrolled_to(x + vx * dt, y + vy * dt);
         ctx.request_repaint();
+    }
+
+    /// Puts the selected text on the clipboard; if a page's text in it is
+    /// still to come, asks for it and copies once it's there.
+    fn copy_selection(&mut self, ctx: &egui::Context) {
+        let Some(selection) = self.select.selection else {
+            self.select.copy_pending = None;
+            return;
+        };
+        let texts = &self.texts;
+        match selection.text(|page| texts.get(page)) {
+            Some(text) => {
+                self.select.copy_pending = None;
+                if !text.is_empty() {
+                    ctx.copy_text(text);
+                }
+            }
+            None => {
+                self.select.copy_pending = Some(selection);
+                if let Some(pages) = selection.pages() {
+                    let search = &self.search_state;
+                    for page in pages {
+                        self.texts.want(page, |page| search.request_text(page));
+                    }
+                }
+                ctx.request_repaint_after(Duration::from_millis(50));
+            }
+        }
+    }
+
+    /// The small bar by the selection's end, once the drag is over.
+    fn selection_bar(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
+        self.select.bar_rect = None;
+        if self.select.drag.is_some() || self.settings_page.is_some() || self.info_page.is_some() {
+            return;
+        }
+        let (Some((top, bottom)), Some(last)) = (self.select.caret_lines[1], self.last_scroll)
+        else {
+            return;
+        };
+        if !last.inner.contains(top.lerp(bottom, 0.5)) {
+            return;
+        }
+        let above = top.y - SELECTION_BAR_GAP - SELECTION_BAR_HEIGHT >= last.inner.top();
+        let (pos, pivot) = if above {
+            (
+                top - vec2(0.0, SELECTION_BAR_GAP),
+                egui::Align2::CENTER_BOTTOM,
+            )
+        } else {
+            let below = bottom + vec2(0.0, 2.0 * select::HANDLE_RADIUS + SELECTION_BAR_GAP);
+            (below, egui::Align2::CENTER_TOP)
+        };
+        let response = egui::Area::new(egui::Id::unique("selection-bar"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .pivot(pivot)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style())
+                    .show(ui, |ui| ui.button("Copy").clicked())
+                    .inner
+            });
+        self.select.bar_rect = Some(response.response.rect);
+        if response.inner {
+            self.apply(ctx, parent, Action::Copy);
+        }
     }
 
     /// Starts the screen edge's flash once PageUp and PageDown are let go,
@@ -1572,6 +1680,20 @@ impl NoidoApp {
         self.update_search(&ctx);
         for (page, text) in self.search_state.take_texts() {
             self.texts.insert(page, text);
+        }
+        if let Some(mut pending) = self.select.copy_pending {
+            // Placed like the selection, so an end placed when its page's
+            // text came doesn't count as a change.
+            let texts = &self.texts;
+            pending.resolve(|page| texts.get(page));
+            if let Some(selection) = &mut self.select.selection {
+                selection.resolve(|page| texts.get(page));
+            }
+            if self.select.selection == Some(pending) {
+                self.copy_selection(&ctx);
+            } else {
+                self.select.copy_pending = None;
+            }
         }
         self.start_drag(&ctx);
         self.edge_scroll(&ctx);
@@ -1707,6 +1829,17 @@ impl NoidoApp {
             if cursor_free && selecting {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
             }
+            // The arrow over a handle, where a press takes it.
+            let on_handle = self.select.drag.is_none()
+                && self.select.pages_hovered
+                && !egui::Popup::is_any_open(ui.ctx())
+                && ui
+                    .ctx()
+                    .input(|i| i.pointer.hover_pos())
+                    .is_some_and(|pos| self.select.handle_at(pos).is_some());
+            if cursor_free && on_handle {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+            }
 
             let moved = self.last_scroll.is_some_and(|last| {
                 (last.offset - output.state.clamped_offset())
@@ -1725,6 +1858,7 @@ impl NoidoApp {
                 offset: output.state.clamped_offset(),
             });
         });
+        self.selection_bar(&ctx, parent);
         if !cfg!(target_os = "macos") {
             frame::border(&ctx);
         }
@@ -8071,5 +8205,269 @@ mod tests {
         let held = h.app.view.offset();
         h.frames(20, vec![]);
         assert_eq!(h.app.view.offset(), held);
+    }
+
+    /// Selects "the cat" on page 0 with Shift+drag.
+    fn select_the_cat(h: &mut Harness) {
+        drag_text(h, 0, (73.0, 95.0), (112.0, 95.0), Modifiers::SHIFT);
+        assert_eq!(selected_on(h, 0), Some(0..7));
+    }
+
+    #[test]
+    fn copy_event_copies_selection() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.frames(1, vec![Event::Copy]);
+        assert_eq!(h.copied, vec!["the cat".to_owned()]);
+    }
+
+    #[test]
+    fn copy_in_search_field_does_not_copy_selection() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        focus_search(&mut h);
+        h.frames(1, vec![Event::Copy]);
+        assert!(!h.copied.contains(&"the cat".to_owned()), "{:?}", h.copied);
+    }
+
+    #[test]
+    fn copy_with_nothing_selected_does_nothing() {
+        let (mut h, _) = selecting();
+        h.frames(1, vec![Event::Copy]);
+        assert!(h.copied.is_empty());
+    }
+
+    #[test]
+    fn bar_shows_on_release_and_copies() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.frames(1, vec![]);
+        let copy = h.text_rect("Copy").expect("the bar shows");
+        let line_top = screen_pos(&h, 0, 100.0, 90.4).y;
+        assert!(copy.bottom() <= line_top, "{copy:?} above {line_top}");
+        h.click(copy.center());
+        h.frames(1, vec![]);
+        assert_eq!(h.copied, vec!["the cat".to_owned()]);
+        assert!(
+            h.app.select.selection.is_some(),
+            "a click on the bar keeps it"
+        );
+    }
+
+    #[test]
+    fn bar_hidden_while_dragging() {
+        let (mut h, _) = selecting();
+        let from = screen_pos(&h, 0, 73.0, 95.0);
+        let to = screen_pos(&h, 0, 112.0, 95.0);
+        h.modifiers = Modifiers::SHIFT;
+        h.frames(1, vec![Event::PointerMoved(from)]);
+        h.frames(
+            1,
+            vec![Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::SHIFT,
+            }],
+        );
+        h.frames(2, vec![Event::PointerMoved(to)]);
+        assert!(h.text_rect("Copy").is_none());
+    }
+
+    #[test]
+    fn handle_drag_moves_that_end_with_tool_off() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.frames(1, vec![]);
+        let offset = h.app.view.offset();
+        let end = h.app.select.handles[1].expect("the end's handle shows");
+        let step = screen_pos(&h, 0, 126.0, 95.0).x - screen_pos(&h, 0, 114.0, 95.0).x;
+        h.drag(end, vec2(step, 0.0));
+        h.frames(1, vec![]);
+        assert_eq!(selected_on(&h, 0), Some(0..9));
+        assert_eq!(h.app.view.offset(), offset);
+    }
+
+    #[test]
+    fn arrow_over_a_handle() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.frames(1, vec![]);
+        let end = h.app.select.handles[1].expect("the end's handle shows");
+        let edge = end + vec2(select::HANDLE_REACH, 0.0);
+        h.frames(2, vec![Event::PointerMoved(edge)]);
+        assert_eq!(h.cursor, egui::CursorIcon::Default);
+        h.modifiers = Modifiers::SHIFT;
+        h.frames(2, vec![Event::PointerMoved(end)]);
+        assert_eq!(h.cursor, egui::CursorIcon::Default);
+        h.modifiers = Modifiers::NONE;
+        let away = end + vec2(select::HANDLE_REACH + 2.0, 0.0);
+        h.frames(2, vec![Event::PointerMoved(away)]);
+        assert_ne!(h.cursor, egui::CursorIcon::Default);
+    }
+
+    #[test]
+    fn arrow_while_dragging_a_handle() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.frames(1, vec![]);
+        let end = h.app.select.handles[1].expect("the end's handle shows");
+        let button = |pressed| Event::PointerButton {
+            pos: end,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frames(1, vec![Event::PointerMoved(end)]);
+        h.frames(1, vec![button(true)]);
+        h.frames(2, vec![Event::PointerMoved(end + vec2(0.0, 40.0))]);
+        assert_eq!(h.cursor, egui::CursorIcon::Default);
+        h.frames(1, vec![button(false)]);
+    }
+
+    #[test]
+    fn copy_waits_for_unknown_pages() {
+        let engine =
+            TextEngine::new(&[&["the cat sat", "on the mat"], &["a dog"], &["one more"]]).gated();
+        let mut h = searching(&engine);
+        let at = |page, char| noido_core::Spot::At(noido_core::Caret { page, char });
+        h.app.select.selection = Some(noido_core::Selection {
+            anchor: at(0, 0),
+            focus: at(1, 3),
+        });
+        h.frames(1, vec![Event::Copy]);
+        assert!(h.copied.is_empty());
+        engine.open_gate();
+        h.until(|h| !h.copied.is_empty());
+        assert_eq!(h.copied, vec!["the cat sat on the mat a d".to_owned()]);
+    }
+
+    #[test]
+    fn press_on_scroll_bar_neither_selects_nor_clears() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        let bar = scroll_bar_point(&h);
+        h.click(bar);
+        h.frames(1, vec![]);
+        assert_eq!(
+            selected_on(&h, 0),
+            Some(0..7),
+            "a click on the bar keeps it"
+        );
+        h.press(egui::Key::S, Modifiers::NONE);
+        let x = h.app.view.offset().0;
+        h.drag(bar, vec2(0.0, 60.0));
+        h.frames(1, vec![]);
+        assert_eq!(
+            selected_on(&h, 0),
+            Some(0..7),
+            "a drag on the bar doesn't select"
+        );
+        assert_eq!(h.app.view.offset().0, x);
+    }
+
+    #[test]
+    fn no_ibeam_over_scroll_bar() {
+        let (mut h, _) = selecting();
+        h.press(egui::Key::S, Modifiers::NONE);
+        let bar = scroll_bar_point(&h);
+        h.frames(2, vec![Event::PointerMoved(bar)]);
+        assert_ne!(h.cursor, egui::CursorIcon::Text);
+    }
+
+    #[test]
+    fn new_selection_drops_pending_copy() {
+        let engine =
+            TextEngine::new(&[&["the cat sat", "on the mat"], &["a dog"], &["one more"]]).gated();
+        let mut h = searching(&engine);
+        let at = |page, char| noido_core::Spot::At(noido_core::Caret { page, char });
+        h.app.select.selection = Some(noido_core::Selection {
+            anchor: at(0, 0),
+            focus: at(1, 3),
+        });
+        h.frames(1, vec![Event::Copy]);
+        h.app.select.selection = Some(noido_core::Selection {
+            anchor: at(0, 4),
+            focus: at(0, 7),
+        });
+        engine.open_gate();
+        h.until(|h| matches!(h.app.texts.get(1), noido_core::PageTextState::Known(_)));
+        h.frames(3, vec![]);
+        assert!(h.copied.is_empty(), "{:?}", h.copied);
+    }
+
+    #[test]
+    fn pending_copy_survives_an_end_being_placed() {
+        let engine =
+            TextEngine::new(&[&["the cat sat", "on the mat"], &["a dog"], &["one more"]]).gated();
+        let mut h = searching(&engine);
+        let at = |page, char| noido_core::Spot::At(noido_core::Caret { page, char });
+        let waiting = noido_core::Spot::Waiting(noido_core::DocPoint {
+            page: 0,
+            x: 99.0,
+            y: 95.0,
+        });
+        h.app.select.selection = Some(noido_core::Selection {
+            anchor: waiting,
+            focus: at(1, 3),
+        });
+        h.frames(1, vec![Event::Copy]);
+        engine.open_gate();
+        h.until(|h| !h.copied.is_empty());
+        assert_eq!(h.copied, vec!["at sat on the mat a d".to_owned()]);
+    }
+    /// The app on `engine`, with links and text, once page 0's text is in.
+    fn linking_text_with(engine: TextEngine) -> Harness {
+        let (linker, searcher) = (engine.clone(), engine.clone());
+        let mut h = Harness::build_with(Arc::new(engine), move |app| {
+            app.with_linker(noido_render::Linker::start(
+                Arc::new(linker),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+            .with_searcher(TextSearcher::start(
+                Arc::new(searcher),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+        });
+        h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
+        h
+    }
+
+    #[test]
+    fn click_on_a_handle_over_a_link_does_not_follow() {
+        let engine = TextEngine::new(&[&["first line", "second line"] as &[&str]; 3]).with_links(
+            0,
+            vec![internal(
+                vec![area(60.0, 80.0, 300.0, 60.0)],
+                2,
+                Some(300.0),
+            )],
+        );
+        let mut h = linking_text_with(engine);
+        drag_text(&mut h, 0, (73.0, 95.0), (100.0, 95.0), Modifiers::SHIFT);
+        let selected = selected_on(&h, 0);
+        h.frames(1, vec![]);
+        let end = h.app.select.handles[1].expect("the end's handle shows");
+        h.frames(3, vec![Event::PointerMoved(end)]);
+        assert_eq!(h.cursor, egui::CursorIcon::Default);
+        h.click(end);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.chosen, None);
+        assert_eq!(selected_on(&h, 0), selected);
+    }
+
+    #[test]
+    fn no_arrow_over_a_handle_with_the_menu_open() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.frames(1, vec![]);
+        let end = h.app.select.handles[1].expect("the end's handle shows");
+        h.click(h.app.bar.menu.center());
+        h.frames(2, vec![]);
+        assert!(egui::Popup::is_any_open(&h.ctx), "the menu is open");
+        h.frames(2, vec![Event::PointerMoved(end)]);
+        assert_ne!(h.cursor, egui::CursorIcon::Default);
     }
 }
