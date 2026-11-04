@@ -53,6 +53,8 @@ interprocess = "2"
 unicode-normalization = "0.1"
 roxmltree = "0.21"
 resvg = { version = "0.49", default-features = false }
+# resvg's own, with the PNG encoder the macOS app's icon needs.
+tiny-skia = { version = "0.12", default-features = false, features = ["png-format"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
