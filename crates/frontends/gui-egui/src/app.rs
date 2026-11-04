@@ -609,6 +609,12 @@ impl NoidoApp {
         self.settings = settings;
     }
 
+    /// The store and slot the document's state is kept in, if it is kept.
+    pub fn persistence(&self) -> Option<(Store, Slot)> {
+        let p = self.persistence.as_ref()?;
+        Some((p.store.clone(), p.slot.clone()))
+    }
+
     /// Saves the document's state now, unsettled or not.
     pub fn save_now(&mut self) {
         if let (Some(state), Some(persistence)) = (self.doc_state(), &mut self.persistence)
