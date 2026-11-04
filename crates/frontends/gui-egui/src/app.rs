@@ -69,10 +69,10 @@ struct ScrollState {
 /// Runs once with the context to wake.
 pub type Start = Box<dyn FnOnce(&egui::Context) + Send>;
 
-/// Documents that arrive while the app runs, from outside the window (on
-/// macOS, Finder's opens). Tests use fakes.
+/// Documents that arrive while the app runs, from outside its windows (on
+/// macOS, Finder's opens), for the shell to open. Tests use fakes.
 pub struct Incoming {
-    /// Runs once, in the first frame, with the context to wake.
+    /// Runs once, in the shell's first frame, with the context to wake.
     pub start: Option<Start>,
     /// Drains what has arrived: links or paths, in arrival order.
     pub take: Box<dyn FnMut() -> Vec<std::ffi::OsString> + Send>,
@@ -181,8 +181,6 @@ pub struct NoidoApp {
     screen_edge: Option<(noido_core::DocPoint, Option<f64>)>,
     /// Whether PageUp or PageDown repeated while held: no flash then.
     page_key_repeated: bool,
-    /// Documents sent to the running app; see [`Incoming`].
-    incoming: Option<Incoming>,
     /// Where to ask the shell to open and quit, when there is one.
     requests: Option<crate::shell::Requests>,
 }
@@ -294,7 +292,6 @@ impl NoidoApp {
             open: Arc::new(open::open),
             screen_edge: None,
             page_key_repeated: false,
-            incoming: None,
         }
     }
 
@@ -302,6 +299,11 @@ impl NoidoApp {
     pub fn with_name(mut self, name: String) -> Self {
         self.name = name;
         self
+    }
+
+    /// The document's file name, as the title bar shows it.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Arrives at `target` once the window shows: a link's page or place.
@@ -575,6 +577,7 @@ impl NoidoApp {
     }
 
     /// Follows the OS theme while the app runs.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn with_theme(mut self, live: crate::theme::Live) -> Self {
         self.theme_live = Some(live);
         self
@@ -586,16 +589,8 @@ impl NoidoApp {
         self
     }
 
-    /// Opens the documents `incoming` brings, each in a new window.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    pub fn with_incoming(mut self, incoming: Incoming) -> Self {
-        self.incoming = Some(incoming);
-        self
-    }
-
     /// Asks the shell, not the window, to quit and to open documents, and
     /// tells it about saved settings.
-    #[allow(dead_code)] // until the shell uses it
     pub fn with_requests(mut self, requests: crate::shell::Requests) -> Self {
         let to_open = requests.clone();
         self.open = Arc::new(move |path| {
@@ -610,15 +605,8 @@ impl NoidoApp {
     }
 
     /// Takes settings saved in another window.
-    #[allow(dead_code)] // until the shell uses it
     pub fn set_settings(&mut self, settings: Settings) {
         self.settings = settings;
-    }
-
-    /// The activation the window was given, if any.
-    #[allow(dead_code)] // until the shell uses it
-    pub fn activation(&self) -> Option<Activation> {
-        self.activation.clone()
     }
 
     /// Saves the document's state now, unsettled or not.
@@ -713,20 +701,6 @@ impl NoidoApp {
         };
         if let Some(reload) = watcher.try_recv() {
             self.reload(reload, ctx);
-        }
-    }
-
-    /// Starts the incoming source on the first frame, then opens what it
-    /// has taken in, in order.
-    fn receive_open_files(&mut self, ctx: &egui::Context) {
-        let Some(incoming) = &mut self.incoming else {
-            return;
-        };
-        if let Some(start) = incoming.start.take() {
-            start(ctx);
-        }
-        for arg in (incoming.take)() {
-            (self.open)(std::path::Path::new(&arg));
         }
     }
 
@@ -1696,14 +1670,13 @@ impl eframe::App for NoidoApp {
 impl NoidoApp {
     /// What runs every pass, also while the window is hidden or minimized
     /// and `ui` is skipped.
-    fn logic_pass(&mut self, ctx: &egui::Context) {
-        self.receive_open_files(ctx);
+    pub(crate) fn logic_pass(&mut self, ctx: &egui::Context) {
         // Here, not in `show`: a minimized window must still un-minimize.
         self.come_forward(ctx);
     }
 
     /// One frame of the viewer.
-    fn show(&mut self, ui: &mut egui::Ui, parent: Option<&eframe::Frame>) {
+    pub(crate) fn show(&mut self, ui: &mut egui::Ui, parent: Option<&eframe::Frame>) {
         let ctx = ui.ctx().clone();
         if let Some(live) = &mut self.theme_live
             && live.poll(&ctx)
@@ -2042,7 +2015,7 @@ fn core_key(key: egui::Key) -> Option<Key> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         path::{Path, PathBuf},
         sync::{Arc, Mutex},
@@ -2139,6 +2112,18 @@ mod tests {
             let _ = self.0.lock().unwrap().recv();
             BlankDocument.render_tile(page, scale, tile)
         }
+    }
+
+    /// An app on [`BlankEngine`], for tests outside this module.
+    pub(crate) fn blank_app() -> NoidoApp {
+        let (renderer, info) =
+            Renderer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {})).unwrap();
+        NoidoApp::new(renderer, info)
+    }
+
+    /// The settings `app` shows, for tests outside this module.
+    pub(crate) fn settings_of(app: &NoidoApp) -> Settings {
+        app.settings
     }
 
     /// Runs the app headlessly in egui, one frame per call.
@@ -3451,85 +3436,6 @@ mod tests {
                 "{key:?} did not close"
             );
         }
-    }
-
-    /// What the incoming fixture shares with the app.
-    struct IncomingProbe {
-        queue: Arc<Mutex<Vec<std::ffi::OsString>>>,
-        opened: Arc<Mutex<Vec<PathBuf>>>,
-        started: Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    impl IncomingProbe {
-        fn new() -> Self {
-            Self {
-                queue: Arc::default(),
-                opened: Arc::default(),
-                started: Arc::default(),
-            }
-        }
-
-        /// Makes `open` record into `opened`, and the incoming documents
-        /// come from `queue`.
-        fn setup(&self) -> impl FnOnce(NoidoApp) -> NoidoApp + use<> {
-            let (queue, opened, started) = (
-                self.queue.clone(),
-                self.opened.clone(),
-                self.started.clone(),
-            );
-            move |mut app: NoidoApp| {
-                app.open = Arc::new(move |path| opened.lock().unwrap().push(path.to_path_buf()));
-                app.with_incoming(Incoming {
-                    start: Some(Box::new(move |_| {
-                        started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    })),
-                    take: Box::new(move || std::mem::take(&mut *queue.lock().unwrap())),
-                })
-            }
-        }
-    }
-
-    #[test]
-    fn incoming_documents_reach_the_open_hook_in_order() {
-        let probe = IncomingProbe::new();
-        probe.queue.lock().unwrap().extend([
-            std::ffi::OsString::from("file:///a.pdf"),
-            std::ffi::OsString::from("noido:///b.pdf#page=2"),
-        ]);
-        let _h = Harness::build(probe.setup());
-        assert_eq!(
-            probe.opened.lock().unwrap().as_slice(),
-            &[
-                PathBuf::from("file:///a.pdf"),
-                PathBuf::from("noido:///b.pdf#page=2")
-            ]
-        );
-    }
-
-    #[test]
-    fn incoming_documents_open_in_the_logic_pass_without_a_ui_pass() {
-        let probe = IncomingProbe::new();
-        let mut h = Harness::build(probe.setup());
-        probe
-            .queue
-            .lock()
-            .unwrap()
-            .push(std::ffi::OsString::from("file:///hidden.pdf"));
-        let ctx = h.ctx.clone();
-        h.app.logic_pass(&ctx);
-        assert_eq!(
-            probe.opened.lock().unwrap().as_slice(),
-            &[PathBuf::from("file:///hidden.pdf")]
-        );
-    }
-
-    #[test]
-    fn incoming_starts_once_and_an_empty_queue_opens_nothing() {
-        let probe = IncomingProbe::new();
-        let mut h = Harness::build(probe.setup());
-        h.frames(3, vec![]);
-        assert_eq!(probe.started.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(probe.opened.lock().unwrap().is_empty());
     }
 
     #[test]

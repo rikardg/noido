@@ -19,6 +19,7 @@ use noido_core::{Target, parse_fragment, to_fragment};
 use crate::watch::Waker;
 
 /// The longest request line read, in bytes.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 const MAX_REQUEST: usize = 512;
 
 /// How long a launch waits for the running noido to answer.
@@ -37,10 +38,13 @@ type Address = PathBuf;
 type Address = String;
 
 /// The outcome of asking whether the file is open already.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub enum Claim {
     /// It is, and that noido was asked to come forward: this launch is done.
     Running {
-        /// Its process, when it said (for bringing it to the front).
+        /// Its process, when it said. Unread: only macOS brought it to
+        /// the front, and macOS hands over through the app's socket.
+        #[allow(dead_code)]
         pid: Option<u32>,
     },
     /// It isn't; this launch listens for later ones.
@@ -50,6 +54,7 @@ pub enum Claim {
 }
 
 /// The socket of the first noido on a file.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub struct Listener(interprocess::local_socket::Listener);
 
 /// What a later launch asked of the window.
@@ -80,7 +85,9 @@ impl Activation {
 
 /// Hands over to the noido that has `path` open, if there is one, asking it
 /// to go to `target`; otherwise claims the file for this launch. Doesn't
-/// read the file.
+/// read the file. Elsewhere than on macOS, where the app claims one
+/// socket for all its files.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn claim(path: &Path, target: Option<&Target>) -> Claim {
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     match address(&canonical) {
@@ -211,6 +218,7 @@ fn parse_answer(line: &str) -> Option<Option<u32>> {
     }
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 impl Listener {
     /// Answers later launches on a thread of its own; `waker` is called when
     /// one asks the window to come forward.
@@ -229,6 +237,7 @@ impl Listener {
 
 /// Reads one request from `stream`; on "activate" calls `activate` with
 /// the target it names, then answers.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn answer(stream: Stream, activate: impl FnOnce(Option<Target>)) {
     let Some((line, mut stream)) = read_request(stream, MAX_REQUEST) else {
         return;
@@ -247,14 +256,15 @@ fn answer(stream: Stream, activate: impl FnOnce(Option<Target>)) {
 // from a terminal hand their files to it.
 
 /// The longest app request line read, in bytes.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const MAX_APP_REQUEST: usize = 4096;
 
 /// How long a sender waits for the answer: a large file loads first.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A request to open a file, with the place to go to.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // until the shell uses it
 pub struct OpenRequest {
     pub path: PathBuf,
     pub target: Option<Target>,
@@ -262,7 +272,6 @@ pub struct OpenRequest {
 
 /// What the app answers once it has tried the file.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // until the shell uses it
 pub enum Answer {
     /// A new window was opened; `pid` is the app's process.
     Opened { pid: Option<u32> },
@@ -273,7 +282,7 @@ pub enum Answer {
 }
 
 /// The outcome of asking whether this executable's app runs already.
-#[allow(dead_code)] // until the shell uses it
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub enum AppClaim {
     /// It does. `None`: it answered nothing in time.
     Running(Option<Answer>),
@@ -284,7 +293,7 @@ pub enum AppClaim {
 }
 
 /// The socket of the app of an executable.
-#[allow(dead_code)] // until the shell uses it
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct AppListener(interprocess::local_socket::Listener);
 
 /// The way to answer one request; dropped unanswered, it closes the
@@ -299,7 +308,6 @@ impl std::fmt::Debug for Reply {
 
 impl Reply {
     /// Answers with `outcome`; its pid, if any, is this process.
-    #[allow(dead_code)] // until the shell uses it
     pub fn send(mut self, outcome: Answer) {
         let pid = std::process::id();
         let line = match outcome {
@@ -318,24 +326,24 @@ fn one_line(text: &str) -> String {
 
 /// What has arrived at an [`AppListener`] since it was last asked.
 #[derive(Clone, Default)]
-#[allow(dead_code)] // until the shell uses it
 pub struct AppRequests(Arc<Mutex<Vec<(OpenRequest, Reply)>>>);
 
 impl AppRequests {
     /// Everything that arrived since the last call, oldest first.
-    #[allow(dead_code)] // until the shell uses it
     pub fn take(&self) -> Vec<(OpenRequest, Reply)> {
         std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
     }
 }
 
 /// The request line for `request`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn app_request_line(request: &OpenRequest) -> String {
     let fragment = request.target.as_ref().map_or("-".to_owned(), to_fragment);
     format!("open {fragment} {}", request.path.to_string_lossy())
 }
 
 /// What a request line asks, if it is one.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn parse_app_request(line: &str) -> Option<OpenRequest> {
     let rest = line.strip_prefix("open ")?;
     let (fragment, path) = rest.split_once(' ')?;
@@ -354,6 +362,7 @@ fn parse_app_request(line: &str) -> Option<OpenRequest> {
 
 /// What an answer line says, if it is one. A bare `opened` or `forward`
 /// names no pid.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn parse_app_answer(line: &str) -> Option<Answer> {
     let pid = |rest: &str| match rest {
         "" => Some(None),
@@ -373,6 +382,7 @@ fn parse_app_answer(line: &str) -> Option<Answer> {
 }
 
 /// The socket of the app of `exe`: next to the per-file ones.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn app_address(exe: &Path) -> Option<Address> {
     let canonical = std::fs::canonicalize(exe).unwrap_or_else(|_| exe.to_path_buf());
     named_address(&format!("noido-app-{}", path_hash(&canonical)))
@@ -381,7 +391,7 @@ fn app_address(exe: &Path) -> Option<Address> {
 /// Hands `request` to the app of `exe` if one runs, and waits for its
 /// answer. With no `request` it only checks, answering `Running(None)` if
 /// one runs. Otherwise this launch becomes the app's listener.
-#[allow(dead_code)] // until the shell uses it
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn claim_app(exe: &Path, request: Option<&OpenRequest>) -> AppClaim {
     match app_address(exe) {
         Some(address) => claim_app_at(&address, TIMEOUT, ANSWER_TIMEOUT, request),
@@ -390,6 +400,7 @@ pub fn claim_app(exe: &Path, request: Option<&OpenRequest>) -> AppClaim {
 }
 
 /// [`claim_app`] for the socket at `address`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn claim_app_at(
     address: &Address,
     timeout: Duration,
@@ -410,17 +421,19 @@ fn claim_app_at(
 
 /// Hands `request` to the app of `exe`, which must run already: never
 /// binds. `None` when none listens, or none answers.
-#[allow(dead_code)] // until the shell uses it
+#[allow(dead_code)] // until a detached launch hands over (Task 7)
 pub fn send(exe: &Path, request: &OpenRequest) -> Option<Answer> {
     send_at(&app_address(exe)?, request, ANSWER_TIMEOUT)
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn send_at(address: &Address, request: &OpenRequest, answer_timeout: Duration) -> Option<Answer> {
     let stream = Stream::connect(to_name(address).ok()?).ok()?;
     exchange(stream, request, answer_timeout)
 }
 
 /// Writes `request` to `stream` and reads the answer.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn exchange(stream: Stream, request: &OpenRequest, answer_timeout: Duration) -> Option<Answer> {
     let line = app_request_line(request);
     if line.len() >= MAX_APP_REQUEST || line.contains(['\r', '\n']) {
@@ -432,7 +445,7 @@ fn exchange(stream: Stream, request: &OpenRequest, answer_timeout: Duration) -> 
 impl AppListener {
     /// Collects requests on a thread of its own, calling `waker` after
     /// each arrival. They are answered through their [`Reply`].
-    #[allow(dead_code)] // until the shell uses it
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn serve(self, waker: Waker) -> AppRequests {
         let requests = AppRequests::default();
         let arrived = requests.clone();
@@ -451,6 +464,7 @@ impl AppListener {
 }
 
 /// Reads one request line from `stream`, within the limit.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn read_app_request(stream: Stream) -> Option<(OpenRequest, Reply)> {
     let (line, stream) = read_request(stream, MAX_APP_REQUEST)?;
     Some((parse_app_request(&line)?, Reply(stream)))
@@ -477,6 +491,7 @@ fn address(canonical: &Path) -> Option<Address> {
 
 /// The socket called `name`, in the directory of the per-file ones.
 #[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn named_address(name: &str) -> Option<Address> {
     Some(match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(runtime) => PathBuf::from(runtime)
