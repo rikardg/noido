@@ -62,6 +62,19 @@ pub struct DocState {
     pub history: History,
 }
 
+/// `noido` under the `XDG_STATE_HOME` value if it is an absolute path;
+/// unset, empty or relative values (which the XDG spec says to ignore)
+/// give whatever `fallback` does.
+fn state_dir(
+    xdg: Option<std::ffi::OsString>,
+    fallback: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    match xdg.map(PathBuf::from) {
+        Some(base) if base.is_absolute() => Some(base.join("noido")),
+        _ => fallback(),
+    }
+}
+
 /// The state directory and the documents' files in it.
 #[derive(Clone)]
 pub struct Store {
@@ -75,12 +88,19 @@ impl Store {
         }
     }
 
-    /// The platform's state directory for noido: `$XDG_STATE_HOME/noido` on
-    /// Linux, the local application data directory elsewhere.
+    /// noido's state directory: `$XDG_STATE_HOME/noido` when that is set to
+    /// an absolute path, on every platform; otherwise the platform's own
+    /// (the local application data directory where there is no state one).
     pub fn open_default() -> Option<Self> {
-        let dirs = ProjectDirs::from("", "", "noido")?;
-        let dir = dirs.state_dir().unwrap_or_else(|| dirs.data_local_dir());
-        Some(Self::at(dir))
+        let dir = state_dir(std::env::var_os("XDG_STATE_HOME"), || {
+            let dirs = ProjectDirs::from("", "", "noido")?;
+            Some(
+                dirs.state_dir()
+                    .unwrap_or_else(|| dirs.data_local_dir())
+                    .to_path_buf(),
+            )
+        })?;
+        Some(Self::at(&dir))
     }
 
     /// The document's slot and saved state: by hash, else by path (a file
@@ -362,5 +382,37 @@ impl Entry {
             },
             history: History::from_parts(states(&self.back), states(&self.forward)),
         }
+    }
+}
+
+#[cfg(test)]
+mod dir_tests {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    use super::state_dir;
+
+    fn fallback() -> Option<PathBuf> {
+        Some(PathBuf::from("/fallback"))
+    }
+
+    #[test]
+    fn an_absolute_value_gives_noido_under_it() {
+        let dir = state_dir(Some(OsString::from("/scratch/state")), fallback);
+        assert_eq!(dir, Some(PathBuf::from("/scratch/state/noido")));
+    }
+
+    #[test]
+    fn unset_empty_or_relative_values_use_the_fallback() {
+        for value in [None, Some(""), Some("state"), Some("./state")] {
+            let dir = state_dir(value.map(OsString::from), fallback);
+            assert_eq!(dir, Some(PathBuf::from("/fallback")), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn the_fallback_is_not_asked_for_when_the_value_is_used() {
+        let dir = state_dir(Some(OsString::from("/s")), || panic!("asked"));
+        assert_eq!(dir, Some(PathBuf::from("/s/noido")));
     }
 }
