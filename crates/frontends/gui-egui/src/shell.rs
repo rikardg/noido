@@ -15,6 +15,8 @@ pub enum Request {
     Open {
         path: PathBuf,
         target: Option<Target>,
+        /// Where to say how it went, for a file asked for from outside.
+        reply: Option<crate::instance::Reply>,
     },
     /// Show the file picker.
     OpenPanel,
