@@ -24,6 +24,7 @@ use objc2_app_kit::{
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSError, NSNotification, NSObject, NSObjectProtocol, NSString, NSURL,
 };
+use objc2_uniform_type_identifiers::UTType;
 
 /// How long the launcher waits for NSWorkspace before giving up.
 const GRACE: Duration = Duration::from_secs(5);
@@ -232,6 +233,11 @@ impl Delegate {
     }
 }
 
+/// The PDF type, the one noido.app claims in its Info.plist.
+fn pdf_type() -> Option<Retained<UTType>> {
+    UTType::typeWithIdentifier(&NSString::from_str("com.adobe.pdf"))
+}
+
 /// Asks for PDFs in the standard Open panel, in front: the picked files'
 /// URLs, none on Cancel.
 fn pick_pdfs(mtm: MainThreadMarker) -> Vec<String> {
@@ -247,12 +253,9 @@ fn pick_pdfs(mtm: MainThreadMarker) -> Vec<String> {
     let panel = NSOpenPanel::openPanel(mtm);
     panel.setAllowsMultipleSelection(true);
     panel.setCanChooseDirectories(false);
-    // allowedContentTypes would need the UTType bindings, a crate more;
-    // the file-type list still works on every macOS noido runs on.
-    #[allow(deprecated)]
-    panel.setAllowedFileTypes(Some(&NSArray::from_retained_slice(&[NSString::from_str(
-        "pdf",
-    )])));
+    if let Some(pdf) = pdf_type() {
+        panel.setAllowedContentTypes(&NSArray::from_retained_slice(&[pdf]));
+    }
     if panel.runModal() != NSModalResponseOK {
         return Vec::new();
     }
@@ -323,6 +326,14 @@ mod tests {
 
     fn urls(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_open_panel_filters_by_the_pdf_type_the_bundle_claims() {
+        let pdf = pdf_type().expect("the system knows the PDF type");
+        assert_eq!(pdf.identifier().to_string(), "com.adobe.pdf");
+        let extension = pdf.preferredFilenameExtension().map(|e| e.to_string());
+        assert_eq!(extension.as_deref(), Some("pdf"));
     }
 
     #[test]

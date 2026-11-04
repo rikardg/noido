@@ -33,6 +33,7 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false }
 objc2-app-kit = { version = "0.3", default-features = false }
 block2 = "0.6"
+objc2-uniform-type-identifiers = { version = "0.3", default-features = false }
 hayro = "0.8"
 eframe = { version = "0.37", features = ["persistence"] }
 native-theme = { version = "0.7", default-features = false, features = ["native", "watch", "system-fonts"] }

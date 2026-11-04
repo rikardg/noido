@@ -11,8 +11,9 @@ publish.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 block2.workspace = true
 objc2.workspace = true
-objc2-app-kit = { workspace = true, features = ["NSApplication", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow", "NSRunningApplication", "NSWorkspace", "block2", "libc"] }
+objc2-app-kit = { workspace = true, features = ["NSApplication", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSWindow", "NSRunningApplication", "NSWorkspace", "block2", "libc", "objc2-uniform-type-identifiers"] }
 objc2-foundation = { workspace = true, features = ["NSAppleEventDescriptor", "NSAppleEventManager", "NSArray", "NSError", "NSNotification", "NSObject", "NSString", "NSURL", "NSThread", "NSEnumerator", "block2", "objc2-core-services"] }
+objc2-uniform-type-identifiers = { workspace = true, features = ["UTType"] }
 
 [lints.rust]
 unsafe_code = "deny"
