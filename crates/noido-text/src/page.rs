@@ -1,5 +1,6 @@
 //! Assembling a page's glyphs into lines and words.
 
+use std::ops::Range;
 use std::sync::OnceLock;
 
 pub use noido_engine::Rect;
@@ -113,6 +114,11 @@ impl PageText {
 
     /// Each line's bounds: the union of its glyphs'.
     fn line_rects(&self) -> Vec<Rect> {
+        self.lines().into_iter().flatten().collect()
+    }
+
+    /// Each line's bounds by line index; `None` for a line without glyphs.
+    fn lines(&self) -> Vec<Option<Rect>> {
         let mut lines: Vec<Option<Rect>> = Vec::new();
         for info in &self.chars {
             let Some(glyph) = info.glyph else {
@@ -124,20 +130,164 @@ impl PageText {
             let b = self.bounds[glyph];
             lines[info.line] = Some(match lines[info.line] {
                 None => b,
-                Some(r) => {
-                    let (left, top) = (r.x.min(b.x), r.y.min(b.y));
-                    let right = (r.x + r.width).max(b.x + b.width);
-                    let bottom = (r.y + r.height).max(b.y + b.height);
-                    Rect {
-                        x: left,
-                        y: top,
-                        width: right - left,
-                        height: bottom - top,
-                    }
-                }
+                Some(r) => union(r, b),
             });
         }
-        lines.into_iter().flatten().collect()
+        lines
+    }
+
+    /// The line nearest (`x`, `y`): distance 0 inside its rectangle; the
+    /// first of equally near ones. `None` without glyphs.
+    fn line_at(&self, x: f32, y: f32) -> Option<usize> {
+        let mut best: Option<(usize, f32)> = None;
+        for (line, rect) in self.lines().into_iter().enumerate() {
+            let Some(r) = rect else {
+                continue;
+            };
+            let dx = (r.x - x).max(x - (r.x + r.width)).max(0.0);
+            let dy = (r.y - y).max(y - (r.y + r.height)).max(0.0);
+            let d = dx.hypot(dy);
+            if best.is_none_or(|(_, b)| d < b) {
+                best = Some((line, d));
+            }
+        }
+        best.map(|(line, _)| line)
+    }
+
+    /// The characters drawn with a glyph on `line`, with their bounds.
+    fn glyph_chars(&self, line: usize) -> impl Iterator<Item = (usize, Rect)> + '_ {
+        self.chars
+            .iter()
+            .enumerate()
+            .filter(move |(_, info)| info.line == line)
+            .filter_map(|(i, info)| info.glyph.map(|g| (i, self.bounds[g])))
+    }
+
+    /// The caret (`0..=char_count`) a point at (`x`, `y`) places: on the
+    /// nearest line, before the glyph whose horizontal middle is right of
+    /// `x`, else after the line's last glyph. `None` without glyphs.
+    pub fn caret_at(&self, x: f32, y: f32) -> Option<usize> {
+        let line = self.line_at(x, y)?;
+        let mut after = None;
+        for (i, b) in self.glyph_chars(line) {
+            if x < b.x + b.width / 2.0 {
+                return Some(i);
+            }
+            after = Some(i + 1);
+        }
+        after
+    }
+
+    /// The character under or nearest (`x`, `y`) on the nearest line.
+    fn char_at(&self, x: f32, y: f32) -> Option<usize> {
+        let line = self.line_at(x, y)?;
+        self.glyph_chars(line)
+            .map(|(i, b)| (i, (b.x - x).max(x - (b.x + b.width)).max(0.0)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    }
+
+    /// The word at (`x`, `y`): the run of letters, digits, apostrophes and
+    /// hyphens around the character there, or that character alone.
+    pub fn word_at(&self, x: f32, y: f32) -> Option<Range<usize>> {
+        let hit = self.char_at(x, y)?;
+        let chars: Vec<char> = self.text.chars().collect();
+        let in_word = |c: char| c.is_alphanumeric() || matches!(c, '\'' | '’' | '-');
+        if !in_word(chars[hit]) {
+            return Some(hit..hit + 1);
+        }
+        let start = (0..hit)
+            .rev()
+            .take_while(|&i| in_word(chars[i]))
+            .last()
+            .unwrap_or(hit);
+        let end = (hit..chars.len())
+            .take_while(|&i| in_word(chars[i]))
+            .last()
+            .unwrap_or(hit)
+            + 1;
+        Some(start..end)
+    }
+
+    /// The characters of the line nearest (`x`, `y`), without its newline.
+    pub fn line_range_at(&self, x: f32, y: f32) -> Option<Range<usize>> {
+        let line = self.line_at(x, y)?;
+        let start = self.chars.iter().position(|c| c.line == line)?;
+        let mut end = self.chars.iter().rposition(|c| c.line == line)? + 1;
+        if self.text.chars().nth(end - 1) == Some('\n') {
+            end -= 1;
+        }
+        Some(start..end)
+    }
+
+    /// One rectangle per line `range` touches: the union of its glyphs
+    /// there, as tall as the whole line.
+    pub fn rects(&self, range: Range<usize>) -> Vec<Rect> {
+        let lines = self.lines();
+        let mut out: Vec<(usize, Rect)> = Vec::new();
+        for i in range.start..range.end.min(self.chars.len()) {
+            let info = self.chars[i];
+            let (Some(g), Some(Some(line))) = (info.glyph, lines.get(info.line)) else {
+                continue;
+            };
+            let b = self.bounds[g];
+            let b = Rect {
+                y: line.y,
+                height: line.height,
+                ..b
+            };
+            match out.last_mut() {
+                Some((l, r)) if *l == info.line => *r = union(*r, b),
+                _ => out.push((info.line, b)),
+            }
+        }
+        out.into_iter().map(|(_, r)| r).collect()
+    }
+
+    /// A zero-width rectangle at `caret`, as tall as its line: at the left
+    /// edge of the glyph after it, or the right edge of the glyph before
+    /// it (the end of a line). `None` without glyphs.
+    pub fn caret_rect(&self, caret: usize) -> Option<Rect> {
+        let lines = self.lines();
+        let at = |i: usize, right: bool| {
+            let info = self.chars[i];
+            let b = self.bounds[info.glyph?];
+            let line = (*lines.get(info.line)?)?;
+            Some(Rect {
+                x: if right { b.x + b.width } else { b.x },
+                y: line.y,
+                width: 0.0,
+                height: line.height,
+            })
+        };
+        if caret < self.chars.len()
+            && let Some(r) = at(caret, false)
+        {
+            return Some(r);
+        }
+        let before = (0..caret.min(self.chars.len()))
+            .rev()
+            .find_map(|i| at(i, true));
+        before.or_else(|| (caret..self.chars.len()).find_map(|i| at(i, false)))
+    }
+
+    /// The bounds of the line `char` is on; the last line for the caret at
+    /// the end.
+    pub fn line_rect_of(&self, char: usize) -> Option<Rect> {
+        let line = self.chars.get(char).or(self.chars.last())?.line;
+        (*self.lines().get(line)?)?.into()
+    }
+}
+
+pub(crate) fn union(a: Rect, b: Rect) -> Rect {
+    let (left, top) = (a.x.min(b.x), a.y.min(b.y));
+    let right = (a.x + a.width).max(b.x + b.width);
+    let bottom = (a.y + a.height).max(b.y + b.height);
+    Rect {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
     }
 }
 
@@ -537,5 +687,93 @@ mod tests {
         let page = PageText::new(Vec::new());
         assert_eq!(page.text(), "");
         assert_eq!(page.char_count(), 0);
+    }
+
+    /// "the cat sat" / "on the mat": glyphs 5 pt wide from x 72, lines
+    /// 92..102 and 106..116 high.
+    fn cat_page() -> PageText {
+        PageText::new(page(&["the cat sat", "on the mat"]))
+    }
+
+    #[test]
+    fn caret_at_glyph_halves() {
+        let page = cat_page();
+        assert_eq!(page.caret_at(73.0, 97.0), Some(0));
+        assert_eq!(page.caret_at(76.0, 97.0), Some(1));
+    }
+
+    #[test]
+    fn caret_at_left_and_right_of_line() {
+        let page = cat_page();
+        assert_eq!(page.caret_at(10.0, 97.0), Some(0));
+        assert_eq!(page.caret_at(500.0, 97.0), Some(11));
+    }
+
+    #[test]
+    fn caret_at_above_and_below() {
+        let page = cat_page();
+        assert_eq!(page.caret_at(73.0, 0.0), Some(0));
+        assert_eq!(page.caret_at(500.0, 700.0), Some(page.char_count()));
+    }
+
+    #[test]
+    fn caret_at_between_lines_takes_nearest() {
+        let page = cat_page();
+        assert_eq!(page.caret_at(73.0, 103.0), Some(0));
+        assert_eq!(page.caret_at(73.0, 105.5), Some(12));
+    }
+
+    #[test]
+    fn caret_at_two_columns() {
+        let mut glyphs = line("left col", 72.0, 100.0, 10.0);
+        glyphs.extend(line("right col", 300.0, 100.0, 10.0));
+        let page = PageText::new(glyphs);
+        let caret = page.caret_at(311.0, 97.0).unwrap();
+        let right = page.text().find("right").unwrap();
+        assert_eq!(caret, right + 2);
+    }
+
+    #[test]
+    fn caret_at_without_text() {
+        assert_eq!(PageText::new(Vec::new()).caret_at(0.0, 0.0), None);
+    }
+
+    #[test]
+    fn word_and_line_at() {
+        let page = cat_page();
+        assert_eq!(page.word_at(93.0, 97.0), Some(4..7));
+        assert_eq!(page.line_range_at(78.0, 111.0), Some(12..22));
+        assert_eq!(PageText::new(Vec::new()).word_at(0.0, 0.0), None);
+    }
+
+    #[test]
+    fn rects_per_line() {
+        let page = cat_page();
+        let rects = page.rects(4..15);
+        assert_eq!(
+            rects,
+            vec![rect(92.0, 92.0, 35.0, 10.0), rect(72.0, 106.0, 15.0, 10.0)]
+        );
+    }
+
+    #[test]
+    fn caret_rect_at_ends() {
+        let page = cat_page();
+        assert_eq!(page.caret_rect(0), Some(rect(72.0, 92.0, 0.0, 10.0)));
+        assert_eq!(page.caret_rect(11), Some(rect(127.0, 92.0, 0.0, 10.0)));
+        assert_eq!(
+            page.caret_rect(page.char_count()),
+            Some(rect(122.0, 106.0, 0.0, 10.0))
+        );
+        let empty = PageText::new(Vec::new());
+        assert_eq!(empty.caret_rect(0), None);
+        assert!(empty.rects(0..0).is_empty());
+    }
+
+    #[test]
+    fn line_rect_of_char() {
+        let page = cat_page();
+        assert_eq!(page.line_rect_of(13), Some(rect(72.0, 106.0, 50.0, 10.0)));
+        assert_eq!(page.line_rect_of(11), Some(rect(72.0, 92.0, 55.0, 10.0)));
     }
 }
