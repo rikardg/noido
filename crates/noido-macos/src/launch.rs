@@ -24,7 +24,8 @@ use objc2_app_kit::{
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSError, NSNotification, NSObject, NSObjectProtocol, NSString, NSURL,
 };
-use objc2_uniform_type_identifiers::UTType;
+
+use crate::open_panel::pdf_type;
 
 /// How long the launcher waits for NSWorkspace before giving up.
 const GRACE: Duration = Duration::from_secs(5);
@@ -233,11 +234,6 @@ impl Delegate {
     }
 }
 
-/// The PDF type, the one noido.app claims in its Info.plist.
-fn pdf_type() -> Option<Retained<UTType>> {
-    UTType::typeWithIdentifier(&NSString::from_str("com.adobe.pdf"))
-}
-
 /// Asks for PDFs in the standard Open panel, in front: the picked files'
 /// URLs, none on Cancel.
 fn pick_pdfs(mtm: MainThreadMarker) -> Vec<String> {
@@ -326,14 +322,6 @@ mod tests {
 
     fn urls(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
-    }
-
-    #[test]
-    fn the_open_panel_filters_by_the_pdf_type_the_bundle_claims() {
-        let pdf = pdf_type().expect("the system knows the PDF type");
-        assert_eq!(pdf.identifier().to_string(), "com.adobe.pdf");
-        let extension = pdf.preferredFilenameExtension().map(|e| e.to_string());
-        assert_eq!(extension.as_deref(), Some("pdf"));
     }
 
     #[test]

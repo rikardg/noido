@@ -22,7 +22,6 @@ noido-text.workspace = true
 noido-settings.workspace = true
 eframe.workspace = true
 native-theme.workspace = true
-rfd.workspace = true
 clap.workspace = true
 ctrlc.workspace = true
 notify.workspace = true
@@ -33,6 +32,10 @@ roxmltree.workspace = true
 [build-dependencies]
 resvg.workspace = true
 tiny-skia.workspace = true
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+# The file dialog; macOS uses AppKit's Open panel itself.
+rfd.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 noido-macos.workspace = true

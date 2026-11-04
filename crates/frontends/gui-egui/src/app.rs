@@ -170,8 +170,8 @@ pub struct NoidoApp {
     /// Picks a PDF when asked, in the desktop's own dialog, handing it to
     /// [`NoidoApp::open`] with the window as the dialog's parent and the
     /// open document's directory as the dialog's starting point: the real
-    /// dialog on a thread of its own, so the window keeps painting while
-    /// it is up. Fakes in tests.
+    /// dialog never blocks, so the window keeps painting while it is up.
+    /// Fakes in tests.
     pick: open::Pick,
     /// Opens a picked document in a new window; `Arc` so the picker's
     /// thread can call it. Fakes in tests.
