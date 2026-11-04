@@ -152,6 +152,9 @@ pub struct NoidoApp {
     source: Option<info::Source>,
     /// The document info page, while it is open.
     info_page: Option<info::Page>,
+    /// Actions asked of the window from outside it (the native menu),
+    /// carried out in its next frame.
+    queued: Vec<Action>,
     /// The pages' links.
     links: Links,
     /// The pages' text, for selecting.
@@ -278,6 +281,7 @@ impl NoidoApp {
             settings_page: None,
             source: None,
             info_page: None,
+            queued: Vec::new(),
             links: Links::new(page_count),
             texts: Texts::new(page_count),
             select: select::State::default(),
@@ -1664,6 +1668,18 @@ impl eframe::App for NoidoApp {
 }
 
 impl NoidoApp {
+    /// Carries out `action` in the window's next frame, as if from its
+    /// keys: for the native menu, which acts on the window from outside.
+    pub(crate) fn queue(&mut self, action: Action) {
+        self.queued.push(action);
+    }
+
+    /// The actions waiting for the next frame.
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> &[Action] {
+        &self.queued
+    }
+
     /// What runs every pass, also while the window is hidden or minimized
     /// and `ui` is skipped.
     pub(crate) fn logic_pass(&mut self, ctx: &egui::Context) {
@@ -1691,6 +1707,9 @@ impl NoidoApp {
         }
         self.arrive();
         self.handle_input(&ctx, parent);
+        for action in std::mem::take(&mut self.queued) {
+            self.apply(&ctx, parent, action);
+        }
         self.start_screen_edge(&ctx);
         if let Some(link) = self.clicked_link.take() {
             self.follow(&ctx, link);
@@ -3408,6 +3427,16 @@ pub(crate) mod tests {
             store.load(test_key()).1.map(|state| state.view),
             h.app.view.state()
         );
+    }
+
+    #[test]
+    fn a_queued_action_is_carried_out_in_the_next_frame() {
+        let mut h = Harness::new();
+        h.app.queue(Action::OpenSettings);
+        assert!(h.app.settings_page.is_none());
+        h.frames(1, vec![]);
+        assert!(h.app.settings_page.is_some());
+        assert!(h.app.queued.is_empty());
     }
 
     #[test]

@@ -49,7 +49,6 @@ impl<W> Windows<W> {
         self.entries.iter().map(|(p, _)| p.clone()).collect()
     }
 
-    #[allow(dead_code)] // until a Dock click with no windows asks (Task 9)
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

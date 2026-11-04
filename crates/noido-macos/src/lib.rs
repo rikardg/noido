@@ -7,6 +7,9 @@ mod activate;
 mod launch;
 
 #[cfg(target_os = "macos")]
+mod menu;
+
+#[cfg(target_os = "macos")]
 mod open_panel;
 
 #[cfg(target_os = "macos")]
@@ -17,6 +20,9 @@ pub use activate::activate_pid;
 
 #[cfg(target_os = "macos")]
 pub use launch::launch_in_bundle;
+
+#[cfg(target_os = "macos")]
+pub use menu::{MenuCommand, install_menu, take_commands};
 
 #[cfg(target_os = "macos")]
 pub use open_panel::pick_pdfs;
