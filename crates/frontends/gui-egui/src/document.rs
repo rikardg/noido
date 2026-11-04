@@ -47,17 +47,30 @@ impl Shared {
             store,
         }
     }
+
+    /// The settings as last saved, for a document opening now: a window
+    /// may have saved them since the start. The ones read at the start if
+    /// the file can't be read now.
+    pub fn current_settings(&self) -> Settings {
+        match self.settings_file.as_ref().map(SettingsFile::load) {
+            Some(Ok(settings)) => settings,
+            _ => self.settings,
+        }
+    }
 }
 
 /// A document's app, with what the shell needs to put it in a window.
 pub struct Opened {
     pub app: NoidoApp,
     /// The file name, for the window title.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub name: String,
-    /// For the shell to tell open documents apart; unused until it does.
+    /// The shell keys its windows by `Windows::canonical` instead.
     #[allow(dead_code)]
     pub canonical: PathBuf,
-    /// Where the document's window state is kept.
+    /// Where the document's window state is kept; unused on macOS until
+    /// the shell keeps window frames.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub slot: Option<Slot>,
 }
 
@@ -132,7 +145,7 @@ pub fn open(
         Some(watcher) => app.with_watcher(watcher),
         None => app,
     };
-    let app = app.with_settings(shared.settings_file.clone(), shared.settings);
+    let app = app.with_settings(shared.settings_file.clone(), shared.current_settings());
     let app = match session {
         Some((store, slot, restored)) => app.with_persistence(store, slot, restored),
         None => app,
@@ -158,5 +171,32 @@ mod tests {
         let _ = ctx.run_logic(&egui::RawInput::default(), |_| {});
         waker(&ctx, id)();
         assert!(ctx.has_requested_repaint_for(&id));
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures")
+            .join(name)
+    }
+
+    #[test]
+    fn a_new_document_takes_the_settings_saved_since_the_start() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = SettingsFile::at(dir.path());
+        let shared = Shared {
+            settings_file: Some(file.clone()),
+            settings: Settings::default(),
+            store: None,
+        };
+        // Saved in a window after the shell loaded its settings.
+        let mut saved = Settings {
+            paper: noido_core::Paper::Sepia,
+            ..Settings::default()
+        };
+        saved.new_documents.gapless = !saved.new_documents.gapless;
+        file.save(&saved).unwrap();
+        let ctx = egui::Context::default();
+        let opened = open(&fixture("text.pdf"), None, &ctx, ViewportId::ROOT, &shared).unwrap();
+        assert_eq!(crate::app::tests::settings_of(&opened.app), saved);
     }
 }

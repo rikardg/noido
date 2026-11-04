@@ -33,8 +33,6 @@ use clap::Parser;
 use eframe::egui;
 use noido_core::{Opening, Target, parse_argument};
 
-use crate::instance::Claim;
-
 /// The smallest window in which the title bar's controls all fit.
 const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 300.0];
 
@@ -154,33 +152,10 @@ fn opening(args: &Args) -> Result<Opening, String> {
     Ok(opening)
 }
 
-fn run(opening: Opening) -> Result<(), String> {
-    let path = opening.path.as_path();
-    let target = opening.target;
-    // Before reading the file: a launch on an open file only hands over.
-    let listener = match instance::claim(path, target.as_ref()) {
-        Claim::Running { pid } => {
-            // The sender brings the window forward: a window can't bring
-            // itself to the front on macOS.
-            #[cfg(target_os = "macos")]
-            if let Some(pid) = pid {
-                noido_macos::activate_pid(pid);
-            }
-            #[cfg(not(target_os = "macos"))]
-            let _ = pid;
-            eprintln!("{}", handed_over(path, target.as_ref()));
-            return Ok(());
-        }
-        Claim::First(listener) => Some(listener),
-        Claim::Unavailable => None,
-    };
-    let shared = document::Shared::load();
-
-    // Created up front so the render thread can wake the UI when a page is ready.
-    let ctx = egui::Context::default();
+/// Sets up `ctx` as every noido window wants it: the system theme, keys.
+fn configure(ctx: &egui::Context) {
     let theme = theme::Theme::from_system();
-    theme.install(&ctx);
-    let theme_live = theme::Live::start(&ctx);
+    theme.install(ctx);
     // Mod +/-/0 zoom the document, not egui's interface.
     ctx.options_mut(|o| {
         o.zoom_with_keyboard = false;
@@ -193,6 +168,123 @@ fn run(opening: Opening) -> Result<(), String> {
         o.input_options.line_scroll_speed = WHEEL_SCROLL_SPEED;
         o.input_options.scroll_zoom_speed /= factor;
     });
+}
+
+/// On macOS: hands the file to this executable's running app, or becomes
+/// that app, a hidden root with a window per document.
+#[cfg(target_os = "macos")]
+fn run(opening: Opening) -> Result<(), String> {
+    use instance::{AppClaim, OpenRequest};
+
+    // The running app has another working directory.
+    let path = std::path::absolute(&opening.path).unwrap_or(opening.path);
+    let exe = std::env::current_exe().map_err(|e| format!("cannot find noido itself: {e}"))?;
+    let request = OpenRequest {
+        path: path.clone(),
+        target: opening.target,
+    };
+    let listener = match instance::claim_app(&exe, Some(&request)) {
+        AppClaim::Running(answer) => return handed_to_app(&path, request.target.as_ref(), answer),
+        AppClaim::First(listener) => Some(listener),
+        AppClaim::Unavailable => None,
+    };
+    let shared = document::Shared::load();
+    let ctx = egui::Context::default();
+    // Each document its own native window: eframe says so only on a
+    // context it makes itself.
+    ctx.set_embed_viewports(false);
+    configure(&ctx);
+    let theme_live = theme::Live::start(&ctx);
+    let open_doc: shell::OpenDoc = {
+        let ctx = ctx.clone();
+        Box::new(move |path, target, viewport| {
+            document::open(path, target, &ctx, viewport, &shared).map(|opened| opened.app)
+        })
+    };
+    let root = egui::ViewportId::ROOT;
+    let mut shell = shell::Shell::new(&ctx, open_doc, std::sync::mpsc::channel())
+        .with_theme(theme_live)
+        .with_incoming(app::Incoming {
+            // In the first frame: Finder's opens that started the app wait
+            // for Task 8.
+            start: Some(Box::new(move |ctx| {
+                let ctx = ctx.clone();
+                noido_macos::install_open_urls(move || ctx.request_repaint_of(root));
+            })),
+            take: Box::new(noido_macos::take_opened),
+        });
+    if let Some(listener) = listener {
+        shell = shell.with_app_requests(listener.serve(document::shared_waker(&ctx, root)));
+    }
+    interrupt::quit_on_interrupt(shell.requests());
+    shell.open(&ctx, &path, request.target)?;
+    let options = eframe::NativeOptions {
+        viewport: root_viewport(),
+        persist_window: false,
+        ..Default::default()
+    };
+    eframe::run_native_ext(
+        "noido",
+        options,
+        Some(ctx),
+        Box::new(|_cc| Ok(Box::new(shell))),
+    )
+    .map_err(|e| format!("cannot open window: {e}"))
+}
+
+/// What a launch that handed `path` to the running app says, from its
+/// answer; the running app is brought to the front.
+#[cfg(target_os = "macos")]
+fn handed_to_app(
+    path: &Path,
+    target: Option<&Target>,
+    answer: Option<instance::Answer>,
+) -> Result<(), String> {
+    use instance::Answer;
+    let pid = match &answer {
+        Some(Answer::Opened { pid } | Answer::Forward { pid }) => *pid,
+        _ => None,
+    };
+    if let Some(pid) = pid {
+        noido_macos::activate_pid(pid);
+    }
+    match answer {
+        Some(Answer::Opened { .. }) => {
+            eprintln!("noido: opened {} in the running noido", path.display());
+            Ok(())
+        }
+        Some(Answer::Forward { .. }) => {
+            eprintln!("{}", handed_over(path, target));
+            Ok(())
+        }
+        Some(Answer::Failed(message)) => Err(message),
+        None => Err("the running noido did not answer".into()),
+    }
+}
+
+/// Elsewhere: one process per document, handing over to the one that has
+/// the file open.
+#[cfg(not(target_os = "macos"))]
+fn run(opening: Opening) -> Result<(), String> {
+    use instance::Claim;
+
+    let path = opening.path.as_path();
+    let target = opening.target;
+    // Before reading the file: a launch on an open file only hands over.
+    let listener = match instance::claim(path, target.as_ref()) {
+        Claim::Running { .. } => {
+            eprintln!("{}", handed_over(path, target.as_ref()));
+            return Ok(());
+        }
+        Claim::First(listener) => Some(listener),
+        Claim::Unavailable => None,
+    };
+    let shared = document::Shared::load();
+
+    // Created up front so the render thread can wake the UI when a page is ready.
+    let ctx = egui::Context::default();
+    configure(&ctx);
+    let theme_live = theme::Live::start(&ctx);
     interrupt::close_on_interrupt(ctx.clone());
     let root = egui::ViewportId::ROOT;
     let opened = document::open(path, target, &ctx, root, &shared)?;
@@ -223,14 +315,6 @@ fn run(opening: Opening) -> Result<(), String> {
         Some(activation) => app.with_activation(activation),
         None => app,
     };
-    #[cfg(target_os = "macos")]
-    let app = app.with_incoming(app::Incoming {
-        start: Some(Box::new(|ctx| {
-            let ctx = ctx.clone();
-            noido_macos::install_open_urls(move || ctx.request_repaint());
-        })),
-        take: Box::new(noido_macos::take_opened),
-    });
     eframe::run_native_ext(
         "noido",
         options,
@@ -268,11 +352,30 @@ fn own_title_bar(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
     }
 }
 
+/// The root viewport, which holds the app and is never shown; see
+/// `Shell`.
+#[cfg(target_os = "macos")]
+fn root_viewport() -> egui::ViewportBuilder {
+    egui::ViewportBuilder::default()
+        .with_title("noido")
+        // eframe gives the Dock the root's icon, or its own if there is none.
+        .with_icon(icon::window_icon())
+        .with_visible(false)
+}
+
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory;
 
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_hidden_root_carries_the_app_icon() {
+        let root = root_viewport();
+        assert_eq!(root.visible, Some(false));
+        assert_eq!(root.icon.as_deref(), Some(&icon::window_icon()));
+    }
 
     #[test]
     fn version_is_the_package_version_and_the_commit() {

@@ -8,9 +8,11 @@ use eframe::egui::IconData;
 pub const SVG: &str = include_str!("../assets/noido.svg");
 
 /// Side of the window icon in pixels (`build.rs` holds the same number).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const SIDE: u32 = 256;
 
 /// The window icon: straight (not premultiplied) RGBA, row by row.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn window_icon() -> IconData {
     IconData {
         rgba: include_bytes!(concat!(env!("OUT_DIR"), "/icon.rgba")).to_vec(),

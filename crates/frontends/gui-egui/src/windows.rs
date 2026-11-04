@@ -5,13 +5,10 @@ use std::path::{Path, PathBuf};
 use eframe::egui::ViewportId;
 
 /// Open windows keyed by canonical path.
-// Until the shell uses it.
-#[allow(dead_code)]
 pub struct Windows<W> {
     entries: Vec<(PathBuf, W)>,
 }
 
-#[allow(dead_code)]
 impl<W> Windows<W> {
     pub fn new() -> Self {
         Self {
@@ -52,6 +49,7 @@ impl<W> Windows<W> {
         self.entries.iter().map(|(p, _)| p.clone()).collect()
     }
 
+    #[allow(dead_code)] // until a Dock click with no windows asks (Task 9)
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

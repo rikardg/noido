@@ -29,7 +29,9 @@ impl Live {
         let subscription = native_theme::watch::on_theme_change(move |_event| {
             native_theme::detect::invalidate_caches();
             let _ = tx.send(());
-            ctx.request_repaint();
+            // The root polls it: the only window elsewhere, the shell on
+            // macOS.
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
         })
         .inspect_err(|error| {
             eprintln!("noido: cannot watch the system theme ({error})");
