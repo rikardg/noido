@@ -10,6 +10,7 @@ pub enum Check {
     OddLeft,
     Gapless,
     Sidebar,
+    SelectTool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +47,11 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
             check(Action::ToggleGapless, "Gapless mode", Check::Gapless),
         ],
         vec![check(Action::ToggleSidebar, "Show sidebar", Check::Sidebar)],
+        vec![check(
+            Action::ToggleSelectTool,
+            "Select text",
+            Check::SelectTool,
+        )],
         vec![
             entry(Action::Back, "Back"),
             entry(Action::Forward, "Forward"),
@@ -88,6 +94,7 @@ mod tests {
                 vec!["Fit width", "Fit page", "Zoom in", "Zoom out"],
                 vec!["Continuous", "Dual page", "Odd pages left", "Gapless mode"],
                 vec!["Show sidebar"],
+                vec!["Select text"],
                 vec!["Back", "Forward"],
                 vec!["Copy link to page", "Copy Markdown link to page"],
                 vec!["Next match", "Previous match"],
@@ -108,7 +115,8 @@ mod tests {
                 "Dual page",
                 "Odd pages left",
                 "Gapless mode",
-                "Show sidebar"
+                "Show sidebar",
+                "Select text"
             ]
         );
     }

@@ -219,6 +219,7 @@ fn menu_entries(ui: &mut egui::Ui, bar: &Bar, actions: &mut Vec<Action>) {
                 Some(Check::OddLeft) => bar.odd_left,
                 Some(Check::Gapless) => bar.gapless,
                 Some(Check::Sidebar) => bar.sidebar.open,
+                Some(Check::SelectTool) => false,
                 None => false,
             };
             // An invisible mark keeps all labels aligned.
