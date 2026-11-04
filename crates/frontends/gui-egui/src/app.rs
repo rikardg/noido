@@ -602,6 +602,7 @@ impl NoidoApp {
             to_open.send(crate::shell::Request::Open {
                 path: path.to_path_buf(),
                 target: None,
+                reply: None,
             });
         });
         self.requests = Some(requests);
@@ -3378,9 +3379,14 @@ mod tests {
         h.app.pick = Box::new(|_, _, on_picked| on_picked(Path::new("/tmp/picked.pdf")));
         h.press(egui::Key::O, Modifiers::COMMAND);
         match rx.try_recv() {
-            Ok(crate::shell::Request::Open { path, target }) => {
+            Ok(crate::shell::Request::Open {
+                path,
+                target,
+                reply,
+            }) => {
                 assert_eq!(path, PathBuf::from("/tmp/picked.pdf"));
                 assert!(target.is_none());
+                assert!(reply.is_none());
             }
             other => panic!("{other:?}"),
         }
