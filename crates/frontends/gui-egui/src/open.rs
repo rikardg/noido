@@ -24,32 +24,32 @@ pub type OnPicked = Arc<dyn Fn(&Path) + Send + Sync>;
 /// The call blocks its thread until the desktop answers, so it runs on a
 /// thread of its own: Mod+O returns to the window at once, and the
 /// window keeps painting while the dialog is up.
+#[cfg(not(target_os = "macos"))]
 pub fn pick_pdf(frame: Option<&eframe::Frame>, directory: Option<PathBuf>, on_picked: OnPicked) {
-    // Built before the thread: borrowing the window ends here. macOS
-    // builds its own inside instead — its raw window handle isn't
-    // `Send`, so the dialog can't cross threads.
-    #[cfg(not(target_os = "macos"))]
+    // Built before the thread: borrowing the window ends here.
     let mut dialog = rfd::FileDialog::new().add_filter("PDF document", &["pdf"]);
-    #[cfg(not(target_os = "macos"))]
     if let Some(frame) = frame {
         dialog = dialog.set_parent(frame);
     }
-    #[cfg(not(target_os = "macos"))]
     if let Some(directory) = &directory {
         dialog = dialog.set_directory(directory);
     }
-    #[cfg(target_os = "macos")]
-    let _ = frame;
     std::thread::spawn(move || {
-        #[cfg(target_os = "macos")]
-        let dialog = rfd::FileDialog::new().add_filter("PDF document", &["pdf"]);
-        #[cfg(target_os = "macos")]
-        let dialog = match directory {
-            Some(directory) => dialog.set_directory(directory),
-            None => dialog,
-        };
-        let picked = dialog.pick_file();
-        if let Some(path) = picked {
+        if let Some(path) = dialog.pick_file() {
+            on_picked(&path);
+        }
+    });
+}
+
+/// Picks PDFs in AppKit's Open panel, the one the app shows by itself
+/// too, handing each to `on_picked`; nothing when cancelled. The panel
+/// filters by the PDF type, and it does not block: this returns at once,
+/// and every window keeps running while it is up. Main thread only, which
+/// every caller is on.
+#[cfg(target_os = "macos")]
+pub fn pick_pdf(_frame: Option<&eframe::Frame>, directory: Option<PathBuf>, on_picked: OnPicked) {
+    noido_macos::pick_pdfs(directory.as_deref(), move |paths| {
+        for path in paths {
             on_picked(&path);
         }
     });
