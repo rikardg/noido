@@ -22,6 +22,19 @@ pub struct Settings {
     pub paper: Paper,
 }
 
+/// `noido` under the `XDG_CONFIG_HOME` value if it is an absolute path;
+/// unset, empty or relative values (which the XDG spec says to ignore)
+/// give whatever `fallback` does.
+fn config_dir(
+    xdg: Option<std::ffi::OsString>,
+    fallback: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    match xdg.map(PathBuf::from) {
+        Some(base) if base.is_absolute() => Some(base.join("noido")),
+        _ => fallback(),
+    }
+}
+
 /// The settings file.
 #[derive(Clone)]
 pub struct SettingsFile {
@@ -36,12 +49,16 @@ impl SettingsFile {
         }
     }
 
-    /// The platform's config directory for noido: `$XDG_CONFIG_HOME/noido`
-    /// on Linux, the roaming application data directory on Windows,
-    /// Application Support on macOS.
+    /// noido's config directory: `$XDG_CONFIG_HOME/noido` when that is set
+    /// to an absolute path, on every platform; otherwise the platform's own
+    /// (the roaming application data directory on Windows, Application
+    /// Support on macOS).
     pub fn open_default() -> Option<Self> {
-        let dirs = ProjectDirs::from("", "", "noido")?;
-        Some(Self::at(dirs.config_dir()))
+        let dir = config_dir(std::env::var_os("XDG_CONFIG_HOME"), || {
+            let dirs = ProjectDirs::from("", "", "noido")?;
+            Some(dirs.config_dir().to_path_buf())
+        })?;
+        Some(Self::at(&dir))
     }
 
     pub fn path(&self) -> &Path {
@@ -354,5 +371,37 @@ mod tests {
             write(&dir, text);
             assert_eq!(file(&dir).load().unwrap().paper, Paper::White, "{text}");
         }
+    }
+}
+
+#[cfg(test)]
+mod dir_tests {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    use super::config_dir;
+
+    fn fallback() -> Option<PathBuf> {
+        Some(PathBuf::from("/fallback"))
+    }
+
+    #[test]
+    fn an_absolute_value_gives_noido_under_it() {
+        let dir = config_dir(Some(OsString::from("/scratch/config")), fallback);
+        assert_eq!(dir, Some(PathBuf::from("/scratch/config/noido")));
+    }
+
+    #[test]
+    fn unset_empty_or_relative_values_use_the_fallback() {
+        for value in [None, Some(""), Some("config"), Some("./config")] {
+            let dir = config_dir(value.map(OsString::from), fallback);
+            assert_eq!(dir, Some(PathBuf::from("/fallback")), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn the_fallback_is_not_asked_for_when_the_value_is_used() {
+        let dir = config_dir(Some(OsString::from("/c")), || panic!("asked"));
+        assert_eq!(dir, Some(PathBuf::from("/c/noido")));
     }
 }
