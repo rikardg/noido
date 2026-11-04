@@ -416,3 +416,23 @@ fn a_file_without_history_loads() {
     };
     assert_eq!(loaded(&store, &key), Some(expected));
 }
+
+#[test]
+fn open_documents_round_trip() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(&dir.path().join("fresh"));
+    let paths = vec![PathBuf::from("/b.pdf"), PathBuf::from("/a b/ä.pdf")];
+    store.save_open(&paths).unwrap();
+    assert_eq!(store.load_open(), paths);
+    store.save_open(&[]).unwrap();
+    assert_eq!(store.load_open(), Vec::<PathBuf>::new());
+}
+
+#[test]
+fn no_open_list_is_empty() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    assert!(store.load_open().is_empty());
+    fs::write(dir.path().join("open.toml"), "not [ toml").unwrap();
+    assert!(store.load_open().is_empty());
+}
