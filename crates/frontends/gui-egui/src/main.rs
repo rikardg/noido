@@ -358,6 +358,7 @@ fn run_app(
     let create = move |ctx: &egui::Context| -> Result<shell::Shell, String> {
         let _ = woken.set(ctx.clone());
         let shared = document::Shared::load();
+        let open_list = shared.store.clone();
         configure(ctx);
         let theme_live = theme::Live::start(ctx);
         let open_doc: shell::OpenDoc = {
@@ -391,8 +392,26 @@ fn run_app(
             shell = shell.with_app_requests(listener.serve(document::shared_waker(ctx, root)));
         }
         interrupt::quit_on_interrupt(shell.requests());
-        if let Some(request) = request {
-            shell.open(ctx, &request.path, request.target)?;
+        let restored = open_list
+            .as_ref()
+            .map(|s| s.load_open())
+            .unwrap_or_default();
+        let named = request.as_ref().map(|r| r.path.as_path());
+        let to_open = shell::to_open(restored, noido_macos::keeps_windows(), named);
+        if let Some(store) = open_list {
+            shell = shell.with_open_list(store);
+        }
+        // The file the launch named must open, or the launch fails; the
+        // restored ones that can't are skipped.
+        let mut request = request;
+        for path in to_open {
+            let canonical = windows::Windows::<()>::canonical(&path);
+            match request.take_if(|r| windows::Windows::<()>::canonical(&r.path) == canonical) {
+                Some(r) => {
+                    shell.open(ctx, &r.path, r.target)?;
+                }
+                None => shell.open_all_quietly(ctx, &[path]),
+            }
         }
         Ok(shell)
     };

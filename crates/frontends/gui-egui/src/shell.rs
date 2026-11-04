@@ -82,6 +82,24 @@ pub type OpenDoc = Box<dyn FnMut(&Path, Option<Target>, ViewportId) -> Result<No
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const HIDE_FRAMES: u32 = 3;
 
+/// The documents to open at the start: the ones left open at the last
+/// quit when the system keeps windows (`keeps`), then the one the launch
+/// `named`, unless it is among them already.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn to_open(restored: Vec<PathBuf>, keeps: bool, named: Option<&Path>) -> Vec<PathBuf> {
+    let mut paths = if keeps { restored } else { Vec::new() };
+    if let Some(named) = named {
+        let canonical = Windows::<Window>::canonical(named);
+        if !paths
+            .iter()
+            .any(|p| Windows::<Window>::canonical(p) == canonical)
+        {
+            paths.push(named.to_path_buf());
+        }
+    }
+    paths
+}
+
 /// How long after launching the shell still waits for documents before
 /// it shows the Open panel by itself: Finder's opens can come just after
 /// launching has finished.
@@ -90,7 +108,7 @@ const START_QUIET: Duration = Duration::from_millis(300);
 /// Whether an app opened by itself, with no document, shows the Open
 /// panel: once launching has settled, if nothing was asked to open by
 /// then (Finder's opens, a launch handing over, documents restored).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct StartPanel {
     /// Still to decide: the app was opened with no document, and nothing
     /// has been asked to open since.
@@ -158,8 +176,10 @@ pub struct Shell {
     theme: Option<crate::theme::Live>,
     /// Root frames run so far, up to [`HIDE_FRAMES`].
     frames: u32,
-    /// The documents open at the last quit; Task 10 stores them.
+    /// The documents open at the last quit.
     open_at_quit: Option<Vec<PathBuf>>,
+    /// Where the open documents are kept, to reopen at the next start.
+    open_list: Option<noido_state::Store>,
     /// Whether to show the Open panel once launching has settled.
     start_panel: StartPanel,
 }
@@ -185,6 +205,7 @@ impl Shell {
             theme: None,
             frames: 0,
             open_at_quit: None,
+            open_list: None,
             start_panel: StartPanel::default(),
         }
     }
@@ -205,6 +226,12 @@ impl Shell {
     /// was asked to open by then: for an app opened with no document.
     pub fn with_open_panel_at_start(mut self) -> Self {
         self.start_panel = StartPanel::wanted();
+        self
+    }
+
+    /// Keeps the open documents in `store` at every quit.
+    pub fn with_open_list(mut self, store: noido_state::Store) -> Self {
+        self.open_list = Some(store);
         self
     }
 
@@ -352,10 +379,31 @@ impl Shell {
         self.record_open(self.open_paths());
     }
 
-    /// Keeps the documents open at a quit. Task 10 stores them, to reopen
-    /// on the next start.
+    /// Keeps the documents open at a quit, to reopen on the next start.
     fn record_open(&mut self, paths: Vec<PathBuf>) {
+        if let Some(store) = &self.open_list
+            && let Err(e) = store.save_open(&paths)
+        {
+            eprintln!("noido: cannot save the open documents: {e}");
+        }
         self.open_at_quit = Some(paths);
+    }
+
+    /// Opens `paths` in order, as documents restored at the start: one
+    /// that fails to open is reported and skipped. They count as opened for
+    /// the Open panel only if one did open.
+    pub fn open_all_quietly(&mut self, ctx: &egui::Context, paths: &[PathBuf]) {
+        let before = self.start_panel.clone();
+        let mut any = false;
+        for path in paths {
+            match self.open(ctx, path, None) {
+                Ok(_) => any = true,
+                Err(e) => eprintln!("noido: {e}"),
+            }
+        }
+        if !any {
+            self.start_panel = before;
+        }
     }
 
     /// Takes in what has arrived from outside and from the windows.
@@ -943,6 +991,89 @@ mod tests {
         shell.receive(&ctx);
         assert_eq!(queued(&shell), vec![vec![noido_core::Action::OpenSettings]]);
         assert!(queue.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn restore_follows_the_setting() {
+        let (a, b) = (fixture("text.pdf"), fixture("two-pages.pdf"));
+        assert_eq!(
+            to_open(vec![a.clone(), b.clone()], true, None),
+            vec![a.clone(), b]
+        );
+        assert_eq!(to_open(vec![a.clone()], false, None), Vec::<PathBuf>::new());
+        assert_eq!(to_open(vec![a.clone()], false, Some(&a)), vec![a]);
+    }
+
+    #[test]
+    fn the_named_file_is_added_once() {
+        let (a, b) = (fixture("text.pdf"), fixture("two-pages.pdf"));
+        // The same file by another spelling counts as the same.
+        let again = a.parent().unwrap().join("../fixtures").join("text.pdf");
+        assert_eq!(
+            to_open(vec![a.clone()], true, Some(&again)),
+            vec![a.clone()]
+        );
+        assert_eq!(to_open(vec![a.clone()], true, Some(&b)), vec![a, b]);
+    }
+
+    #[test]
+    fn a_restored_file_that_is_gone_is_skipped() {
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None);
+        let (a, b) = (fixture("text.pdf"), fixture("two-pages.pdf"));
+        shell.open_all_quietly(&ctx, &[a.clone(), fixture("gone.pdf"), b.clone()]);
+        assert_eq!(
+            shell.open_paths(),
+            vec![
+                Windows::<Window>::canonical(&a),
+                Windows::<Window>::canonical(&b)
+            ]
+        );
+    }
+
+    #[test]
+    fn restored_documents_mean_no_open_panel() {
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None).with_open_panel_at_start();
+        shell.open_all_quietly(&ctx, &[fixture("text.pdf")]);
+        let now = Instant::now();
+        shell.settle_start(now);
+        shell.settle_start(now + START_QUIET);
+        assert!(shell.received.try_recv().is_err());
+    }
+
+    #[test]
+    fn nothing_restored_keeps_the_open_panel() {
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None).with_open_panel_at_start();
+        shell.open_all_quietly(&ctx, &[fixture("gone.pdf")]);
+        let now = Instant::now();
+        shell.settle_start(now);
+        shell.settle_start(now + START_QUIET);
+        assert!(matches!(shell.received.try_recv(), Ok(Request::OpenPanel)));
+    }
+
+    #[test]
+    fn on_exit_records_the_open_documents_in_the_store() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None).with_open_list(Store::at(dir.path()));
+        let (a, b) = (fixture("text.pdf"), fixture("two-pages.pdf"));
+        shell.handle(&ctx, open(a.clone(), None));
+        shell.handle(&ctx, open(b.clone(), None));
+        eframe::App::on_exit(&mut shell);
+        assert_eq!(
+            Store::at(dir.path()).load_open(),
+            vec![
+                Windows::<Window>::canonical(&a),
+                Windows::<Window>::canonical(&b)
+            ]
+        );
+        let id = id_of(&a);
+        shell.handle(&ctx, Request::Closed(id));
+        shell.handle(&ctx, Request::Closed(id_of(&b)));
+        eframe::App::on_exit(&mut shell);
+        assert!(Store::at(dir.path()).load_open().is_empty());
     }
 
     #[test]

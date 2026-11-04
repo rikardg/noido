@@ -4,6 +4,9 @@
 mod activate;
 
 #[cfg(target_os = "macos")]
+mod defaults;
+
+#[cfg(target_os = "macos")]
 mod launch;
 
 #[cfg(target_os = "macos")]
@@ -17,6 +20,9 @@ mod open_urls;
 
 #[cfg(target_os = "macos")]
 pub use activate::activate_pid;
+
+#[cfg(target_os = "macos")]
+pub use defaults::keeps_windows;
 
 #[cfg(target_os = "macos")]
 pub use launch::launch_in_bundle;
