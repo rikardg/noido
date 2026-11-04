@@ -43,8 +43,6 @@ and registers, and a `noido --app-bundle <dir>` the release job can call.
 - Release artifacts (`.dmg`, `.zip`), a Homebrew cask, and the formula's
   `caveats`: the release-job design.
 - Notarization and a Developer ID; signing is ad hoc.
-- A noido icon (the bundle gets Finder's generic app icon, like the
-  `.desktop` file gets the theme's generic document icon).
 - Windows.
 - A welcome window for a noido started with no document.
 - Universal binaries: Apple Silicon only.
@@ -141,7 +139,8 @@ the route Finder's clicks take; all unregistered and deleted afterwards).
 - noido opens one document per process, chosen at startup; `open.rs`
   already opens a path by launching a new detached `noido <path>`, and
   the single-instance IPC hands over when that file is already open.
-- No icons, no `.icns`, nowhere in the repo.
+- The icon's one source is `gui-egui/assets/noido.svg`; `build.rs`
+  renders what each use needs from it (the window icon, the `.icns`).
 
 ## Approaches
 
@@ -245,7 +244,14 @@ arrives before any of noido's code could take it.
   `CFBundleTypeRole = Viewer`, `LSHandlerRank = Alternate`, plus
   `CFBundleURLTypes` for the `noido:` scheme that the `.desktop` file
   already claims.
-- No icon file, no `PkgInfo`, no `LSUIElement`.
+- `Resources/noido.icns`: the icon, named by `CFBundleIconFile=noido`.
+  `build.rs` renders `noido.svg` to PNGs (16 to 1024 px) and packs them
+  into an `.icns` itself (entries `icp4 icp5 ic11 ic12 ic07 ic13 ic08
+  ic14 ic09 ic10`, each holding a PNG), so no `iconutil` is needed and
+  the build works off macOS; the binary embeds it. (Added 2026-11-04,
+  issue #33: Finder, *Open With* and the launcher's Dock icon showed the
+  generic app icon.)
+- No `PkgInfo`, no `LSUIElement`.
 - `NoidoVersion` = the full version `--version` shows, with the commit
   (`0.1.0+69fa5bc6`). `CFBundleShortVersionString` gets only the part
   before the `+`, and `CFBundleVersion` is left out: Apple defines both
@@ -266,9 +272,12 @@ the app). Not compiled in on other platforms.
 - Builds `~/Applications/noido.app` from the running binary and prints
   what it will do first, in the same one-line-per-step form as on Linux,
   asking `Proceed? [y/N]`.
-- A bundle of the same version already there: "already installed",
-  nothing to do. Another version: the step says it replaces version X
-  with Y.
+- A bundle of the same version and the same icon (its `noido.icns`
+  byte for byte the embedded one) already there: "already installed",
+  nothing to do. A missing or different icon counts as another version,
+  so a bundle from before the icon, or a changed SVG in an uncommitted
+  build, gets replaced; its Remove step says the icon is out of date.
+  Another version: the step says it replaces version X with Y.
 - `/Applications/noido.app` present (a cask or a dragged copy): says so
   and stops; no second bundle with the same identifier.
 - Then ad-hoc signs the bundle and registers it (`lsregister -f`). A
@@ -413,8 +422,11 @@ What this design found that the release-job design should start from:
 - `app_bundle`: the plist parses and carries the UTI declarations, the
   identifier, the version and the URL scheme; the layout of a bundle
   written into a temp dir (binary a regular, executable file, plist where
-  Finder expects it); a temp-directory destination refused; plans for
-  fresh install, same version, other version, `/Applications` present,
+  Finder expects it, the icon in `Resources` and named by the plist); the
+  embedded `.icns` well formed (magic, lengths, every entry a PNG of its
+  size); a temp-directory destination refused; plans for
+  fresh install, same version, same version with a missing or different
+  icon, other version, `/Applications` present,
   uninstall with and without ours there; the stale-app check for a
   missing app, same version, other version, someone else's identifier.
 - The Finder-launch decision: no argument inside a bundle is a launcher
@@ -435,6 +447,7 @@ What this design found that the release-job design should start from:
   shows the Open panel, and Cancel leaves nothing running; `noido --version` and `noido <file>` from a terminal
   behave; the Dock shows the app's name; the launcher's bounce and the
   first window's flash forward are tolerable; `codesign -dv` says ad hoc;
+  Finder, *Open With* and the Dock show noido's icon;
   after a version bump the terminal `noido` prints the stale-app hint
   and `--install` clears it; `--uninstall` leaves nothing behind.
 - State during hand testing: on macOS it is
