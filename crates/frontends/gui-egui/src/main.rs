@@ -357,13 +357,13 @@ fn run_app(
     let creator_failed = failed.clone();
     let create = move |ctx: &egui::Context| -> Result<shell::Shell, String> {
         let _ = woken.set(ctx.clone());
-        let shared = document::Shared::load();
+        let shared = Arc::new(document::Shared::load());
         let open_list = shared.store.clone();
         configure(ctx);
         let theme_live = theme::Live::start(ctx);
         let open_doc: shell::OpenDoc = {
             let ctx = ctx.clone();
-            Box::new(move |path, target, viewport| {
+            Arc::new(move |path, target, viewport| {
                 document::open(path, target, &ctx, viewport, &shared).map(|opened| opened.app)
             })
         };
@@ -408,7 +408,7 @@ fn run_app(
             let canonical = windows::Windows::<()>::canonical(&path);
             match request.take_if(|r| windows::Windows::<()>::canonical(&r.path) == canonical) {
                 Some(r) => {
-                    shell.open(ctx, &r.path, r.target)?;
+                    shell.open_now(ctx, &r.path, r.target)?;
                 }
                 None => shell.open_all_quietly(ctx, &[path]),
             }
