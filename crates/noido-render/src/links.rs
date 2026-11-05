@@ -114,7 +114,7 @@ fn run(
 /// The line at `target`; without one, a bar across the text (or most of
 /// the page) at its height; without a height either, nothing.
 fn flash_area(document: &dyn Document, target: Destination) -> Option<Rect> {
-    let text = PageText::new(document.text(target.page).unwrap_or_default());
+    let text = PageText::new(crate::glyphs_on_page(document, target.page).unwrap_or_default());
     if let Some(line) = text.line_near(target.x, target.y) {
         return Some(line);
     }

@@ -501,6 +501,28 @@ fn join_mark(cluster: &mut Cluster, mark: char) {
     }
     cluster.text.push(mark);
 }
+/// The glyphs that are at least partly on a page `width` by `height`
+/// points: text drawn wholly outside it, like a printer's slug above the
+/// trim, is never shown.
+pub fn on_page(glyphs: Vec<Glyph>, width: f32, height: f32) -> Vec<Glyph> {
+    glyphs
+        .into_iter()
+        .filter(|g| {
+            let xs = g.quad.corners.map(|p| p.x);
+            let ys = g.quad.corners.map(|p| p.y);
+            let (min_x, max_x) = (
+                xs.into_iter().fold(f32::MAX, f32::min),
+                xs.into_iter().fold(f32::MIN, f32::max),
+            );
+            let (min_y, max_y) = (
+                ys.into_iter().fold(f32::MAX, f32::min),
+                ys.into_iter().fold(f32::MIN, f32::max),
+            );
+            max_x >= 0.0 && min_x <= width && max_y >= 0.0 && min_y <= height
+        })
+        .collect()
+}
+
 /// Where a point is against its column's lines, top to bottom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Beyond {
@@ -769,6 +791,19 @@ mod tests {
         let page = cat_page();
         assert_eq!(page.caret_at(73.0, 0.0), Some(0));
         assert_eq!(page.caret_at(500.0, 700.0), Some(page.char_count()));
+    }
+
+    #[test]
+    fn on_page_drops_glyphs_wholly_outside() {
+        let mut glyphs = line("in", 72.0, 100.0, 10.0);
+        glyphs.extend(line("above", 72.0, -30.0, 10.0));
+        glyphs.extend(line("left", -100.0, 300.0, 10.0));
+        glyphs.extend(line("edge", 72.0, 4.0, 10.0));
+        let kept: String = on_page(glyphs, 612.0, 792.0)
+            .into_iter()
+            .map(|g| g.text)
+            .collect();
+        assert_eq!(kept, "inedge");
     }
 
     /// A paragraph with a short last line.

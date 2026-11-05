@@ -266,7 +266,7 @@ impl<'a> Worker<'a> {
     fn text(&mut self, page: usize) -> &Arc<PageText> {
         let document = self.document;
         self.texts[page].get_or_insert_with(|| {
-            Arc::new(match document.text(page) {
+            Arc::new(match crate::glyphs_on_page(document, page) {
                 Ok(glyphs) => PageText::new(glyphs),
                 Err(e) => {
                     eprintln!("noido: text of page {}: {e}", page + 1);
