@@ -55,18 +55,14 @@ pub fn pick_pdf(_frame: Option<&eframe::Frame>, directory: Option<PathBuf>, on_p
     });
 }
 
-/// Opens `path` in a new noido window.
+/// Opens `path` in a new noido window, a process of its own.
 ///
 /// A file that is already open elsewhere is not opened twice: the new
-/// process hands over to the window that has it and exits.
+/// process hands over to the window that has it and exits. Unused on
+/// macOS, where every window opens files through the shell instead
+/// ([`crate::app::NoidoApp::with_requests`]).
 pub fn open(path: &Path) {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("noido"));
-    // In the app bundle, NSWorkspace starts the window, in front.
-    #[cfg(target_os = "macos")]
-    if let Some(app) = crate::app_bundle::bundle_of(&exe) {
-        noido_macos::launch_in_bundle(&app, &[path.into()], |_| {});
-        return;
-    }
     // Detached: the new window's output is not ours to show.
     let _ = std::process::Command::new(exe)
         .arg(path)

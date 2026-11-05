@@ -1,6 +1,10 @@
-//! One window per file: a running noido listens on a local socket named
-//! after its file's path, and a later launch on the same file hands over to
-//! it, with the page or place to go to, and exits.
+//! Handing a launch over to the noido already running, through local
+//! sockets. On macOS one app per executable listens on a socket named
+//! after the executable's path: a later launch hands it the file to open,
+//! with the page or place to go to, hears how it went, and exits.
+//! Elsewhere it is one window per file: a running noido listens on a
+//! socket named after its file's path, and a later launch on the same
+//! file hands over to it and exits.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -41,12 +45,7 @@ type Address = String;
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub enum Claim {
     /// It is, and that noido was asked to come forward: this launch is done.
-    Running {
-        /// Its process, when it said. Unread: only macOS brought it to
-        /// the front, and macOS hands over through the app's socket.
-        #[allow(dead_code)]
-        pid: Option<u32>,
-    },
+    Running,
     /// It isn't; this launch listens for later ones.
     First(Listener),
     /// No socket could be had: open the file without listening.
@@ -105,7 +104,7 @@ fn claim_at(address: &Address, timeout: Duration, target: Option<&Target>) -> Cl
     if let Ok(stream) = Stream::connect(name.clone()) {
         // A noido that doesn't answer can't be displaced either.
         return match hand_over(stream, timeout, target) {
-            Some(pid) => Claim::Running { pid },
+            Some(_) => Claim::Running,
             None => Claim::Unavailable,
         };
     }
@@ -600,10 +599,7 @@ mod tests {
         };
         let activation = listener.serve(no_waker());
         assert!(activation.take().is_none());
-        assert!(matches!(
-            claim_at(&address, TIMEOUT, None),
-            Claim::Running { .. }
-        ));
+        assert!(matches!(claim_at(&address, TIMEOUT, None), Claim::Running));
         assert_eq!(activation.take(), Some(Request { target: None }));
         assert!(activation.take().is_none(), "taken twice");
     }
@@ -616,8 +612,11 @@ mod tests {
             panic!("first claim");
         };
         let _activation = listener.serve(no_waker());
-        assert!(matches!(claim_at(&address, TIMEOUT, None),
-            Claim::Running { pid: Some(p) } if p == std::process::id()));
+        let stream = Stream::connect(to_name(&address).unwrap()).unwrap();
+        assert_eq!(
+            hand_over(stream, TIMEOUT, None),
+            Some(Some(std::process::id()))
+        );
     }
 
     #[test]
@@ -633,10 +632,7 @@ mod tests {
             reader.read_line(&mut line).unwrap();
             writeln!(reader.get_mut(), "ok").unwrap();
         });
-        assert!(matches!(
-            claim_at(&address, TIMEOUT, None),
-            Claim::Running { pid: None }
-        ));
+        assert!(matches!(claim_at(&address, TIMEOUT, None), Claim::Running));
         server.join().unwrap();
     }
 
@@ -701,7 +697,7 @@ mod tests {
         let _silent = Stream::connect(name).unwrap();
         assert!(matches!(
             claim_at(&address, Duration::from_millis(300), None),
-            Claim::Running { .. }
+            Claim::Running
         ));
     }
 
@@ -745,7 +741,7 @@ mod tests {
         for target in targets {
             assert!(matches!(
                 claim_at(&address, TIMEOUT, target.as_ref()),
-                Claim::Running { .. }
+                Claim::Running
             ));
         }
         activation.take()
