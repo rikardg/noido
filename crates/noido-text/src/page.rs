@@ -136,22 +136,48 @@ impl PageText {
         lines
     }
 
-    /// The line nearest (`x`, `y`): distance 0 inside its rectangle; the
-    /// first of equally near ones. `None` without glyphs.
+    /// The line nearest (`x`, `y`). `None` without glyphs.
     fn line_at(&self, x: f32, y: f32) -> Option<usize> {
-        let mut best: Option<(usize, f32)> = None;
-        for (line, rect) in self.lines().into_iter().enumerate() {
-            let Some(r) = rect else {
-                continue;
-            };
-            let dx = (r.x - x).max(x - (r.x + r.width)).max(0.0);
-            let dy = (r.y - y).max(y - (r.y + r.height)).max(0.0);
-            let d = dx.hypot(dy);
-            if best.is_none_or(|(_, b)| d < b) {
-                best = Some((line, d));
-            }
-        }
-        best.map(|(line, _)| line)
+        self.line_for(x, y).map(|(line, _)| line)
+    }
+
+    /// The line for a point at (`x`, `y`), and whether the point is past
+    /// its column's first or last line. The column is the one holding the
+    /// nearest line; within it, the line is the nearest by height, then by
+    /// x. `None` without glyphs.
+    fn line_for(&self, x: f32, y: f32) -> Option<(usize, Beyond)> {
+        let lines = self.lines();
+        let rect = |line: usize| lines[line].expect("a column holds lines with glyphs");
+        let gap = |lo: f32, hi: f32, at: f32| (lo - at).max(at - hi).max(0.0);
+        let dx = |r: Rect| gap(r.x, r.x + r.width, x);
+        let dy = |r: Rect| gap(r.y, r.y + r.height, y);
+        let nearest = (0..lines.len())
+            .filter(|&l| lines[l].is_some())
+            .min_by(|&a, &b| {
+                let d = |l| dx(rect(l)).hypot(dy(rect(l)));
+                d(a).total_cmp(&d(b))
+            })?;
+        let column = columns(&lines)
+            .into_iter()
+            .find(|column| column.contains(&nearest))?;
+        let extent = column
+            .iter()
+            .map(|&l| rect(l))
+            .reduce(union)
+            .expect("not empty");
+        let line = column.into_iter().min_by(|&a, &b| {
+            dy(rect(a))
+                .total_cmp(&dy(rect(b)))
+                .then(dx(rect(a)).total_cmp(&dx(rect(b))))
+        })?;
+        let beyond = if y < extent.y {
+            Beyond::Above
+        } else if y > extent.y + extent.height {
+            Beyond::Below
+        } else {
+            Beyond::Within
+        };
+        Some((line, beyond))
     }
 
     /// The characters drawn with a glyph on `line`, with their bounds.
@@ -165,12 +191,14 @@ impl PageText {
 
     /// The caret (`0..=char_count`) a point at (`x`, `y`) places: on the
     /// nearest line, before the glyph whose horizontal middle is right of
-    /// `x`, else after the line's last glyph. `None` without glyphs.
+    /// `x`, else after the line's last glyph. Above a column's first line,
+    /// at that line's start; below its last line, at that line's end.
+    /// `None` without glyphs.
     pub fn caret_at(&self, x: f32, y: f32) -> Option<usize> {
-        let line = self.line_at(x, y)?;
+        let (line, beyond) = self.line_for(x, y)?;
         let mut after = None;
         for (i, b) in self.glyph_chars(line) {
-            if x < b.x + b.width / 2.0 {
+            if beyond == Beyond::Above || (beyond == Beyond::Within && x < b.x + b.width / 2.0) {
                 return Some(i);
             }
             after = Some(i + 1);
@@ -473,6 +501,33 @@ fn join_mark(cluster: &mut Cluster, mark: char) {
     }
     cluster.text.push(mark);
 }
+/// Where a point is against its column's lines, top to bottom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Beyond {
+    Above,
+    Within,
+    Below,
+}
+
+/// The lines with glyphs, in text order, split into columns: a line that
+/// doesn't overlap the one before it horizontally starts a new column.
+fn columns(lines: &[Option<Rect>]) -> Vec<Vec<usize>> {
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let mut before: Option<Rect> = None;
+    for (line, rect) in lines.iter().enumerate() {
+        let Some(r) = *rect else {
+            continue;
+        };
+        let overlaps = before.is_some_and(|b| r.x <= b.x + b.width && b.x <= r.x + r.width);
+        match out.last_mut() {
+            Some(column) if overlaps => column.push(line),
+            _ => out.push(vec![line]),
+        }
+        before = Some(r);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,6 +769,71 @@ mod tests {
         let page = cat_page();
         assert_eq!(page.caret_at(73.0, 0.0), Some(0));
         assert_eq!(page.caret_at(500.0, 700.0), Some(page.char_count()));
+    }
+
+    /// A paragraph with a short last line.
+    fn ragged_page() -> PageText {
+        PageText::new(page(&["a long first line here", "short"]))
+    }
+
+    #[test]
+    fn caret_below_last_line_goes_to_its_end() {
+        let page = ragged_page();
+        assert_eq!(page.caret_at(80.0, 125.0), Some(page.char_count()));
+    }
+
+    #[test]
+    fn caret_below_short_last_line_does_not_go_up_a_line() {
+        let page = ragged_page();
+        assert_eq!(page.caret_at(150.0, 125.0), Some(page.char_count()));
+    }
+
+    #[test]
+    fn caret_above_first_line_goes_to_its_start() {
+        let page = ragged_page();
+        assert_eq!(page.caret_at(150.0, 50.0), Some(0));
+    }
+
+    /// Two columns, the right one a line longer.
+    fn columns_page() -> PageText {
+        let mut glyphs = Vec::new();
+        for (i, text) in ["left one", "left two"].iter().enumerate() {
+            glyphs.extend(line(text, 72.0, 100.0 + i as f32 * 14.0, 10.0));
+        }
+        for (i, text) in ["right one", "right two", "right three"].iter().enumerate() {
+            glyphs.extend(line(text, 300.0, 100.0 + i as f32 * 14.0, 10.0));
+        }
+        PageText::new(glyphs)
+    }
+
+    #[test]
+    fn caret_below_a_column_goes_to_its_last_line_end() {
+        let page = columns_page();
+        let end = page.text().find("left two").unwrap() + "left two".len();
+        assert_eq!(page.caret_at(80.0, 135.0), Some(end));
+        assert_eq!(page.caret_at(310.0, 160.0), Some(page.char_count()));
+    }
+
+    #[test]
+    fn caret_in_a_right_column_under_a_full_width_title_stays_there() {
+        let mut glyphs = line(&"a title running right across".repeat(2), 72.0, 100.0, 10.0);
+        for (i, text) in ["left one", "left two"].iter().enumerate() {
+            glyphs.extend(line(text, 72.0, 114.0 + i as f32 * 14.0, 10.0));
+        }
+        for (i, text) in ["right one", "right two"].iter().enumerate() {
+            glyphs.extend(line(text, 300.0, 114.0 + i as f32 * 14.0, 10.0));
+        }
+        let page = PageText::new(glyphs);
+        let two = page.text().find("right two").unwrap();
+        assert_eq!(page.caret_at(312.0, 125.0), Some(two + 2));
+        assert_eq!(page.caret_at(312.0, 150.0), Some(page.char_count()));
+    }
+
+    #[test]
+    fn caret_beside_a_column_stays_in_it() {
+        let page = columns_page();
+        let start = page.text().find("right two").unwrap();
+        assert_eq!(page.caret_at(290.0, 111.0), Some(start));
     }
 
     #[test]
