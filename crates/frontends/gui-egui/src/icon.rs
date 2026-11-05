@@ -41,7 +41,7 @@ mod tests {
         let icon = window_icon();
         assert_eq!((icon.width, icon.height), (SIDE, SIDE));
         assert_eq!(icon.rgba.len(), (SIDE * SIDE * 4) as usize);
-        // Outside the rounded corner: transparent.
+        // Outside the corner: transparent.
         assert_eq!(pixel(&icon, 0, 0)[3], 0);
         // Near the left edge, halfway down: the green, opaque.
         assert!(near(&pixel(&icon, 8, SIDE / 2), &[0x0f, 0x33, 0x02, 255]));
@@ -54,6 +54,23 @@ mod tests {
             .filter(|p| near(*p, &[255, 255, 255, 255]))
             .count();
         assert!(white > (SIDE * SIDE / 20) as usize, "{white} white pixels");
+    }
+
+    #[test]
+    fn window_icon_tile_has_straight_sides() {
+        // Apple's continuous corners: each corner's curve takes 1.6 × its
+        // radius of the side (radius 22.5 % of the side, smoothing 60 %),
+        // and the side between is straight. At 256 that is rows 93 to 162
+        // of the left edge, opaque right out to the first column.
+        let icon = window_icon();
+        for y in 93..=162 {
+            let alpha = pixel(&icon, 0, y)[3];
+            assert_eq!(alpha, 255, "row {y}: the side is not straight");
+        }
+        // Row 50, in the corner's curve: it is 1.2 px in from the edge,
+        // where a superellipse (n = 5), whose sides bulge, is 2.2 px in.
+        let alpha = pixel(&icon, 1, 50)[3];
+        assert!(alpha > 128, "alpha {alpha}: the corner is not Apple's");
     }
 
     #[test]
