@@ -1,6 +1,6 @@
 //! One document window: its worker threads and the app built on them.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use eframe::egui;
@@ -62,14 +62,12 @@ impl Shared {
 /// A document's app, with what the shell needs to put it in a window.
 pub struct Opened {
     pub app: NoidoApp,
-    /// The file name, for the window title.
+    /// The file name, for the window title; on macOS the shell takes it
+    /// from the app.
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub name: String,
-    /// The shell keys its windows by `Windows::canonical` instead.
-    #[allow(dead_code)]
-    pub canonical: PathBuf,
-    /// Where the document's window state is kept; unused on macOS until
-    /// the shell keeps window frames.
+    /// Where eframe keeps the window's place, elsewhere than on macOS;
+    /// there the shell keeps it in the document's state.
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub slot: Option<Slot>,
 }
@@ -135,7 +133,7 @@ pub fn open(
     let slot = session.as_ref().map(|(_, slot, _)| slot.clone());
     let app = NoidoApp::new(renderer, info)
         .with_name(name.clone())
-        .with_link_path(canonical.clone())
+        .with_link_path(canonical)
         .with_thumbnails(thumbnailer)
         .with_sidebar_renderer(sidebar_renderer)
         .with_searcher(searcher)
@@ -153,7 +151,6 @@ pub fn open(
     Ok(Opened {
         app: app.opening_at(target),
         name,
-        canonical,
         slot,
     })
 }
@@ -173,7 +170,7 @@ mod tests {
         assert!(ctx.has_requested_repaint_for(&id));
     }
 
-    fn fixture(name: &str) -> PathBuf {
+    fn fixture(name: &str) -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../fixtures")
             .join(name)

@@ -38,6 +38,9 @@ use noido_core::{Opening, Target, parse_argument};
 /// The smallest window in which the title bar's controls all fit.
 const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 300.0];
 
+/// The size a window opens with when nothing says otherwise.
+const DEFAULT_WINDOW_SIZE: [f32; 2] = [900.0, 1100.0];
+
 /// UI points scrolled per mouse wheel step (egui's default is 40).
 const WHEEL_SCROLL_SPEED: f32 = 125.0;
 
@@ -491,7 +494,7 @@ fn run(opening: Opening) -> Result<(), String> {
     let target = opening.target;
     // Before reading the file: a launch on an open file only hands over.
     let listener = match instance::claim(path, target.as_ref()) {
-        Claim::Running { .. } => {
+        Claim::Running => {
             eprintln!("{}", handed_over(path, target.as_ref()));
             return Ok(());
         }
@@ -518,7 +521,7 @@ fn run(opening: Opening) -> Result<(), String> {
                 // GNOME on Wayland takes the desktop file's icon instead.
                 .with_icon(icon::window_icon())
                 // Used when no window was saved yet.
-                .with_inner_size([900.0, 1100.0])
+                .with_inner_size(DEFAULT_WINDOW_SIZE)
                 .with_min_inner_size(MIN_WINDOW_SIZE),
         ),
         persist_window: true,

@@ -247,16 +247,13 @@ enum Opens {
     Behind(Option<ViewportId>),
 }
 
-/// The size a window opens with when nothing says otherwise.
-const DEFAULT_WINDOW_SIZE: [f32; 2] = [900.0, 1100.0];
-
 /// `builder` with the place and size a window opens with: `frame` if
 /// there is one (its size at least the minimum), else the default size
 /// wherever the system puts it.
 fn window_builder(builder: ViewportBuilder, frame: Option<Frame>) -> ViewportBuilder {
     let builder = builder.with_min_inner_size(crate::MIN_WINDOW_SIZE);
     let Some(frame) = frame else {
-        return builder.with_inner_size(DEFAULT_WINDOW_SIZE);
+        return builder.with_inner_size(crate::DEFAULT_WINDOW_SIZE);
     };
     let min = egui::Vec2::from(crate::MIN_WINDOW_SIZE);
     let builder = builder.with_inner_size(egui::vec2(frame.width, frame.height).max(min));
@@ -1879,7 +1876,10 @@ mod tests {
         assert_eq!(builder.inner_size, Some(egui::vec2(700.0, 800.0)));
         let builder = window_builder(ViewportBuilder::default(), None);
         assert_eq!(builder.position, None);
-        assert_eq!(builder.inner_size, Some(egui::vec2(900.0, 1100.0)));
+        assert_eq!(
+            builder.inner_size,
+            Some(egui::Vec2::from(crate::DEFAULT_WINDOW_SIZE))
+        );
     }
 
     #[test]
