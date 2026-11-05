@@ -39,6 +39,21 @@ pub trait Document {
         rect: PixelRect,
     ) -> Result<Rgba8Image, EngineError>;
 
+    /// Renders the whole of `page` stretched to fill exactly `width` ×
+    /// `height` pixels, on a white background, so no edge pixel is partly
+    /// background. By default, `render_tile` at the width's scale, which
+    /// may leave the last row partly background.
+    fn render_page(&self, page: usize, width: u32, height: u32) -> Result<Rgba8Image, EngineError> {
+        let size = self.page_size(page)?;
+        let rect = PixelRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        self.render_tile(page, width as f32 / size.width, rect)
+    }
+
     /// The glyphs drawn on `page`, in content-stream order. Engines that
     /// can't read text give none.
     fn text(&self, page: usize) -> Result<Vec<Glyph>, EngineError> {
