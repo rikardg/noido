@@ -147,12 +147,7 @@ impl SidebarView {
     }
 
     /// Takes in sharp renders; those over a `lowres` thumbnail fade in.
-    pub fn receive(
-        &mut self,
-        ctx: &egui::Context,
-        layout: &Layout,
-        lowres: Option<&HashMap<usize, PageImage>>,
-    ) {
+    pub fn receive(&mut self, ctx: &egui::Context, lowres: Option<&HashMap<usize, PageImage>>) {
         let Some(renderer) = &self.renderer else {
             return;
         };
@@ -168,8 +163,7 @@ impl SidebarView {
                 Ok(image) => {
                     self.tracker.mark_ready(rendered.page, rendered.scale);
                     let name = format!("sidebar-{}", rendered.page);
-                    let size = layout.page_size(rendered.page);
-                    let image = PageImage::load(ctx, name, &image, size, rendered.scale);
+                    let image = PageImage::load(ctx, name, &image);
                     // A margin page's render is there before it shows.
                     let stand_in = self.visible.contains(&rendered.page)
                         && lowres.is_some_and(|l| l.contains_key(&rendered.page));

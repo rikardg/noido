@@ -393,9 +393,8 @@ impl NoidoApp {
             match thumbnail.result {
                 Ok(image) if keep.contains(&thumbnail.page) => {
                     let name = format!("thumbnail-{}", thumbnail.page);
-                    let size = self.view.layout().page_size(thumbnail.page);
                     let image = crate::image::soften(&image);
-                    let texture = PageImage::load(ctx, name, &image, size, thumbnail.scale);
+                    let texture = PageImage::load(ctx, name, &image);
                     thumbnails.textures.insert(thumbnail.page, texture);
                 }
                 Ok(_) => {}
@@ -1163,8 +1162,7 @@ impl NoidoApp {
             match rendered.result {
                 Ok(image) => {
                     let name = format!("page-{}", rendered.page);
-                    let size = self.view.layout().page_size(rendered.page);
-                    let texture = PageImage::load(ctx, name, &image, size, rendered.scale);
+                    let texture = PageImage::load(ctx, name, &image);
                     // The first render over the thumbnail fades in; one
                     // over an older render (a zoom), or with no thumbnail
                     // to fade from, shows at once.
@@ -1703,7 +1701,7 @@ impl NoidoApp {
         }
         self.receive_renders(&ctx);
         let lowres = self.thumbnails.as_ref().map(|t| &t.textures);
-        self.sidebar_view.receive(&ctx, self.view.layout(), lowres);
+        self.sidebar_view.receive(&ctx, lowres);
         self.sync_from_egui();
         self.receive_reload(&ctx);
         // After a reload, so an answer about the old version is dropped; and
@@ -4409,7 +4407,7 @@ pub(crate) mod tests {
 
     fn blank_texture(ctx: &egui::Context, name: &str) -> PageImage {
         let image = Rgba8Image::from_premultiplied(1, 1, vec![255; 4]).unwrap();
-        PageImage::load(ctx, name.into(), &image, None, 1.0)
+        PageImage::load(ctx, name.into(), &image)
     }
 
     #[test]
