@@ -238,12 +238,6 @@ when it is fixed.
   window handles). Only helps when the launcher supplies a token (file
   managers and the desktop do; terminals and editors often don't).
   Today the running window only asks for attention.
-- **macOS open-file events.** On macOS files reach a running app as
-  "open document" events, not new launches; handle them, and dropping a
-  file on the app icon. winit 0.30 drops them and panics if its delegate is
-  replaced; add the method to its delegate instead. Part of a proper macOS
-  app (`.app`, cask, being the default PDF viewer), checked on a Mac; see
-  `docs/investigations/2026-10-26-macos-app.md`.
 - **Releases with dist:** versioning, a hand-written changelog, a
   Homebrew formula, released from GitHub's Actions page after a dry run.
   After the macOS port. See
@@ -605,10 +599,10 @@ when it is fixed.
   2px selection frame, so tabbing onto it shows nothing new; unchosen ones
   only brighten their outline slightly. Draw a focus stroke outside the
   square when `response.has_focus()` (`settings.rs`, `swatch`).
-- **Other windows keep the old paper.** One process per file: choosing
-  sepia in one window leaves the others white until relaunched or their
-  settings page is opened (which rereads the file). Reread settings on
-  focus, or watch `settings.toml`.
+- **Other windows keep the old paper.** On Linux, one process per file:
+  choosing sepia in one window leaves the others white until relaunched or
+  their settings page is opened (which rereads the file). Reread settings
+  on focus, or watch `settings.toml`.
 - **A misplaced hand edit is silently ignored.** `paper = "sepia"` written
   after `[new_documents]` is read as `new_documents.paper` and dropped.
   Names are case-sensitive, and `"gray"` is not accepted. Accept `gray` and
