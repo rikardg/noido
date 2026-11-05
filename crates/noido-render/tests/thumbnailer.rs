@@ -181,3 +181,33 @@ fn every_focus_evicts_even_when_read_together() {
     let log = wait_for(&s.log, 150);
     assert_eq!(log.iter().filter(|&&page| page == 499).count(), 2);
 }
+
+#[test]
+fn thumbnails_have_no_light_edge() {
+    // Letter 120 px wide is 155.29 px tall.
+    let black = Arc::new(
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/black.pdf"
+        ))
+        .unwrap(),
+    );
+    let thumbnailer =
+        Thumbnailer::start(Arc::new(engine_hayro::HayroEngine), black, Box::new(|| {}));
+    thumbnailer.set_focus(0, Direction::Forward);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let image = loop {
+        if let Some(thumbnail) = thumbnailer.try_recv() {
+            break thumbnail.result.unwrap();
+        }
+        assert!(Instant::now() < deadline, "no thumbnail within 5 s");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert_eq!((image.width(), image.height()), (120, 155));
+    let bottom = image.height() - 1;
+    assert!(
+        image.pixel(60, bottom)[0] < 8,
+        "{:?}",
+        image.pixel(60, bottom)
+    );
+}

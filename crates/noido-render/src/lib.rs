@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use noido_core::Keep;
-use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
+use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, Rgba8Image, Size};
 
 /// `page`'s glyphs, leaving out any drawn wholly outside the page.
 fn glyphs_on_page(
@@ -182,6 +182,18 @@ fn open(
     Ok((document, DocumentInfo { page_sizes }))
 }
 
+/// `page`, of `size`, rendered at about `scale`: stretched to the nearest
+/// whole pixels, so no edge pixel is partly background.
+pub(crate) fn render_whole(
+    document: &dyn Document,
+    page: usize,
+    size: Size,
+    scale: f32,
+) -> Result<Rgba8Image, EngineError> {
+    let pixels = |points: f32| ((points * scale).round() as u32).max(1);
+    document.render_page(page, pixels(size.width), pixels(size.height))
+}
+
 fn run(
     document: &dyn Document,
     jobs: &Receiver<RenderRequest>,
@@ -220,7 +232,7 @@ fn run(
         }
         let result = document
             .page_size(page)
-            .and_then(|size| document.render_tile(page, scale, PixelRect::full_page(size, scale)));
+            .and_then(|size| render_whole(document, page, size, scale));
         if results
             .send(RenderedPage {
                 page,

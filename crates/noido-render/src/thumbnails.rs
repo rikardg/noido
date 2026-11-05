@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use noido_core::{Direction, THUMBNAIL_BUDGET, thumbnail_scale, window_keep, window_order};
-use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image};
+use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, Rgba8Image};
 
 pub struct Thumbnail {
     pub page: usize,
@@ -87,8 +87,7 @@ fn run(
             let (scale, result) = match document.page_size(page) {
                 Ok(size) => {
                     let scale = thumbnail_scale(size);
-                    let tile = PixelRect::full_page(size, scale);
-                    (scale, document.render_tile(page, scale, tile))
+                    (scale, crate::render_whole(document, page, size, scale))
                 }
                 Err(e) => (1.0, Err(e)),
             };

@@ -282,3 +282,34 @@ fn background_start_on_garbage_delivers_nothing() {
     std::thread::sleep(Duration::from_millis(200));
     assert!(renderer.try_recv().is_none());
 }
+
+#[test]
+fn renders_to_whole_pixels_without_a_light_edge() {
+    // Letter at 1.37 is 838.44 × 1085.04 px; a light last column or row
+    // shows as a line between pages drawn without a gap.
+    let black = Arc::new(
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/black.pdf"
+        ))
+        .unwrap(),
+    );
+    let (renderer, _) = Renderer::start(Arc::new(HayroEngine), black, no_waker()).unwrap();
+    renderer.request(RenderRequest {
+        page: 0,
+        scale: 1.37,
+    });
+    let image = recv(&renderer).result.unwrap();
+    assert_eq!((image.width(), image.height()), (838, 1085));
+    let (right, bottom) = (image.width() - 1, image.height() - 1);
+    assert!(
+        image.pixel(right, 500)[0] < 8,
+        "{:?}",
+        image.pixel(right, 500)
+    );
+    assert!(
+        image.pixel(400, bottom)[0] < 8,
+        "{:?}",
+        image.pixel(400, bottom)
+    );
+}
