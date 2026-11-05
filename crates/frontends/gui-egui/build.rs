@@ -1,5 +1,6 @@
 //! Stamps the commit into `noido --version`: `0.1.0+deadbeef`, and renders
 //! the window icon and the macOS app's `.icns` from `assets/noido.svg`.
+//! The `.icns` gets the margin and shadow of Apple's icon template.
 //!
 //! The commit comes in `NOIDO_GIT_SHA`: from the workflow for a release,
 //! and from the justfile, which reads the working copy, for every `just`
@@ -28,15 +29,44 @@ fn main() {
         commit
     );
     println!("cargo:rerun-if-changed={ICON_SVG}");
-    let svg = std::fs::read(ICON_SVG).expect("read the icon SVG");
-    let tree = resvg::usvg::Tree::from_data(&svg, &resvg::usvg::Options::default())
-        .expect("parse the icon SVG");
+    let svg = std::fs::read_to_string(ICON_SVG).expect("read the icon SVG");
+    let tree = parse(&svg);
     let size = tree.size();
     // Scaled by the width alone: a non-square SVG would come out cropped.
     assert_eq!(size.width(), size.height(), "{ICON_SVG} must be square");
+    // The macOS wrapper places the body in a 0 0 1024 1024 viewBox.
+    assert_eq!(size.width(), 1024.0, "{ICON_SVG} must be 1024 wide");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
     write_window_icon(&tree, &out);
-    write_icns(&tree, &out);
+    write_icns(&parse(&macos_icon_svg(&svg)), &out);
+}
+
+fn parse(svg: &str) -> resvg::usvg::Tree {
+    resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default()).expect("parse the icon SVG")
+}
+
+/// The icon as Apple's macOS template wants it: on a 1024 canvas, the
+/// full-bleed icon shrunk to an 824 tile in the middle, with a drop shadow
+/// in the margin (black at 30 %, 10 px down, blurred). The window icon and
+/// the Linux desktop keep the full-bleed SVG.
+fn macos_icon_svg(svg: &str) -> String {
+    let open = svg.find("<svg").expect("an <svg> element");
+    let body_start = open + svg[open..].find('>').expect("the <svg> tag's end") + 1;
+    let body_end = svg.rfind("</svg>").expect("a closing </svg>");
+    let body = &svg[body_start..body_end];
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<!-- The filter region, ±10 % of the tile (82 px), must hold the shadow:
+     10 px down plus about 3 × stdDeviation of blur. -->
+<defs><filter id="noido-macos-shadow" x="-10%" y="-10%" width="120%" height="120%"
+ color-interpolation-filters="sRGB">
+<feDropShadow dx="0" dy="10" stdDeviation="5" flood-color="black" flood-opacity="0.3"/>
+</filter></defs>
+<g filter="url(#noido-macos-shadow)">
+<svg x="100" y="100" width="824" height="824" viewBox="0 0 1024 1024">{body}</svg>
+</g>
+</svg>"#
+    )
 }
 
 /// The SVG rendered as a `side` × `side` pixmap.
