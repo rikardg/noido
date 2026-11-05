@@ -42,9 +42,12 @@ impl Document for TextEngine {
         self.pages.len()
     }
 
-    fn page_size(&self, _: usize) -> Result<Size, EngineError> {
+    fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+        // Wide enough for the page's one line: text past the page's edge
+        // is left out of its text.
+        let chars = self.pages.get(page).map_or(0, |p| p.chars().count());
         Ok(Size {
-            width: 612.0,
+            width: 612.0f32.max(144.0 + chars as f32 * 5.0),
             height: 792.0,
         })
     }
@@ -58,24 +61,37 @@ impl Document for TextEngine {
         if self.failing == Some(page) {
             return Err(EngineError::Render("broken text".into()));
         }
-        // One glyph per character, 5 pt wide, at 10 pt.
-        Ok(self.pages[page]
-            .chars()
-            .enumerate()
-            .map(|(i, c)| {
-                let x = 72.0 + i as f32 * 5.0;
-                let p = |x, y| Point { x, y };
-                Glyph {
-                    text: c.to_string(),
-                    origin: p(x, 100.0),
-                    size: 10.0,
-                    quad: Quad {
-                        corners: [p(x, 102.0), p(x + 5.0, 102.0), p(x + 5.0, 92.0), p(x, 92.0)],
-                    },
-                    invisible: false,
-                }
-            })
-            .collect())
+        // One glyph per character, 5 pt wide, at 10 pt; after a `|`, a line
+        // above the page's top edge.
+        let mut parts = self.pages[page].split('|');
+        let on_page = parts.next().unwrap_or_default();
+        let above = parts.next().unwrap_or_default();
+        let line = |text: &str, y: f32| -> Vec<Glyph> {
+            text.chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    let x = 72.0 + i as f32 * 5.0;
+                    let p = |x, y| Point { x, y };
+                    Glyph {
+                        text: c.to_string(),
+                        origin: p(x, y),
+                        size: 10.0,
+                        quad: Quad {
+                            corners: [
+                                p(x, y + 2.0),
+                                p(x + 5.0, y + 2.0),
+                                p(x + 5.0, y - 8.0),
+                                p(x, y - 8.0),
+                            ],
+                        },
+                        invisible: false,
+                    }
+                })
+                .collect()
+        };
+        let mut glyphs = line(on_page, 100.0);
+        glyphs.extend(line(above, -30.0));
+        Ok(glyphs)
     }
 }
 
@@ -380,4 +396,16 @@ fn text_request_out_of_range_is_ignored() {
     searcher.request_text(0);
     let updates = until_text(&searcher, 0);
     assert_eq!(updates.len(), 1);
+}
+
+#[test]
+fn text_leaves_out_glyphs_off_the_page() {
+    let engine = TextEngine::new(&["body|printer's slug"]);
+    let searcher = start(&engine);
+    searcher.request_text(0);
+    let updates = until_text(&searcher, 0);
+    let Some(SearchUpdate::Text { text, .. }) = updates.last() else {
+        unreachable!()
+    };
+    assert_eq!(text.text(), "body");
 }

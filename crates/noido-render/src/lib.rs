@@ -21,6 +21,18 @@ use std::thread;
 use noido_core::Keep;
 use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 
+/// `page`'s glyphs, leaving out any drawn wholly outside the page.
+fn glyphs_on_page(
+    document: &dyn Document,
+    page: usize,
+) -> Result<Vec<noido_engine::Glyph>, EngineError> {
+    let glyphs = document.text(page)?;
+    Ok(match document.page_size(page) {
+        Ok(size) => noido_text::on_page(glyphs, size.width, size.height),
+        Err(_) => glyphs,
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderRequest {
     pub page: usize,
