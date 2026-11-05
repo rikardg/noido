@@ -33,6 +33,24 @@ pub enum Request {
     SettingsSaved(Settings),
     /// The window was asked to close (its close button, Mod+W).
     Closed(ViewportId),
+    /// A document's load, done on a worker, has finished.
+    Loaded(Box<Loaded>),
+}
+
+/// A finished load: the document's app, or why it couldn't be built.
+pub struct Loaded {
+    /// The file, as the shell keys its windows.
+    canonical: PathBuf,
+    app: Result<NoidoApp, String>,
+}
+
+impl std::fmt::Debug for Loaded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Loaded")
+            .field("canonical", &self.canonical)
+            .field("app", &self.app.as_ref().map(|_| "NoidoApp"))
+            .finish()
+    }
 }
 
 /// What the native menu (or a click on the Dock icon) asks of the shell.
@@ -75,7 +93,28 @@ impl Requests {
 
 /// Builds a document's app for the window `viewport`; the message says
 /// why it couldn't. Production: [`crate::document::open`]; tests: fakes.
-pub type OpenDoc = Box<dyn FnMut(&Path, Option<Target>, ViewportId) -> Result<NoidoApp, String>>;
+/// It reads and hashes the whole file, so it runs on a worker thread.
+pub type OpenDoc =
+    Arc<dyn Fn(&Path, Option<Target>, ViewportId) -> Result<NoidoApp, String> + Send + Sync>;
+
+/// A load to run off the main thread.
+pub type Job = Box<dyn FnOnce() + Send>;
+
+/// Runs a [`Job`]: on a thread of its own, or in tests when they say.
+pub type Spawn = Box<dyn FnMut(Job)>;
+
+/// Where to say how an open went, once the file was tried.
+pub type Answerer = Box<dyn FnOnce(Answer)>;
+
+/// A document being loaded, and who asked for it.
+struct Loading {
+    /// Every open asked while it loads, the one that started it first:
+    /// where it goes, and where to answer.
+    waiting: Vec<(Option<Target>, Option<Answerer>)>,
+    /// For a document restored at the start: whether the Open panel was
+    /// wanted before, to go back to if no restored document opens.
+    panel_before: Option<bool>,
+}
 
 /// How many of its first frames the shell hides the root in: eframe shows
 /// the root after its first frame, and hiding it every frame would keep
@@ -130,11 +169,20 @@ impl StartPanel {
     /// Launching finished at `now`; only the first call counts. Whether
     /// the shell has to be woken when launching has settled.
     fn launched(&mut self, now: Instant) -> bool {
-        if !self.wanted || self.settled_at.is_some() {
+        if self.settled_at.is_some() {
             return false;
         }
         self.settled_at = Some(now + START_QUIET);
-        true
+        self.wanted
+    }
+
+    /// Wanted again (`wanted`), as before the documents restored at the
+    /// start, none of which opened. How long until the shell has to be
+    /// woken to show it, if launching hasn't settled yet at `now`.
+    fn restore(&mut self, wanted: bool, now: Instant) -> Option<Duration> {
+        self.wanted = wanted;
+        let at = self.settled_at.filter(|_| wanted)?;
+        (at > now).then(|| at - now)
     }
 
     /// Something was asked to open: no panel.
@@ -166,6 +214,12 @@ struct Window {
     frame: Arc<Mutex<Option<Frame>>>,
     /// The frame the window opens with.
     opens_at: Option<Frame>,
+    /// Whether the window takes the focus when it opens: a restored one
+    /// doesn't while a document asked for is open or loading.
+    active: bool,
+    /// The window to give the focus back to once this one is up, which
+    /// AppKit puts in front even when it opens without the focus.
+    hand_focus: Arc<Mutex<Option<ViewportId>>>,
 }
 
 impl Window {
@@ -180,6 +234,17 @@ impl Window {
             eprintln!("noido: cannot save the window's place: {e}");
         }
     }
+}
+
+/// How a new window opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Opens {
+    /// In front, with the focus.
+    InFront,
+    /// Without the focus, behind a document asked for: the window given,
+    /// once this one is up, or one still loading, which comes in front
+    /// by itself.
+    Behind(Option<ViewportId>),
 }
 
 /// The size a window opens with when nothing says otherwise.
@@ -222,6 +287,9 @@ fn frame_of(info: &egui::ViewportInfo) -> Option<Frame> {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub struct Shell {
     open_doc: OpenDoc,
+    spawn: Spawn,
+    /// Documents loading on workers, by canonical path, oldest first.
+    loading: Vec<(PathBuf, Loading)>,
     requests: Requests,
     received: mpsc::Receiver<Request>,
     windows: Windows<Window>,
@@ -240,6 +308,9 @@ pub struct Shell {
     open_list: Option<noido_state::Store>,
     /// Whether to show the Open panel once launching has settled.
     start_panel: StartPanel,
+    /// The document asked for last (not restored), by canonical path:
+    /// restored windows stay behind it.
+    requested: Option<PathBuf>,
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -254,6 +325,13 @@ impl Shell {
         let (tx, received) = requests;
         Shell {
             open_doc,
+            spawn: Box::new(|job| {
+                std::thread::Builder::new()
+                    .name("noido-load".into())
+                    .spawn(job)
+                    .expect("cannot start a thread to load a document");
+            }),
+            loading: Vec::new(),
             requests: Requests::new(tx, root_waker(ctx)),
             received,
             windows: Windows::new(),
@@ -265,7 +343,15 @@ impl Shell {
             open_at_quit: None,
             open_list: None,
             start_panel: StartPanel::default(),
+            requested: None,
         }
+    }
+
+    /// Runs loads with `spawn` instead of on threads of their own.
+    #[cfg(test)]
+    fn with_spawn(mut self, spawn: Spawn) -> Self {
+        self.spawn = spawn;
+        self
     }
 
     /// Opens what Finder sends.
@@ -322,12 +408,11 @@ impl Shell {
                 path,
                 target,
                 reply,
-            } => match (self.open(ctx, &path, target), reply) {
-                (Ok(answer), Some(reply)) => reply.send(answer),
-                (Err(e), Some(reply)) => reply.send(Answer::Failed(e)),
-                (Ok(_), None) => {}
-                (Err(e), None) => eprintln!("noido: {e}"),
-            },
+            } => {
+                let answer = reply.map(|reply| -> Answerer { Box::new(move |a| reply.send(a)) });
+                self.open(ctx, &path, target, answer);
+            }
+            Request::Loaded(loaded) => self.loaded(ctx, loaded),
             Request::OpenPanel => {
                 let requests = self.requests.clone();
                 crate::open::pick_pdf(
@@ -392,8 +477,22 @@ impl Shell {
     }
 
     /// Opens `path` in a new window, or brings forward the window that has
-    /// it; what to answer a launch that asked.
+    /// it, and says how it went to `answer`. A new document loads on a
+    /// worker: its window comes, and `answer` is told, once it has loaded;
+    /// an open of a file still loading waits for that load.
     pub fn open(
+        &mut self,
+        ctx: &egui::Context,
+        path: &Path,
+        target: Option<Target>,
+        answer: Option<Answerer>,
+    ) {
+        self.start_load(ctx, path, target, answer, None);
+    }
+
+    /// Opens `path` as [`Shell::open`] does, but loads it here and now:
+    /// for the file a launch names, whose failure fails the launch.
+    pub fn open_now(
         &mut self,
         ctx: &egui::Context,
         path: &Path,
@@ -401,18 +500,151 @@ impl Shell {
     ) -> Result<Answer, String> {
         self.start_panel.opened();
         let canonical = Windows::<Window>::canonical(path);
+        self.requested = Some(canonical.clone());
         if let Some(id) = self.windows.find(&canonical) {
-            if let Some((_, window)) = self.windows.iter().find(|(i, _)| *i == id) {
-                window.activation.request(target);
-            }
-            // An occluded or minimized window gets no frames, so it cannot
-            // come forward by itself: the shell brings it.
-            ctx.send_viewport_cmd_to(id, ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
+            self.forward(ctx, id, target);
             return Ok(Answer::Forward { pid: None });
         }
-        let id = Windows::<Window>::id_for(&canonical);
-        let app = (self.open_doc)(path, target, id)?;
+        let app = (self.open_doc)(path, target, Windows::<Window>::id_for(&canonical))?;
+        self.insert(ctx, canonical, app, Opens::InFront);
+        Ok(Answer::Opened { pid: None })
+    }
+
+    /// Starts loading `path` on a worker, unless it is open or loading
+    /// already. `panel_before` is for a document restored at the start.
+    fn start_load(
+        &mut self,
+        ctx: &egui::Context,
+        path: &Path,
+        target: Option<Target>,
+        answer: Option<Answerer>,
+        panel_before: Option<bool>,
+    ) {
+        // Counts from when the load starts: a big file doesn't let the
+        // Open panel come up while it loads.
+        self.start_panel.opened();
+        let canonical = Windows::<Window>::canonical(path);
+        if panel_before.is_none() {
+            self.requested = Some(canonical.clone());
+        }
+        if let Some(id) = self.windows.find(&canonical) {
+            self.forward(ctx, id, target);
+            if let Some(answer) = answer {
+                answer(Answer::Forward { pid: None });
+            }
+            return;
+        }
+        if let Some((_, loading)) = self.loading.iter_mut().find(|(p, _)| *p == canonical) {
+            loading.waiting.push((target, answer));
+            return;
+        }
+        self.loading.push((
+            canonical.clone(),
+            Loading {
+                waiting: vec![(target.clone(), answer)],
+                panel_before,
+            },
+        ));
+        let open_doc = self.open_doc.clone();
+        let requests = self.requests.clone();
+        let path = path.to_path_buf();
+        (self.spawn)(Box::new(move || {
+            let id = Windows::<Window>::id_for(&canonical);
+            // A load that panics is still answered, and can be tried again.
+            let app = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                open_doc(&path, target, id)
+            }))
+            .unwrap_or_else(|_| Err(format!("{}: cannot open the file", path.display())));
+            requests.send(Request::Loaded(Box::new(Loaded { canonical, app })));
+        }));
+    }
+
+    /// Puts up the window of a finished load, or reports why it failed,
+    /// to everyone who asked for it.
+    fn loaded(&mut self, ctx: &egui::Context, loaded: Box<Loaded>) {
+        let Some(at) = self
+            .loading
+            .iter()
+            .position(|(p, _)| *p == loaded.canonical)
+        else {
+            return;
+        };
+        let (canonical, loading) = self.loading.remove(at);
+        let mut waiting = loading.waiting.into_iter();
+        match loaded.app {
+            Ok(app) => {
+                let opens = self.opens(&canonical, loading.panel_before.is_some());
+                let id = self.insert(ctx, canonical, app, opens);
+                // The first built the app, going to its target.
+                if let Some((_, Some(answer))) = waiting.next() {
+                    answer(Answer::Opened { pid: None });
+                }
+                for (target, answer) in waiting {
+                    self.forward(ctx, id, target);
+                    if let Some(answer) = answer {
+                        answer(Answer::Forward { pid: None });
+                    }
+                }
+            }
+            Err(e) => {
+                let mut unanswered = false;
+                for (_, answer) in waiting {
+                    match answer {
+                        Some(answer) => answer(Answer::Failed(e.clone())),
+                        None => unanswered = true,
+                    }
+                }
+                if unanswered {
+                    eprintln!("noido: {e}");
+                }
+                if let Some(before) = loading.panel_before
+                    && self.windows.is_empty()
+                    && self.loading.is_empty()
+                    && let Some(wait) = self.start_panel.restore(before, Instant::now())
+                {
+                    self.wake_after(wait);
+                }
+            }
+        }
+    }
+
+    /// Brings the window `id` forward, going to `target`.
+    fn forward(&self, ctx: &egui::Context, id: ViewportId, target: Option<Target>) {
+        if let Some((_, window)) = self.windows.iter().find(|(i, _)| *i == id) {
+            window.activation.request(target);
+        }
+        // An occluded or minimized window gets no frames, so it cannot
+        // come forward by itself: the shell brings it.
+        ctx.send_viewport_cmd_to(id, ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
+    }
+
+    /// How the window of `canonical`, `restored` or not, opens: behind
+    /// the document asked for last while that is open or loading.
+    fn opens(&self, canonical: &Path, restored: bool) -> Opens {
+        let Some(requested) = self
+            .requested
+            .as_ref()
+            .filter(|r| restored && *r != canonical)
+        else {
+            return Opens::InFront;
+        };
+        match self.windows.find(requested) {
+            Some(id) => Opens::Behind(Some(id)),
+            None if self.loading.iter().any(|(p, _)| p == requested) => Opens::Behind(None),
+            None => Opens::InFront,
+        }
+    }
+
+    /// Puts `app` in a new window, opening as `opens` says, and has the
+    /// root show it.
+    fn insert(
+        &mut self,
+        ctx: &egui::Context,
+        canonical: PathBuf,
+        app: NoidoApp,
+        opens: Opens,
+    ) -> ViewportId {
         let kept = app.persistence();
         let opens_at = kept
             .as_ref()
@@ -422,7 +654,7 @@ impl Shell {
         let app = app
             .with_requests(self.requests.clone())
             .with_activation(activation.clone());
-        self.windows.insert(
+        let id = self.windows.insert(
             canonical,
             Window {
                 app: Arc::new(Mutex::new(app)),
@@ -431,19 +663,27 @@ impl Shell {
                 kept,
                 frame: Arc::default(),
                 opens_at,
+                active: opens == Opens::InFront,
+                hand_focus: Arc::new(Mutex::new(match opens {
+                    Opens::Behind(window) => window,
+                    Opens::InFront => None,
+                })),
             },
         );
         paint_root(ctx);
-        Ok(Answer::Opened { pid: None })
+        id
     }
 
-    /// Saves every window and notes which are open, for a quit.
+    /// Saves every window and notes which are open, for a quit; a
+    /// document still loading counts as open.
     fn shut_down(&mut self) {
         for (_, window) in self.windows.iter() {
             lock(&window.app).save_now();
             window.save_frame();
         }
-        self.record_open(self.open_paths());
+        let mut open = self.open_paths();
+        open.extend(self.loading.iter().map(|(p, _)| p.clone()));
+        self.record_open(open);
     }
 
     /// Keeps the documents open at a quit, to reopen on the next start.
@@ -456,20 +696,15 @@ impl Shell {
         self.open_at_quit = Some(paths);
     }
 
-    /// Opens `paths` in order, as documents restored at the start: one
-    /// that fails to open is reported and skipped. They count as opened for
-    /// the Open panel only if one did open.
+    /// Starts loading `paths`, as documents restored at the start; their
+    /// windows come in the order they finish, behind a document asked
+    /// for meanwhile (the one a launch names, Finder's). One that fails to open is
+    /// reported and skipped. They count as opened for the Open panel
+    /// while they load, and after only if one did open.
     pub fn open_all_quietly(&mut self, ctx: &egui::Context, paths: &[PathBuf]) {
-        let before = self.start_panel.clone();
-        let mut any = false;
+        let before = self.start_panel.wanted;
         for path in paths {
-            match self.open(ctx, path, None) {
-                Ok(_) => any = true,
-                Err(e) => eprintln!("noido: {e}"),
-            }
-        }
-        if !any {
-            self.start_panel = before;
+            self.start_load(ctx, path, None, None, Some(before));
         }
     }
 
@@ -501,8 +736,12 @@ impl Shell {
                 });
             }
         }
-        arrived.extend(self.received.try_iter());
         for request in arrived {
+            self.handle(ctx, request);
+        }
+        // Until none is left: a load that finishes at once sends its
+        // result while this runs.
+        while let Ok(request) = self.received.try_recv() {
             self.handle(ctx, request);
         }
     }
@@ -512,16 +751,20 @@ impl Shell {
     /// first call is when launching finished.
     fn settle_start(&mut self, now: Instant) {
         if self.start_panel.launched(now) {
-            // The hidden root runs only when woken.
-            let wake = self.requests.wake.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(START_QUIET);
-                wake();
-            });
+            self.wake_after(START_QUIET);
         }
         if self.start_panel.due(now) {
             self.requests.send(Request::OpenPanel);
         }
+    }
+
+    /// Wakes the root after `wait`: the hidden root runs only when woken.
+    fn wake_after(&self, wait: Duration) {
+        let wake = self.requests.wake.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(wait);
+            wake();
+        });
     }
 
     /// Shows every window, as a deferred viewport of the root.
@@ -530,11 +773,22 @@ impl Shell {
             let app = window.app.clone();
             let requests = self.requests.clone();
             let frame = window.frame.clone();
-            let builder = crate::own_title_bar(window_builder(
+            let hand_focus = window.hand_focus.clone();
+            let mut builder = crate::own_title_bar(window_builder(
                 ViewportBuilder::default().with_title(window.title.clone()),
                 window.opens_at,
             ));
+            if !window.active {
+                builder = builder.with_active(false);
+            }
             ctx.show_viewport_deferred(id, builder, move |ui, _class| {
+                // On the first frame the window is up, in front. Not to a
+                // window gone meanwhile: eframe would make it again.
+                if let Some(to) = lock(&hand_focus).take()
+                    && ui.ctx().input(|i| i.raw.viewports.contains_key(&to))
+                {
+                    ui.ctx().send_viewport_cmd_to(to, ViewportCommand::Focus);
+                }
                 if ui.ctx().input(|i| i.viewport().close_requested()) {
                     requests.send(Request::Closed(id));
                 }
@@ -607,6 +861,8 @@ fn lock<T>(app: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use eframe::egui::RawInput;
     use noido_state::{DocKey, Frame, Store};
 
@@ -619,10 +875,11 @@ mod tests {
             .join(name)
     }
 
-    /// A shell whose documents are blank apps, each saving its state in
-    /// `store` if given; a file that doesn't exist fails to open.
-    fn shell_with(ctx: &egui::Context, store: Option<std::path::PathBuf>) -> Shell {
-        let open_doc: OpenDoc = Box::new(move |path, _target, _id| {
+    /// Documents that are blank apps, each saving its state in `store` if
+    /// given; a file that doesn't exist fails to open. `loads` counts them.
+    fn fake_open_doc(store: Option<PathBuf>, loads: Arc<AtomicUsize>) -> OpenDoc {
+        Arc::new(move |path, _target, _id| {
+            loads.fetch_add(1, Ordering::SeqCst);
             if !path.exists() {
                 return Err(format!("{}: no such file", path.display()));
             }
@@ -634,8 +891,50 @@ mod tests {
                 }
                 None => app,
             })
-        });
-        Shell::new(ctx, open_doc, mpsc::channel())
+        })
+    }
+
+    /// A shell of fake documents whose loads finish at once.
+    fn shell_with(ctx: &egui::Context, store: Option<PathBuf>) -> Shell {
+        Shell::new(ctx, fake_open_doc(store, Arc::default()), mpsc::channel())
+            .with_spawn(Box::new(|job| job()))
+    }
+
+    /// Loads waiting for the test to run them.
+    type Jobs = Arc<Mutex<Vec<Job>>>;
+
+    /// A shell of fake documents whose loads wait until the test runs
+    /// them, and how many loads were made.
+    fn held_shell(ctx: &egui::Context) -> (Shell, Jobs, Arc<AtomicUsize>) {
+        let jobs: Jobs = Arc::default();
+        let loads: Arc<AtomicUsize> = Arc::default();
+        let held = jobs.clone();
+        let shell = Shell::new(ctx, fake_open_doc(None, loads.clone()), mpsc::channel())
+            .with_spawn(Box::new(move |job| held.lock().unwrap().push(job)));
+        (shell, jobs, loads)
+    }
+
+    /// Runs the waiting load `at` (in start order), as its worker would.
+    fn finish(jobs: &Jobs, at: usize) {
+        let job = jobs.lock().unwrap().remove(at);
+        job();
+    }
+
+    /// Where to answer, and what was answered there.
+    fn recorder() -> (Answerer, Arc<Mutex<Vec<Answer>>>) {
+        let answers: Arc<Mutex<Vec<Answer>>> = Arc::default();
+        let into = answers.clone();
+        (
+            Box::new(move |answer| into.lock().unwrap().push(answer)),
+            answers,
+        )
+    }
+
+    /// Carries out `request` and takes in what it led to, as the root's
+    /// next pass would.
+    fn handle_now(shell: &mut Shell, ctx: &egui::Context, request: Request) {
+        shell.handle(ctx, request);
+        shell.receive(ctx);
     }
 
     fn open(path: PathBuf, target: Option<Target>) -> Request {
@@ -663,10 +962,10 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, None);
         let path = fixture("text.pdf");
-        assert!(matches!(
-            shell.open(&ctx, &path, None),
-            Ok(Answer::Opened { .. })
-        ));
+        let (answer, answers) = recorder();
+        shell.open(&ctx, &path, None, Some(answer));
+        shell.receive(&ctx);
+        assert_eq!(*answers.lock().unwrap(), vec![Answer::Opened { pid: None }]);
         assert_eq!(
             shell.open_paths(),
             vec![Windows::<Window>::canonical(&path)]
@@ -679,13 +978,15 @@ mod tests {
     fn opening_an_open_file_brings_it_forward() {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, None);
-        shell.handle(&ctx, open(fixture("text.pdf"), None));
+        handle_now(&mut shell, &ctx, open(fixture("text.pdf"), None));
         // Another spelling of the same file.
         let again = fixture("../fixtures/text.pdf");
-        assert!(matches!(
-            shell.open(&ctx, &again, Some(Target::Page(1))),
-            Ok(Answer::Forward { .. })
-        ));
+        let (answer, answers) = recorder();
+        shell.open(&ctx, &again, Some(Target::Page(1)), Some(answer));
+        assert_eq!(
+            *answers.lock().unwrap(),
+            vec![Answer::Forward { pid: None }]
+        );
         assert_eq!(shell.open_paths().len(), 1);
         let (id, window) = shell.windows.iter().next().unwrap();
         let request = window.activation.take().unwrap();
@@ -704,11 +1005,342 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, None);
         let missing = fixture("missing.pdf");
-        assert!(matches!(shell.open(&ctx, &missing, None), Err(e) if e.contains("missing.pdf")));
-        shell.handle(&ctx, open(missing, None));
+        let (answer, answers) = recorder();
+        shell.open(&ctx, &missing, None, Some(answer));
+        shell.receive(&ctx);
+        assert!(
+            matches!(&answers.lock().unwrap()[..], [Answer::Failed(e)] if e.contains("missing.pdf"))
+        );
+        handle_now(&mut shell, &ctx, open(missing, None));
         assert!(shell.open_paths().is_empty());
-        shell.handle(&ctx, open(fixture("text.pdf"), None));
+        handle_now(&mut shell, &ctx, open(fixture("text.pdf"), None));
         assert_eq!(shell.open_paths().len(), 1);
+    }
+
+    #[test]
+    fn a_document_loads_off_the_root_pass_and_is_answered_once_tried() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run_logic(&RawInput::default(), |_| {});
+        let (mut shell, jobs, loads) = held_shell(&ctx);
+        let path = fixture("text.pdf");
+        let (answer, answers) = recorder();
+        shell.open(&ctx, &path, None, Some(answer));
+        // Nothing loaded in the root pass: the load waits for its worker.
+        assert_eq!(loads.load(Ordering::SeqCst), 0);
+        assert_eq!(jobs.lock().unwrap().len(), 1);
+        shell.receive(&ctx);
+        assert!(shell.open_paths().is_empty());
+        assert!(answers.lock().unwrap().is_empty(), "answered before tried");
+        let _ = root_commands(&ctx);
+        finish(&jobs, 0);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+        // The worker's result wakes the root, which puts up the window.
+        assert!(ctx.has_requested_repaint_for(&ViewportId::ROOT));
+        shell.receive(&ctx);
+        assert_eq!(
+            shell.open_paths(),
+            vec![Windows::<Window>::canonical(&path)]
+        );
+        assert_eq!(*answers.lock().unwrap(), vec![Answer::Opened { pid: None }]);
+        assert!(root_commands(&ctx).contains(&ViewportCommand::RequestPaintWhileHidden));
+    }
+
+    #[test]
+    fn a_second_open_while_loading_waits_and_then_brings_the_window_forward() {
+        let ctx = egui::Context::default();
+        let (mut shell, jobs, loads) = held_shell(&ctx);
+        let path = fixture("text.pdf");
+        let (first, first_answers) = recorder();
+        let (second, second_answers) = recorder();
+        shell.open(&ctx, &path, None, Some(first));
+        // Another spelling of the same file, while the first still loads.
+        let again = fixture("../fixtures/text.pdf");
+        shell.open(&ctx, &again, Some(Target::Page(1)), Some(second));
+        assert_eq!(jobs.lock().unwrap().len(), 1, "loaded twice");
+        assert!(second_answers.lock().unwrap().is_empty());
+        finish(&jobs, 0);
+        shell.receive(&ctx);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+        assert_eq!(shell.open_paths().len(), 1);
+        assert_eq!(
+            *first_answers.lock().unwrap(),
+            vec![Answer::Opened { pid: None }]
+        );
+        assert_eq!(
+            *second_answers.lock().unwrap(),
+            vec![Answer::Forward { pid: None }]
+        );
+        let (_, window) = shell.windows.iter().next().unwrap();
+        assert_eq!(
+            window.activation.take().unwrap().target,
+            Some(Target::Page(1))
+        );
+    }
+
+    #[test]
+    fn a_failed_load_answers_everyone_waiting_and_opens_nothing() {
+        let ctx = egui::Context::default();
+        let (mut shell, jobs, _) = held_shell(&ctx);
+        let missing = fixture("missing.pdf");
+        let (first, first_answers) = recorder();
+        let (second, second_answers) = recorder();
+        shell.open(&ctx, &missing, None, Some(first));
+        shell.open(&ctx, &missing, None, Some(second));
+        finish(&jobs, 0);
+        shell.receive(&ctx);
+        assert!(shell.open_paths().is_empty());
+        for answers in [first_answers, second_answers] {
+            assert!(
+                matches!(&answers.lock().unwrap()[..], [Answer::Failed(e)] if e.contains("missing.pdf"))
+            );
+        }
+        // Tried and failed: a later open loads it again.
+        shell.open(&ctx, &missing, None, None);
+        assert_eq!(jobs.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_load_that_panics_answers_failed() {
+        let ctx = egui::Context::default();
+        let open_doc: OpenDoc = Arc::new(|_, _, _| panic!("a broken file"));
+        let mut shell =
+            Shell::new(&ctx, open_doc, mpsc::channel()).with_spawn(Box::new(|job| job()));
+        let path = fixture("text.pdf");
+        let (answer, answers) = recorder();
+        shell.open(&ctx, &path, None, Some(answer));
+        shell.receive(&ctx);
+        assert!(
+            matches!(&answers.lock().unwrap()[..], [Answer::Failed(e)] if e.contains("text.pdf"))
+        );
+        assert!(shell.loading.is_empty());
+    }
+
+    #[test]
+    fn the_file_a_launch_names_opens_at_once() {
+        let ctx = egui::Context::default();
+        let (mut shell, jobs, loads) = held_shell(&ctx);
+        let path = fixture("text.pdf");
+        assert_eq!(
+            shell.open_now(&ctx, &path, None),
+            Ok(Answer::Opened { pid: None })
+        );
+        assert!(jobs.lock().unwrap().is_empty());
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+        assert_eq!(shell.open_paths().len(), 1);
+        assert!(matches!(
+            shell.open_now(&ctx, &fixture("missing.pdf"), None),
+            Err(e) if e.contains("missing.pdf")
+        ));
+        assert_eq!(shell.open_paths().len(), 1);
+    }
+
+    #[test]
+    fn restored_documents_all_appear_in_the_order_they_finish_loading() {
+        let ctx = egui::Context::default();
+        let (mut shell, jobs, _) = held_shell(&ctx);
+        let (a, b) = (fixture("text.pdf"), fixture("two-pages.pdf"));
+        shell.open_all_quietly(&ctx, &[a.clone(), b.clone()]);
+        assert!(shell.open_paths().is_empty());
+        finish(&jobs, 1);
+        shell.receive(&ctx);
+        finish(&jobs, 0);
+        shell.receive(&ctx);
+        assert_eq!(
+            shell.open_paths(),
+            vec![
+                Windows::<Window>::canonical(&b),
+                Windows::<Window>::canonical(&a)
+            ]
+        );
+    }
+
+    /// Runs a root pass showing the windows: each window's builder and
+    /// callback, by id.
+    fn shown(
+        shell: &Shell,
+        ctx: &egui::Context,
+    ) -> egui::OrderedViewportIdMap<egui::ViewportOutput> {
+        ctx.set_embed_viewports(false);
+        let output = ctx.run_ui(RawInput::default(), |ui| shell.show_windows(ui.ctx()));
+        let viewports = output.viewport_output.clone();
+        output.drop_without_applying_deltas();
+        viewports
+    }
+
+    /// Runs the first frame of the window `id`, as eframe would once the
+    /// window exists: the commands it sends, by viewport.
+    fn first_frame(
+        shell: &Shell,
+        ctx: &egui::Context,
+        id: ViewportId,
+    ) -> egui::OrderedViewportIdMap<egui::ViewportOutput> {
+        let callback = shown(shell, ctx)[&id].viewport_ui_cb.clone().unwrap();
+        // A window's frame paints with noido's theme.
+        crate::configure(ctx);
+        // The windows eframe has, as each pass is told.
+        let viewports = shell
+            .windows
+            .iter()
+            .map(|(id, _)| (id, egui::ViewportInfo::default()))
+            .collect();
+        let output = ctx.run_ui(
+            RawInput {
+                viewport_id: id,
+                viewports,
+                ..Default::default()
+            },
+            |ui| callback(ui),
+        );
+        let viewports = output.viewport_output.clone();
+        output.drop_without_applying_deltas();
+        viewports
+    }
+
+    fn commands_to(
+        viewports: &egui::OrderedViewportIdMap<egui::ViewportOutput>,
+        id: ViewportId,
+    ) -> Vec<ViewportCommand> {
+        viewports
+            .get(&id)
+            .map(|v| v.commands.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_restored_document_after_the_named_one_leaves_it_in_front() {
+        let ctx = egui::Context::default();
+        let (mut shell, jobs, _) = held_shell(&ctx);
+        let (named, restored) = (fixture("text.pdf"), fixture("two-pages.pdf"));
+        shell.open_now(&ctx, &named, None).unwrap();
+        shell.open_all_quietly(&ctx, std::slice::from_ref(&restored));
+        finish(&jobs, 0);
+        shell.receive(&ctx);
+        let viewports = shown(&shell, &ctx);
+        assert_eq!(viewports[&id_of(&restored)].builder.active, Some(false));
+        assert_ne!(viewports[&id_of(&named)].builder.active, Some(false));
+        // Once the restored window is up, the named one comes back on top;
+        // on later frames it is left alone.
+        let first = first_frame(&shell, &ctx, id_of(&restored));
+        assert!(commands_to(&first, id_of(&named)).contains(&ViewportCommand::Focus));
+        let second = first_frame(&shell, &ctx, id_of(&restored));
+        assert!(!commands_to(&second, id_of(&named)).contains(&ViewportCommand::Focus));
+    }
+
+    #[test]
+    fn focus_is_not_handed_to_a_window_closed_meanwhile() {
+        let ctx = egui::Context::default();
+        let (mut shell, jobs, _) = held_shell(&ctx);
+        let (named, restored) = (fixture("text.pdf"), fixture("two-pages.pdf"));
+        shell.open_now(&ctx, &named, None).unwrap();
+        shell.open_all_quietly(&ctx, std::slice::from_ref(&restored));
+        finish(&jobs, 0);
+        shell.receive(&ctx);
+        shell.handle(&ctx, Request::Closed(id_of(&named)));
+        // A command to a viewport eframe no longer has would bring it back.
+        let first = first_frame(&shell, &ctx, id_of(&restored));
+        assert!(!first.contains_key(&id_of(&named)));
+    }
+
+    #[test]
+    fn a_restored_document_before_the_requested_one_stays_behind_it() {
+        let ctx = egui::Context::default();
+        let (mut shell, jobs, _) = held_shell(&ctx);
+        let (restored, requested) = (fixture("two-pages.pdf"), fixture("text.pdf"));
+        shell.open_all_quietly(&ctx, std::slice::from_ref(&restored));
+        // A Finder open, loading alongside.
+        shell.open(&ctx, &requested, None, None);
+        finish(&jobs, 0);
+        shell.receive(&ctx);
+        let viewports = shown(&shell, &ctx);
+        assert_eq!(viewports[&id_of(&restored)].builder.active, Some(false));
+        // The requested one comes later, in front by itself.
+        finish(&jobs, 0);
+        shell.receive(&ctx);
+        let viewports = shown(&shell, &ctx);
+        assert_ne!(viewports[&id_of(&requested)].builder.active, Some(false));
+        let first = first_frame(&shell, &ctx, id_of(&restored));
+        assert!(!commands_to(&first, id_of(&requested)).contains(&ViewportCommand::Focus));
+    }
+
+    #[test]
+    fn restored_documents_alone_open_as_usual() {
+        let ctx = egui::Context::default();
+        let (mut shell, jobs, _) = held_shell(&ctx);
+        let path = fixture("text.pdf");
+        shell.open_all_quietly(&ctx, std::slice::from_ref(&path));
+        finish(&jobs, 0);
+        shell.receive(&ctx);
+        assert_ne!(
+            shown(&shell, &ctx)[&id_of(&path)].builder.active,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_finder_open_still_loading_means_no_open_panel() {
+        let ctx = egui::Context::default();
+        let probe = IncomingProbe::default();
+        let (shell, _jobs, _) = held_shell(&ctx);
+        let mut shell = shell
+            .with_open_panel_at_start()
+            .with_incoming(probe.incoming());
+        let now = Instant::now();
+        shell.settle_start(now);
+        probe.queue.lock().unwrap().push(fixture("text.pdf").into());
+        shell.receive(&ctx);
+        shell.settle_start(now + START_QUIET);
+        assert!(shell.received.try_recv().is_err());
+        assert!(shell.open_paths().is_empty(), "still loading");
+    }
+
+    #[test]
+    fn restored_documents_still_loading_mean_no_open_panel() {
+        let ctx = egui::Context::default();
+        let (shell, jobs, _) = held_shell(&ctx);
+        let mut shell = shell.with_open_panel_at_start();
+        shell.open_all_quietly(&ctx, &[fixture("text.pdf"), fixture("gone.pdf")]);
+        let now = Instant::now();
+        shell.settle_start(now);
+        shell.settle_start(now + START_QUIET);
+        assert!(shell.received.try_recv().is_err());
+        // One fails; the other still counts.
+        finish(&jobs, 1);
+        shell.receive(&ctx);
+        shell.settle_start(now + START_QUIET * 2);
+        assert!(shell.received.try_recv().is_err());
+    }
+
+    #[test]
+    fn restored_documents_that_all_fail_bring_back_the_open_panel() {
+        let ctx = egui::Context::default();
+        let (shell, jobs, _) = held_shell(&ctx);
+        let mut shell = shell.with_open_panel_at_start();
+        shell.open_all_quietly(&ctx, &[fixture("gone.pdf"), fixture("lost.pdf")]);
+        let now = Instant::now();
+        shell.settle_start(now);
+        shell.settle_start(now + START_QUIET);
+        assert!(shell.received.try_recv().is_err(), "while loading");
+        finish(&jobs, 0);
+        shell.receive(&ctx);
+        shell.settle_start(now + START_QUIET);
+        assert!(shell.received.try_recv().is_err(), "one still loading");
+        finish(&jobs, 0);
+        shell.receive(&ctx);
+        shell.settle_start(now + START_QUIET);
+        assert!(matches!(shell.received.try_recv(), Ok(Request::OpenPanel)));
+    }
+
+    #[test]
+    fn quitting_while_a_document_loads_keeps_it_in_the_open_list() {
+        let ctx = egui::Context::default();
+        let (mut shell, _jobs, _) = held_shell(&ctx);
+        let path = fixture("text.pdf");
+        shell.open(&ctx, &path, None, None);
+        shell.handle(&ctx, Request::Quit);
+        assert_eq!(
+            shell.open_at_quit,
+            Some(vec![Windows::<Window>::canonical(&path)])
+        );
     }
 
     #[test]
@@ -716,14 +1348,14 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, None);
         let path = fixture("text.pdf");
-        shell.handle(&ctx, open(path.clone(), None));
+        handle_now(&mut shell, &ctx, open(path.clone(), None));
         let id = Windows::<Window>::id_for(&Windows::<Window>::canonical(&path));
         shell.handle(&ctx, Request::Closed(id));
         assert!(shell.open_paths().is_empty());
         assert!(!root_commands(&ctx).contains(&ViewportCommand::Close));
         // A second close of the same window is nothing.
         shell.handle(&ctx, Request::Closed(id));
-        shell.handle(&ctx, open(fixture("two-pages.pdf"), None));
+        handle_now(&mut shell, &ctx, open(fixture("two-pages.pdf"), None));
         assert_eq!(shell.open_paths().len(), 1);
     }
 
@@ -733,7 +1365,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, Some(dir.path().to_path_buf()));
         let path = fixture("text.pdf");
-        shell.handle(&ctx, open(path.clone(), None));
+        handle_now(&mut shell, &ctx, open(path.clone(), None));
         let id = Windows::<Window>::id_for(&Windows::<Window>::canonical(&path));
         shell.handle(&ctx, Request::Closed(id));
         assert!(
@@ -749,7 +1381,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, None);
         let path = fixture("text.pdf");
-        shell.handle(&ctx, open(path.clone(), None));
+        handle_now(&mut shell, &ctx, open(path.clone(), None));
         let id = Windows::<Window>::id_for(&Windows::<Window>::canonical(&path));
         shell.handle(&ctx, Request::Closed(id));
         shell.handle(&ctx, Request::Quit);
@@ -762,8 +1394,8 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, Some(dir.path().to_path_buf()));
         let (a, b) = (fixture("text.pdf"), fixture("two-pages.pdf"));
-        shell.handle(&ctx, open(a.clone(), None));
-        shell.handle(&ctx, open(b.clone(), None));
+        handle_now(&mut shell, &ctx, open(a.clone(), None));
+        handle_now(&mut shell, &ctx, open(b.clone(), None));
         shell.handle(&ctx, Request::Quit);
         let store = Store::at(dir.path());
         for path in [&a, &b] {
@@ -778,8 +1410,8 @@ mod tests {
     fn saved_settings_reach_every_window() {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, None);
-        shell.handle(&ctx, open(fixture("text.pdf"), None));
-        shell.handle(&ctx, open(fixture("two-pages.pdf"), None));
+        handle_now(&mut shell, &ctx, open(fixture("text.pdf"), None));
+        handle_now(&mut shell, &ctx, open(fixture("two-pages.pdf"), None));
         let mut settings = Settings::default();
         settings.new_documents.gapless = !settings.new_documents.gapless;
         shell.handle(&ctx, Request::SettingsSaved(settings));
@@ -794,8 +1426,8 @@ mod tests {
         let ctx = egui::Context::default();
         let _ = ctx.run_logic(&RawInput::default(), |_| {});
         let mut shell = shell_with(&ctx, None);
-        shell.handle(&ctx, open(fixture("text.pdf"), None));
-        shell.handle(&ctx, open(fixture("two-pages.pdf"), None));
+        handle_now(&mut shell, &ctx, open(fixture("text.pdf"), None));
+        handle_now(&mut shell, &ctx, open(fixture("two-pages.pdf"), None));
         // Let the repaints the opening asked for pass.
         let _ = ctx.run_logic(&RawInput::default(), |_| {});
         let ids: Vec<_> = shell.windows.iter().map(|(id, _)| id).collect();
@@ -824,7 +1456,7 @@ mod tests {
     fn a_hidden_root_paints_when_a_window_opens() {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, None);
-        shell.handle(&ctx, open(fixture("text.pdf"), None));
+        handle_now(&mut shell, &ctx, open(fixture("text.pdf"), None));
         assert!(root_commands(&ctx).contains(&ViewportCommand::RequestPaintWhileHidden));
     }
 
@@ -833,7 +1465,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, None);
         let path = fixture("text.pdf");
-        shell.handle(&ctx, open(path.clone(), None));
+        handle_now(&mut shell, &ctx, open(path.clone(), None));
         let _ = root_commands(&ctx);
         let id = Windows::<Window>::id_for(&Windows::<Window>::canonical(&path));
         shell.handle(&ctx, Request::Closed(id));
@@ -917,6 +1549,25 @@ mod tests {
     }
 
     #[test]
+    fn a_panel_wanted_again_after_restoring_comes_when_launching_settles() {
+        let now = Instant::now();
+        let mut panel = StartPanel::wanted();
+        // Restored documents started loading before launching finished.
+        panel.opened();
+        assert!(!panel.launched(now));
+        // None opened, before launching has settled: wake then.
+        assert_eq!(panel.restore(true, now), Some(START_QUIET));
+        assert!(!panel.due(now));
+        assert!(panel.due(now + START_QUIET));
+        // After it has settled: due at once, nothing to wake for.
+        let mut late = StartPanel::wanted();
+        late.opened();
+        late.launched(now);
+        assert_eq!(late.restore(true, now + START_QUIET * 2), None);
+        assert!(late.due(now + START_QUIET * 2));
+    }
+
+    #[test]
     fn a_file_on_the_command_line_shows_no_panel() {
         let now = Instant::now();
         let mut panel = StartPanel::default();
@@ -995,7 +1646,7 @@ mod tests {
         let mut shell = shell_with(&ctx, None);
         shell.menu(&ctx, MenuCommand::Open);
         assert!(matches!(shell.received.try_recv(), Ok(Request::OpenPanel)));
-        shell.handle(&ctx, open(fixture("text.pdf"), None));
+        handle_now(&mut shell, &ctx, open(fixture("text.pdf"), None));
         shell.menu(&ctx, MenuCommand::Open);
         assert!(matches!(shell.received.try_recv(), Ok(Request::OpenPanel)));
     }
@@ -1007,7 +1658,7 @@ mod tests {
         shell.menu(&ctx, MenuCommand::Reopen);
         assert!(matches!(shell.received.try_recv(), Ok(Request::OpenPanel)));
         // A minimized window counts: AppKit brings it back itself.
-        shell.handle(&ctx, open(fixture("text.pdf"), None));
+        handle_now(&mut shell, &ctx, open(fixture("text.pdf"), None));
         shell.menu(&ctx, MenuCommand::Reopen);
         assert!(shell.received.try_recv().is_err());
     }
@@ -1018,8 +1669,8 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, None);
         let (a, b) = (fixture("text.pdf"), fixture("two-pages.pdf"));
-        shell.handle(&ctx, open(a, None));
-        shell.handle(&ctx, open(b.clone(), None));
+        handle_now(&mut shell, &ctx, open(a, None));
+        handle_now(&mut shell, &ctx, open(b.clone(), None));
         focus(&ctx, Some(id_of(&b)));
         shell.menu(&ctx, MenuCommand::Settings);
         shell.menu(&ctx, MenuCommand::About);
@@ -1036,7 +1687,7 @@ mod tests {
         let mut shell = shell_with(&ctx, None);
         shell.menu(&ctx, MenuCommand::Settings);
         shell.menu(&ctx, MenuCommand::About);
-        shell.handle(&ctx, open(fixture("text.pdf"), None));
+        handle_now(&mut shell, &ctx, open(fixture("text.pdf"), None));
         focus(&ctx, None);
         shell.menu(&ctx, MenuCommand::Settings);
         shell.menu(&ctx, MenuCommand::About);
@@ -1053,7 +1704,7 @@ mod tests {
             Box::new(move || std::mem::take(&mut *queue.lock().unwrap()))
         });
         let path = fixture("text.pdf");
-        shell.handle(&ctx, open(path.clone(), None));
+        handle_now(&mut shell, &ctx, open(path.clone(), None));
         focus(&ctx, Some(id_of(&path)));
         queue.lock().unwrap().push(MenuCommand::Settings);
         shell.receive(&ctx);
@@ -1090,6 +1741,7 @@ mod tests {
         let mut shell = shell_with(&ctx, None);
         let (a, b) = (fixture("text.pdf"), fixture("two-pages.pdf"));
         shell.open_all_quietly(&ctx, &[a.clone(), fixture("gone.pdf"), b.clone()]);
+        shell.receive(&ctx);
         assert_eq!(
             shell.open_paths(),
             vec![
@@ -1104,6 +1756,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, None).with_open_panel_at_start();
         shell.open_all_quietly(&ctx, &[fixture("text.pdf")]);
+        shell.receive(&ctx);
         let now = Instant::now();
         shell.settle_start(now);
         shell.settle_start(now + START_QUIET);
@@ -1115,6 +1768,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, None).with_open_panel_at_start();
         shell.open_all_quietly(&ctx, &[fixture("gone.pdf")]);
+        shell.receive(&ctx);
         let now = Instant::now();
         shell.settle_start(now);
         shell.settle_start(now + START_QUIET);
@@ -1127,8 +1781,8 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, None).with_open_list(Store::at(dir.path()));
         let (a, b) = (fixture("text.pdf"), fixture("two-pages.pdf"));
-        shell.handle(&ctx, open(a.clone(), None));
-        shell.handle(&ctx, open(b.clone(), None));
+        handle_now(&mut shell, &ctx, open(a.clone(), None));
+        handle_now(&mut shell, &ctx, open(b.clone(), None));
         eframe::App::on_exit(&mut shell);
         assert_eq!(
             Store::at(dir.path()).load_open(),
@@ -1175,7 +1829,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, Some(dir.path().to_path_buf()));
         let path = fixture("text.pdf");
-        shell.handle(&ctx, open(path.clone(), None));
+        handle_now(&mut shell, &ctx, open(path.clone(), None));
         let id = id_of(&path);
         seen_at(&shell, id, some_frame());
         shell.handle(&ctx, Request::Closed(id));
@@ -1190,7 +1844,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, Some(dir.path().to_path_buf()));
         let path = fixture("text.pdf");
-        shell.handle(&ctx, open(path.clone(), None));
+        handle_now(&mut shell, &ctx, open(path.clone(), None));
         seen_at(&shell, id_of(&path), some_frame());
         shell.handle(&ctx, Request::Quit);
         let store = Store::at(dir.path());
@@ -1204,7 +1858,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shell = shell_with(&ctx, Some(dir.path().to_path_buf()));
         let path = fixture("text.pdf");
-        shell.handle(&ctx, open(path.clone(), None));
+        handle_now(&mut shell, &ctx, open(path.clone(), None));
         shell.handle(&ctx, Request::Closed(id_of(&path)));
         let store = Store::at(dir.path());
         let slot = store.load(DocKey::new(b"x", &path)).0;
