@@ -51,6 +51,9 @@ pub struct State {
     /// The selection Copy was asked for while a page's text in it was
     /// still to come; dropped when the selection changes.
     pub copy_pending: Option<Selection>,
+    /// When a selection drag reached the band along the pages' edge, for
+    /// the edge scroll's speed-up; `None` outside it.
+    pub edge_since: Option<f64>,
 }
 
 impl State {

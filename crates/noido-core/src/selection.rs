@@ -96,21 +96,32 @@ pub fn drag_kind(tool: bool, shift: bool, on_handle: bool) -> DragKind {
 
 /// How far inside the viewport's edge, in points, a selection drag starts
 /// scrolling.
-pub const EDGE_MARGIN: f32 = 24.0;
-/// How far past the edge it reaches full speed.
-pub const EDGE_RAMP: f32 = 100.0;
-/// Full speed, in points per second.
-pub const EDGE_MAX_SPEED: f32 = 2400.0;
+pub const EDGE_BAND: f32 = 60.0;
+/// The speed at the edge and past it, in points per second, before any
+/// speed-up.
+pub const EDGE_SPEED: f32 = 800.0;
+/// The speed doubles for each of these seconds the drag is held in the band.
+pub const EDGE_DOUBLING_SECS: f32 = 1.0;
+/// The most it reaches, in points per second.
+pub const EDGE_MAX_SPEED: f32 = 6400.0;
 
 /// Points per second to scroll by, per axis, while a selection drag is at
-/// `pos` in a viewport `(min_x, min_y, max_x, max_y)`: none further than
-/// [`EDGE_MARGIN`] inside, growing linearly to [`EDGE_MAX_SPEED`] at
-/// [`EDGE_RAMP`] past the edge.
-pub fn edge_scroll(pos: (f32, f32), viewport: (f32, f32, f32, f32)) -> (f32, f32) {
+/// `pos` in a viewport `(min_x, min_y, max_x, max_y)` and has been in the
+/// band for `held` seconds: none further than [`EDGE_BAND`] inside,
+/// growing linearly to [`EDGE_SPEED`] at the edge and staying there past
+/// it, doubling every [`EDGE_DOUBLING_SECS`] held, up to
+/// [`EDGE_MAX_SPEED`].
+pub fn edge_scroll(pos: (f32, f32), viewport: (f32, f32, f32, f32), held: f32) -> (f32, f32) {
+    let boost = 2f32
+        .powf(held.max(0.0) / EDGE_DOUBLING_SECS)
+        .min(EDGE_MAX_SPEED / EDGE_SPEED);
     let axis = |at: f32, min: f32, max: f32| {
-        let speed = |into: f32| (into / (EDGE_MARGIN + EDGE_RAMP)).clamp(0.0, 1.0) * EDGE_MAX_SPEED;
-        let low = speed(EDGE_MARGIN - (at - min));
-        let high = speed(EDGE_MARGIN - (max - at));
+        let speed = |into: f32| {
+            let depth = (into / EDGE_BAND).clamp(0.0, 1.0);
+            (depth * EDGE_SPEED * boost).min(EDGE_MAX_SPEED)
+        };
+        let low = speed(EDGE_BAND - (at - min));
+        let high = speed(EDGE_BAND - (max - at));
         high - low
     };
     (
@@ -297,17 +308,55 @@ mod tests {
     }
 
     #[test]
-    fn edge_scroll_zones() {
+    fn edge_scroll_band_inside_the_edge() {
         let viewport = (0.0, 0.0, 800.0, 600.0);
-        assert_eq!(edge_scroll((400.0, 300.0), viewport), (0.0, 0.0));
-        let (_, near) = edge_scroll((400.0, 590.0), viewport);
-        assert!(near > 0.0 && near < EDGE_MAX_SPEED, "{near}");
-        assert_eq!(edge_scroll((400.0, 800.0), viewport), (0.0, EDGE_MAX_SPEED));
-        let (left, _) = edge_scroll((5.0, 300.0), viewport);
-        assert!(left < 0.0);
+        assert_eq!(edge_scroll((400.0, 300.0), viewport, 0.0), (0.0, 0.0));
         assert_eq!(
-            edge_scroll((400.0, -500.0), viewport),
-            (0.0, -EDGE_MAX_SPEED)
+            edge_scroll((400.0, 600.0 - EDGE_BAND - 1.0), viewport, 0.0),
+            (0.0, 0.0)
+        );
+        let (_, near) = edge_scroll((400.0, 600.0 - EDGE_BAND / 2.0), viewport, 0.0);
+        assert_eq!(near, EDGE_SPEED / 2.0);
+        let (left, _) = edge_scroll((EDGE_BAND / 2.0, 300.0), viewport, 0.0);
+        assert_eq!(left, -EDGE_SPEED / 2.0);
+    }
+
+    #[test]
+    fn edge_scroll_base_speed_at_and_past_the_edge() {
+        let viewport = (0.0, 0.0, 800.0, 600.0);
+        assert_eq!(
+            edge_scroll((400.0, 600.0), viewport, 0.0),
+            (0.0, EDGE_SPEED)
+        );
+        assert_eq!(
+            edge_scroll((400.0, 900.0), viewport, 0.0),
+            (0.0, EDGE_SPEED)
+        );
+        assert_eq!(
+            edge_scroll((400.0, -300.0), viewport, 0.0),
+            (0.0, -EDGE_SPEED)
+        );
+    }
+
+    #[test]
+    fn edge_scroll_doubles_each_second_held_up_to_the_cap() {
+        let viewport = (0.0, 0.0, 800.0, 600.0);
+        assert_eq!(
+            edge_scroll((400.0, 600.0), viewport, 1.0),
+            (0.0, 2.0 * EDGE_SPEED)
+        );
+        assert_eq!(
+            edge_scroll((400.0, 0.0), viewport, 2.0),
+            (0.0, -4.0 * EDGE_SPEED)
+        );
+        assert_eq!(
+            edge_scroll((400.0, 600.0), viewport, 30.0),
+            (0.0, EDGE_MAX_SPEED)
+        );
+        // Long enough for the doubling alone to overflow.
+        assert_eq!(
+            edge_scroll((400.0, 600.0), viewport, 200.0),
+            (0.0, EDGE_MAX_SPEED)
         );
     }
 

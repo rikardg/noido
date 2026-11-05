@@ -1488,28 +1488,41 @@ impl NoidoApp {
     }
 
     /// While a selection drag is near or past the pages' edge, scrolls
-    /// toward it, faster the further out the pointer is.
+    /// toward it: faster the nearer the edge, and faster the longer held.
     fn edge_scroll(&mut self, ctx: &egui::Context) {
-        let Some(drag) = self.select.drag else {
-            return;
-        };
-        if drag.kind == DragKind::Pan || !drag.moved {
-            return;
-        }
-        let (Some(last), Some(pos)) = (self.last_scroll, ctx.input(|i| i.pointer.latest_pos()))
-        else {
-            return;
-        };
-        let r = last.inner;
-        let (vx, vy) =
-            noido_core::edge_scroll((pos.x, pos.y), (r.min.x, r.min.y, r.max.x, r.max.y));
-        if vx == 0.0 && vy == 0.0 {
+        let speed = self.edge_speed(ctx);
+        if speed == (0.0, 0.0) {
+            self.select.edge_since = None;
             return;
         }
+        let (vx, vy) = speed;
         let dt = ctx.input(|i| i.stable_dt).min(0.1);
         let (x, y) = self.view.offset();
         self.view.scrolled_to(x + vx * dt, y + vy * dt);
         ctx.request_repaint();
+    }
+
+    /// How fast a selection drag scrolls the pages now, per axis; starts
+    /// timing the hold when the pointer reaches the band.
+    fn edge_speed(&mut self, ctx: &egui::Context) -> (f32, f32) {
+        let Some(drag) = self.select.drag else {
+            return (0.0, 0.0);
+        };
+        if drag.kind == DragKind::Pan || !drag.moved {
+            return (0.0, 0.0);
+        }
+        let (Some(last), Some(pos)) = (self.last_scroll, ctx.input(|i| i.pointer.latest_pos()))
+        else {
+            return (0.0, 0.0);
+        };
+        let r = last.inner;
+        let viewport = (r.min.x, r.min.y, r.max.x, r.max.y);
+        if noido_core::edge_scroll((pos.x, pos.y), viewport, 0.0) == (0.0, 0.0) {
+            return (0.0, 0.0);
+        }
+        let now = ctx.input(|i| i.time);
+        let since = *self.select.edge_since.get_or_insert(now);
+        noido_core::edge_scroll((pos.x, pos.y), viewport, (now - since) as f32)
     }
 
     /// Puts the selected text on the clipboard; if a page's text in it is
@@ -8605,5 +8618,78 @@ mod tests {
         assert!(egui::Popup::is_any_open(&h.ctx), "the menu is open");
         h.frames(2, vec![Event::PointerMoved(end)]);
         assert_ne!(h.cursor, egui::CursorIcon::Default);
+    }
+
+    /// Presses on page 0's text and holds the pointer at `at`; the offsets
+    /// after each of `seconds` seconds.
+    fn hold_selecting_at(h: &mut Harness, at: egui::Pos2, seconds: usize) -> Vec<(f32, f32)> {
+        let from = screen_pos(h, 0, 73.0, 95.0);
+        let button = |pressed| Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::SHIFT,
+        };
+        h.modifiers = Modifiers::SHIFT;
+        h.frames(1, vec![Event::PointerMoved(from)]);
+        h.frames(1, vec![button(true)]);
+        h.frames(1, vec![Event::PointerMoved(at)]);
+        let mut offsets = vec![h.app.view.offset()];
+        for _ in 0..seconds {
+            h.frames(60, vec![]);
+            offsets.push(h.app.view.offset());
+        }
+        h.frames(1, vec![button(false)]);
+        h.modifiers = Modifiers::NONE;
+        offsets
+    }
+
+    fn long_selecting() -> Harness {
+        let engine = TextEngine::new(&[&["the cat sat", "on the mat"] as &[&str]; 30]);
+        let mut h = searching(&engine);
+        h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
+        h
+    }
+
+    #[test]
+    fn edge_scroll_speeds_up_while_held() {
+        let mut h = long_selecting();
+        let edge = h.app.last_scroll.unwrap().inner.center_bottom() - vec2(0.0, 1.0);
+        let o = hold_selecting_at(&mut h, edge, 2);
+        let (first, second) = (o[1].1 - o[0].1, o[2].1 - o[1].1);
+        assert!(first > 0.0, "{o:?}");
+        assert!(second > first * 1.5, "{o:?}");
+    }
+
+    #[test]
+    fn edge_scroll_speed_up_starts_again_after_leaving_the_band() {
+        let mut h = long_selecting();
+        let inner = h.app.last_scroll.unwrap().inner;
+        let edge = inner.center_bottom() - vec2(0.0, 1.0);
+        let from = screen_pos(&h, 0, 73.0, 95.0);
+        h.modifiers = Modifiers::SHIFT;
+        h.frames(1, vec![Event::PointerMoved(from)]);
+        h.frames(
+            1,
+            vec![Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::SHIFT,
+            }],
+        );
+        let second_at = |h: &mut Harness| {
+            let start = h.app.view.offset().1;
+            h.frames(60, vec![]);
+            h.app.view.offset().1 - start
+        };
+        h.frames(1, vec![Event::PointerMoved(edge)]);
+        let first = second_at(&mut h);
+        h.frames(1, vec![Event::PointerMoved(inner.center())]);
+        h.frames(10, vec![]);
+        h.frames(1, vec![Event::PointerMoved(edge)]);
+        let again = second_at(&mut h);
+        assert!(first > 0.0);
+        assert!(again < first * 1.25, "first {first}, again {again}");
     }
 }
