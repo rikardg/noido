@@ -406,9 +406,10 @@ impl Places {
     }
 }
 
-/// Shows the steps, asks, and carries them out on a yes; `true` when done.
+/// Shows the steps, asks unless `yes`, and carries them out on a yes;
+/// `true` when done.
 #[cfg(target_os = "macos")]
-fn proceed(plan: Plan) -> Result<bool, String> {
+fn proceed(plan: Plan, yes: bool) -> Result<bool, String> {
     let steps = match plan {
         Plan::Nothing(why) => {
             println!("{why}. Nothing to do.");
@@ -417,7 +418,9 @@ fn proceed(plan: Plan) -> Result<bool, String> {
         Plan::Steps(steps) => steps,
     };
     let lines: Vec<String> = steps.iter().map(describe).collect();
-    if !crate::desktop::ask_to_proceed(&lines)? {
+    if yes {
+        crate::desktop::print_steps(&lines);
+    } else if !crate::desktop::ask_to_proceed(&lines)? {
         println!("Nothing changed.");
         return Ok(false);
     }
@@ -428,15 +431,15 @@ fn proceed(plan: Plan) -> Result<bool, String> {
     Ok(true)
 }
 
-/// `noido --install` on macOS.
+/// `noido --install` on macOS; `yes` skips the question.
 #[cfg(target_os = "macos")]
-pub fn install() -> Result<(), String> {
+pub fn install(yes: bool) -> Result<(), String> {
     let places = Places::here()?;
     println!(
         "This builds noido.app in ~/Applications from {}, so Finder offers noido for PDFs. Your default PDF app stays as it is.",
         places.exe.display()
     );
-    if proceed(plan_install(&places))? {
+    if proceed(plan_install(&places), yes)? {
         println!();
         println!(
             "To open PDFs with noido by default: select a PDF in Finder, Get Info, Open With: noido, Change All\u{2026}"
@@ -445,12 +448,12 @@ pub fn install() -> Result<(), String> {
     Ok(())
 }
 
-/// `noido --uninstall` on macOS.
+/// `noido --uninstall` on macOS; `yes` skips the question.
 #[cfg(target_os = "macos")]
-pub fn uninstall() -> Result<(), String> {
+pub fn uninstall(yes: bool) -> Result<(), String> {
     let places = Places::here()?;
     println!("This removes noido.app from ~/Applications.");
-    proceed(plan_uninstall(&places)).map(|_| ())
+    proceed(plan_uninstall(&places), yes).map(|_| ())
 }
 
 #[cfg(test)]

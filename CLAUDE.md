@@ -49,7 +49,8 @@ is the daily driver; macOS and Windows build but are unchecked.
   `~/.cargo/bin/noido` is a separate copy from `just install`;
   building doesn't update it, so say which one the user should run.
 - `noido --install` / `--uninstall` adds noido to the desktop's apps,
-  pointing at the binary that ran it.
+  pointing at the binary that ran it. Both ask before changing anything;
+  `-y` / `--yes` skips the question.
 
 ## How work goes
 
