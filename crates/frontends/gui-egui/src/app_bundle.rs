@@ -625,6 +625,31 @@ mod tests {
         }
     }
 
+    /// The 1024 PNG follows Apple's template: an 824 tile in the middle of
+    /// the canvas, its margin left for a drop shadow below it.
+    #[test]
+    fn the_icon_leaves_apple_s_margin_with_a_shadow_in_it() {
+        let entries = icns_entries(ICON);
+        let (_, png) = entries.iter().find(|(k, _)| k == "ic10").unwrap();
+        let pixmap = tiny_skia::Pixmap::decode_png(png).unwrap();
+        let at = |x, y| pixmap.pixel(x, y).unwrap().demultiply();
+        // Beside the tile: the margin, empty.
+        assert_eq!(at(50, 512).alpha(), 0);
+        // Just inside the tile's left edge: the green.
+        let tile = at(110, 512);
+        assert_eq!(
+            (tile.red(), tile.green(), tile.blue(), tile.alpha()),
+            (0x0f, 0x33, 0x02, 255)
+        );
+        // Just above the tile: empty, the shadow falls below it.
+        assert_eq!(at(512, 94).alpha(), 0);
+        // Just below the tile: the shadow, partly opaque.
+        let shadow = at(512, 930).alpha();
+        assert!((1..255).contains(&shadow), "shadow alpha {shadow}");
+        // The canvas's bottom edge: empty.
+        assert_eq!(at(512, 1020).alpha(), 0);
+    }
+
     #[test]
     fn install_same_version_without_the_icon_replaces() {
         let dir = tempfile::tempdir().unwrap();

@@ -43,6 +43,8 @@ winit.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Decodes the macOS icon's PNGs in its tests.
+tiny-skia.workspace = true
 
 [lints]
 workspace = true
