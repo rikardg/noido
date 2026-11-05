@@ -56,7 +56,8 @@ const START_POLL: Duration = Duration::from_millis(50);
 #[command(
     name = "noido",
     version = env!("NOIDO_VERSION"),
-    about = "PDF reader and note taker"
+    about = "PDF reader and note taker",
+    group = clap::ArgGroup::new("install_or_uninstall").args(["install", "uninstall"])
 )]
 struct Args {
     /// PDF file, or a file: or noido: link, to open
@@ -79,6 +80,9 @@ struct Args {
     /// Remove what --install added
     #[arg(long, conflicts_with_all = ["path", "app_bundle"])]
     uninstall: bool,
+    /// Don't ask for confirmation
+    #[arg(short, long, requires = "install_or_uninstall")]
+    yes: bool,
     /// Build an ad-hoc signed noido.app in DIR (macOS)
     #[arg(long, value_name = "DIR", conflicts_with = "path")]
     app_bundle: Option<PathBuf>,
@@ -114,13 +118,13 @@ fn main() -> ExitCode {
     let result = match &args.path {
         _ if args.app_bundle.is_some() => build_app_bundle(args.app_bundle.as_deref().unwrap()),
         #[cfg(target_os = "macos")]
-        _ if args.install => app_bundle::install(),
+        _ if args.install => app_bundle::install(args.yes),
         #[cfg(target_os = "macos")]
-        _ if args.uninstall => app_bundle::uninstall(),
+        _ if args.uninstall => app_bundle::uninstall(args.yes),
         #[cfg(not(target_os = "macos"))]
-        _ if args.install => desktop::install(),
+        _ if args.install => desktop::install(args.yes),
         #[cfg(not(target_os = "macos"))]
-        _ if args.uninstall => desktop::uninstall(),
+        _ if args.uninstall => desktop::uninstall(args.yes),
         #[cfg(target_os = "macos")]
         Some(_) => opening(&args).and_then(|opening| {
             hint_if_stale();
@@ -648,6 +652,25 @@ mod tests {
         assert!(Args::try_parse_from(["noido"]).is_err());
         let open = Args::try_parse_from(["noido", "a.pdf"]).unwrap();
         assert_eq!(open.path, Some(OsString::from("a.pdf")));
+    }
+
+    #[test]
+    fn yes_goes_with_install_and_uninstall() {
+        for flag in ["-y", "--yes"] {
+            let install = Args::try_parse_from(["noido", "--install", flag]).unwrap();
+            assert!(install.install && install.yes, "{flag}");
+            let uninstall = Args::try_parse_from(["noido", "--uninstall", flag]).unwrap();
+            assert!(uninstall.uninstall && uninstall.yes, "{flag}");
+        }
+        assert!(!Args::try_parse_from(["noido", "--install"]).unwrap().yes);
+    }
+
+    #[test]
+    fn yes_alone_is_an_error() {
+        assert!(Args::try_parse_from(["noido", "-y"]).is_err());
+        assert!(Args::try_parse_from(["noido", "-y", "a.pdf"]).is_err());
+        // --app-bundle satisfies the file rule, so only `requires` rejects it.
+        assert!(Args::try_parse_from(["noido", "--app-bundle", "out", "-y"]).is_err());
     }
 
     #[test]

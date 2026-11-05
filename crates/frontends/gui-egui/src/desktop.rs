@@ -253,33 +253,38 @@ impl Places {
     }
 }
 
-/// `noido --install`.
+/// `noido --install`; `yes` skips the question.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
-pub fn install() -> Result<(), String> {
+pub fn install(yes: bool) -> Result<(), String> {
     let places = Places::here()?;
     println!("This adds noido to your desktop's apps for PDFs, launching");
     println!(
         "{}. Your default PDF app stays as it is.",
         places.exe.display()
     );
-    proceed(plan_install(&places)?)
+    proceed(plan_install(&places)?, yes)
 }
 
-/// `noido --uninstall`.
+/// `noido --uninstall`; `yes` skips the question.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
-pub fn uninstall() -> Result<(), String> {
+pub fn uninstall(yes: bool) -> Result<(), String> {
     let places = Places::here()?;
     println!("This removes noido from your desktop's apps.");
-    proceed(plan_uninstall(&places))
+    proceed(plan_uninstall(&places), yes)
 }
 
-/// Prints the lines indented and asks "Proceed? [y/N]"; whether to go ahead.
-pub fn ask_to_proceed(lines: &[String]) -> Result<bool, String> {
+/// Prints the lines indented, between blank lines.
+pub fn print_steps(lines: &[String]) {
     println!();
     for line in lines {
         println!("  {line}");
     }
     println!();
+}
+
+/// Prints the lines indented and asks "Proceed? [y/N]"; whether to go ahead.
+pub fn ask_to_proceed(lines: &[String]) -> Result<bool, String> {
+    print_steps(lines);
     print!("Proceed? [y/N] ");
     io::Write::flush(&mut io::stdout()).map_err(|e| e.to_string())?;
     let mut answer = String::new();
@@ -293,9 +298,9 @@ pub fn ask_to_proceed(lines: &[String]) -> Result<bool, String> {
     Ok(confirmed((read > 0).then_some(answer.as_str())))
 }
 
-/// Shows the steps, asks, and carries them out on a yes.
+/// Shows the steps, asks unless `yes`, and carries them out on a yes.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
-fn proceed(plan: Plan) -> Result<(), String> {
+fn proceed(plan: Plan, yes: bool) -> Result<(), String> {
     let steps = match plan {
         Plan::Nothing(why) => {
             println!("{why}. Nothing to do.");
@@ -304,7 +309,9 @@ fn proceed(plan: Plan) -> Result<(), String> {
         Plan::Steps(steps) => steps,
     };
     let lines: Vec<String> = steps.iter().map(describe).collect();
-    if !ask_to_proceed(&lines)? {
+    if yes {
+        print_steps(&lines);
+    } else if !ask_to_proceed(&lines)? {
         println!("Nothing changed.");
         return Ok(());
     }
@@ -594,6 +601,15 @@ mod tests {
         carry_out(&uninstall, "noido-no-such-tool").unwrap();
         assert!(!path.exists());
         assert!(!icon_path.exists());
+    }
+
+    #[test]
+    fn yes_carries_out_without_asking() {
+        let dir = temp_dir("yes");
+        let places = places(&dir);
+        proceed(plan_install(&places).unwrap(), true).unwrap();
+        assert!(places.applications.join(FILE_NAME).exists());
+        assert!(places.icon_path().exists());
     }
 
     #[test]
