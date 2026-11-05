@@ -14,18 +14,6 @@ pub struct PixelRect {
     pub height: u32,
 }
 
-impl PixelRect {
-    /// The rectangle covering a whole page of `size` points rendered at `scale` pixels per point.
-    pub fn full_page(size: Size, scale: f32) -> Self {
-        Self {
-            x: 0,
-            y: 0,
-            width: (size.width * scale).ceil() as u32,
-            height: (size.height * scale).ceil() as u32,
-        }
-    }
-}
-
 /// A premultiplied RGBA8 image, row-major, without row padding.
 #[derive(Clone, Debug)]
 pub struct Rgba8Image {
@@ -168,36 +156,6 @@ mod tests {
     fn rgba_pixel_reads_row_major() {
         let image = Rgba8Image::from_premultiplied(2, 1, vec![1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
         assert_eq!(image.pixel(1, 0), [5, 6, 7, 8]);
-    }
-
-    #[test]
-    fn full_page_rect_rounds_up() {
-        let letter = Size {
-            width: 612.0,
-            height: 792.0,
-        };
-        assert_eq!(
-            PixelRect::full_page(letter, 0.5),
-            PixelRect {
-                x: 0,
-                y: 0,
-                width: 306,
-                height: 396
-            }
-        );
-        let odd = Size {
-            width: 10.2,
-            height: 10.0,
-        };
-        assert_eq!(
-            PixelRect::full_page(odd, 1.0),
-            PixelRect {
-                x: 0,
-                y: 0,
-                width: 11,
-                height: 10
-            }
-        );
     }
 }
 
