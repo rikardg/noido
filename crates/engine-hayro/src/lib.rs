@@ -46,22 +46,12 @@ impl HayroDocument {
             count: pages.len(),
         })
     }
-}
 
-impl Document for HayroDocument {
-    fn page_count(&self) -> usize {
-        self.pdf.pages().len()
-    }
-
-    fn page_size(&self, page: usize) -> Result<Size, EngineError> {
-        let (width, height) = self.page(page)?.render_dimensions();
-        Ok(Size { width, height })
-    }
-
-    fn render_tile(
+    /// Renders `rect` of `page` at `scale` pixels per point across and down.
+    fn render(
         &self,
         page: usize,
-        scale: f32,
+        (scale_x, scale_y): (f32, f32),
         rect: PixelRect,
     ) -> Result<Rgba8Image, EngineError> {
         let page = self.page(page)?;
@@ -79,7 +69,7 @@ impl Document for HayroDocument {
         let cache = RenderCache::new();
         let mut ctx = RenderContext::new(width, height);
         let transform = Affine::translate((-f64::from(rect.x), -f64::from(rect.y)))
-            * Affine::scale(f64::from(scale))
+            * Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
             * page.initial_transform(true).to_kurbo();
         hayro::render_into(
             page,
@@ -108,6 +98,38 @@ impl Document for HayroDocument {
             .collect();
         Rgba8Image::from_premultiplied(rect.width, rect.height, pixels)
             .ok_or_else(|| EngineError::Render("pixmap size mismatch".into()))
+    }
+}
+
+impl Document for HayroDocument {
+    fn page_count(&self) -> usize {
+        self.pdf.pages().len()
+    }
+
+    fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+        let (width, height) = self.page(page)?.render_dimensions();
+        Ok(Size { width, height })
+    }
+
+    fn render_tile(
+        &self,
+        page: usize,
+        scale: f32,
+        rect: PixelRect,
+    ) -> Result<Rgba8Image, EngineError> {
+        self.render(page, (scale, scale), rect)
+    }
+
+    fn render_page(&self, page: usize, width: u32, height: u32) -> Result<Rgba8Image, EngineError> {
+        let size = self.page_size(page)?;
+        let scale = (width as f32 / size.width, height as f32 / size.height);
+        let rect = PixelRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        self.render(page, scale, rect)
     }
 
     fn text(&self, page: usize) -> Result<Vec<Glyph>, EngineError> {

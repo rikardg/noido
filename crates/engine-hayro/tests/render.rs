@@ -139,9 +139,11 @@ fn open_shares_bytes_without_copying() {
 /// lands, in points from the top-left, from its darkness-weighted centre.
 fn square_centre(doc: &dyn Document, scale: f32) -> (f64, f64) {
     let size = doc.page_size(0).unwrap();
-    let image = doc
-        .render_tile(0, scale, PixelRect::full_page(size, scale))
-        .unwrap();
+    let (width, height) = (
+        (size.width * scale).round() as u32,
+        (size.height * scale).round() as u32,
+    );
+    let image = doc.render_page(0, width, height).unwrap();
     let (mut x_sum, mut y_sum, mut total) = (0.0, 0.0, 0.0);
     for y in 0..image.height() {
         for x in 0..image.width() {
@@ -151,8 +153,10 @@ fn square_centre(doc: &dyn Document, scale: f32) -> (f64, f64) {
             total += dark;
         }
     }
-    let scale = f64::from(scale);
-    (x_sum / total / scale, y_sum / total / scale)
+    // Each axis is stretched to whole pixels on its own.
+    let scale_x = f64::from(width) / f64::from(size.width);
+    let scale_y = f64::from(height) / f64::from(size.height);
+    (x_sum / total / scale_x, y_sum / total / scale_y)
 }
 
 #[test]
@@ -166,5 +170,33 @@ fn content_lands_in_the_same_place_at_every_scale() {
             (x - 150.0).abs() < 0.05 && (y - 642.0).abs() < 0.05,
             "scale {scale}: ({x}, {y})"
         );
+    }
+}
+
+#[test]
+fn whole_page_render_has_no_light_edge() {
+    // Letter at 1.37 is 838.44 × 1085.04 px: neither side is whole.
+    let bytes: PdfBytes = Arc::new(
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/black.pdf"
+        ))
+        .unwrap(),
+    );
+    let doc = HayroEngine.open(bytes).unwrap();
+    // Page 1 is turned a quarter: each axis takes its own scale after the
+    // rotation, not before.
+    for (page, (width, height)) in [(0, (838, 1085)), (1, (1085, 838))] {
+        let image = doc.render_page(page, width, height).unwrap();
+        assert_eq!((image.width(), image.height()), (width, height));
+        for y in 0..height {
+            for x in 0..width {
+                let [r, g, b, _] = image.pixel(x, y);
+                assert!(
+                    r < 8 && g < 8 && b < 8,
+                    "page {page} ({x}, {y}) is {r},{g},{b}"
+                );
+            }
+        }
     }
 }

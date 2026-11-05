@@ -53,6 +53,10 @@ properties.pdf (PDF 1.7, no text):
             again
     page 1: F1 and X1 again
 
+black.pdf:
+  page 0: 612x792 pt (Letter), filled black edge to edge
+  page 1: the same page with /Rotate 90
+
 shared-names.pdf:
   page 0: 612x792 pt with one link, GoTo (nowhere); the /Names /Dests tree
           is 40 nodes without /Limits, each with the next twice as /Kids:
@@ -204,6 +208,20 @@ def properties() -> bytes:
     )
 
 
+def black() -> bytes:
+    content = b"0 0 0 rg 0 0 612 792 re f"
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
+            b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 90"
+            b" /Contents 4 0 R >>",
+        ]
+    )
+
+
 def shared_names() -> bytes:
     depth = 40
     nodes = [
@@ -228,3 +246,4 @@ if __name__ == "__main__":
     (here / "links.pdf").write_bytes(links())
     (here / "shared-names.pdf").write_bytes(shared_names())
     (here / "properties.pdf").write_bytes(properties())
+    (here / "black.pdf").write_bytes(black())
