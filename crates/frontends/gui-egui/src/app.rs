@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -182,6 +183,8 @@ pub struct NoidoApp {
     page_key_repeated: bool,
     /// Where to ask the shell to open and quit, when there is one.
     requests: Option<crate::shell::Requests>,
+    /// The recently opened files, newest first, as the menu offers them.
+    recent: Vec<PathBuf>,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -292,6 +295,7 @@ impl NoidoApp {
             open: Arc::new(open::open),
             screen_edge: None,
             page_key_repeated: false,
+            recent: Vec::new(),
         }
     }
 
@@ -606,6 +610,24 @@ impl NoidoApp {
     /// Takes settings saved in another window.
     pub fn set_settings(&mut self, settings: Settings) {
         self.settings = settings;
+    }
+
+    /// The recently opened files the menu offers, newest first.
+    pub fn set_recent(&mut self, paths: Vec<PathBuf>) {
+        self.recent = paths;
+    }
+
+    /// Puts `path` at the front of the menu's recent files, in the store
+    /// when the window has one. A window with a shell leaves the list to
+    /// the shell, which notes the document as its window comes up.
+    fn note_recent(&mut self, path: &Path) {
+        let Some(persistence) = &self.persistence else {
+            return;
+        };
+        if let Err(e) = persistence.store.note_recent(path) {
+            eprintln!("noido: cannot save the recent files: {e}");
+        }
+        self.recent = persistence.store.load_recent();
     }
 
     /// The store and slot the document's state is kept in, if it is kept.
@@ -1003,6 +1025,7 @@ impl NoidoApp {
             select_tool: self.select.tool,
             keymap: &self.keymap,
             counter: self.search_state.counter(),
+            recent: &self.recent,
         };
         let focus = std::mem::take(&mut self.search_focus_requested);
         let frame = crate::theme::Theme::current(ui.ctx()).frame(
@@ -1038,6 +1061,10 @@ impl NoidoApp {
             // The reader moved on; the sidebar is theirs now.
             self.sidebar_opened_by_search = false;
         }
+        if let Some(path) = output.recent {
+            self.note_recent(&path);
+            (self.open)(&path);
+        }
         let ctx = ui.ctx().clone();
         for action in output.actions {
             self.apply(&ctx, parent, action);
@@ -1069,6 +1096,20 @@ impl NoidoApp {
             }
             Action::CloseWindow | Action::Quit => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close)
+            }
+            Action::ClearRecent => {
+                if let Some(requests) = &self.requests {
+                    requests.send(crate::shell::Request::ClearRecent);
+                } else {
+                    // A window of its own, with no shell: the store is
+                    // the window's.
+                    if let Some(persistence) = &self.persistence
+                        && let Err(e) = persistence.store.clear_recent()
+                    {
+                        eprintln!("noido: cannot clear the recent files: {e}");
+                    }
+                    self.recent.clear();
+                }
             }
             Action::OpenDocument => {
                 // The dialog opens where the open document lives, if its
@@ -2036,6 +2077,7 @@ fn core_key(key: egui::Key) -> Option<Key> {
 #[cfg(test)]
 pub(crate) mod tests {
     use std::{
+        fs,
         path::{Path, PathBuf},
         sync::{Arc, Mutex},
     };
@@ -2143,6 +2185,12 @@ pub(crate) mod tests {
     /// The settings `app` shows, for tests outside this module.
     pub(crate) fn settings_of(app: &NoidoApp) -> Settings {
         app.settings
+    }
+
+    /// The recent files `app`'s menu offers, for tests outside this
+    /// module.
+    pub(crate) fn recent_of(app: &NoidoApp) -> &[PathBuf] {
+        &app.recent
     }
 
     /// Runs the app headlessly in egui, one frame per call.
@@ -2389,6 +2437,29 @@ pub(crate) mod tests {
 
         fn started_move(&self) -> bool {
             self.commands.contains(&egui::ViewportCommand::StartDrag)
+        }
+
+        /// Every text drawn last frame, with where it was drawn.
+        fn latest_texts(&self) -> Vec<(String, Rect)> {
+            fn collect(shape: &egui::Shape, out: &mut Vec<(String, Rect)>) {
+                match shape {
+                    egui::Shape::Text(t) => out.push((
+                        t.galley.text().to_string(),
+                        Rect::from_min_size(t.pos, t.galley.size()),
+                    )),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut texts = Vec::new();
+            for shape in &self.shapes {
+                collect(&shape.shape, &mut texts);
+            }
+            texts
         }
 
         /// Where text exactly equal to `text` was drawn last frame.
@@ -3350,6 +3421,236 @@ pub(crate) mod tests {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
         (crate::shell::Requests::new(tx, wake), rx, woken)
+    }
+
+    /// A harness whose menu offers `paths` as the recently opened files.
+    fn recent_harness(paths: &[&str]) -> Harness {
+        let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+        Harness::build(move |mut app| {
+            app.set_recent(paths);
+            app
+        })
+    }
+
+    /// Opens the menu and runs the frames that draw it, with the pointer
+    /// away from the entries so none opens by itself.
+    fn open_menu(h: &mut Harness) {
+        h.click(h.app.bar.menu.center());
+        h.frames(2, vec![]);
+        h.frames(1, vec![Event::PointerMoved(pos2(2.0, 2.0))]);
+    }
+
+    /// Opens the menu's "Open Recent" submenu and runs the frames that
+    /// draw it.
+    fn open_recent(h: &mut Harness) {
+        let button = h.text_rect("Open Recent").expect("no Open Recent");
+        h.click(button.center());
+        h.frames(2, vec![]);
+    }
+
+    #[test]
+    fn open_recent_sits_under_open_and_lines_up_with_it() {
+        let mut h = recent_harness(&["/papers/a.pdf"]);
+        open_menu(&mut h);
+        let open = h.text_rect("Open…").expect("no Open…");
+        let recent = h.text_rect("Open Recent").expect("no Open Recent");
+        assert!(recent.top() > open.top(), "Open Recent is above Open…");
+        // Past the checkmark column, like every other label.
+        assert!(
+            (recent.left() - open.left()).abs() < 0.5,
+            "{open:?} and {recent:?} do not line up"
+        );
+    }
+
+    #[test]
+    fn recent_files_are_offered_behind_open_recent() {
+        let mut h = recent_harness(&["/papers/a.pdf", "/scans/b.pdf"]);
+        open_menu(&mut h);
+        assert!(h.text_rect("Open Recent").is_some(), "no Open Recent");
+        open_recent(&mut h);
+        assert!(h.text_rect("a.pdf").is_some(), "a.pdf not offered");
+        assert!(h.text_rect("b.pdf").is_some(), "b.pdf not offered");
+        assert!(h.text_rect("Clear recent").is_some(), "no clear entry");
+    }
+
+    #[test]
+    fn a_name_that_fits_beside_the_menu_is_shown_whole() {
+        let mut h = recent_harness(&["/papers/network-analysis.pdf"]);
+        open_menu(&mut h);
+        open_recent(&mut h);
+        assert!(h.text_rect("network-analysis.pdf").is_some(), "not whole");
+    }
+
+    #[test]
+    fn a_name_too_wide_beside_the_menu_is_cut_and_leaves_the_menu_in_view() {
+        let name = format!(
+            "{}.pdf",
+            "a-very-long-paper-title-about-network-analysis-".repeat(3)
+        );
+        let mut h = recent_harness(&[&format!("/papers/{name}")]);
+        open_menu(&mut h);
+        open_recent(&mut h);
+        let menu_left = h.text_rect("Fit width").expect("no Fit width").left();
+        let cut = h
+            .latest_texts()
+            .into_iter()
+            .find(|(text, _)| text.contains('…') && text.ends_with(".pdf"))
+            .unwrap_or_else(|| panic!("no cut label: {:?}", h.latest_texts()));
+        assert_ne!(cut.0, name, "the name was not cut");
+        // Beside the menu, not across it.
+        assert!(cut.1.right() <= menu_left, "{:?} covers the menu", cut);
+    }
+
+    #[test]
+    fn a_narrow_window_still_keeps_the_submenu_beside_the_menu() {
+        let name = format!(
+            "{}.pdf",
+            "a-very-long-paper-title-about-network-analysis-".repeat(3)
+        );
+        let mut h = recent_harness(&[&format!("/papers/{name}")]);
+        h.size = vec2(520.0, 800.0);
+        h.frames(3, vec![]);
+        open_menu(&mut h);
+        open_recent(&mut h);
+        let menu_left = h.text_rect("Fit width").expect("no Fit width").left();
+        // The cut itself is the core's to make, and this window is too
+        // narrow to say how much of the name survives; that it is cut and
+        // stays beside the menu is this test's business.
+        let cut = h
+            .latest_texts()
+            .into_iter()
+            .find(|(text, _)| text.contains('…') && text.contains("pdf"))
+            .unwrap_or_else(|| panic!("no cut label: {:?}", h.latest_texts()));
+        assert!(cut.1.right() <= menu_left, "{:?} covers the menu", cut);
+    }
+
+    #[test]
+    fn no_recent_files_leaves_open_recent_with_nothing_to_offer() {
+        let mut h = Harness::new();
+        open_menu(&mut h);
+        // The menu is up: "Open…" is drawn.
+        assert!(h.text_rect("Open…").is_some(), "the menu is not open");
+        assert!(h.text_rect("Open Recent").is_some(), "no Open Recent");
+        // And it opens on nothing.
+        open_recent(&mut h);
+        assert!(h.text_rect("Clear recent").is_none());
+    }
+
+    #[test]
+    fn clicking_clear_recent_asks_the_shell() {
+        let (requests, rx, _) = shell_end();
+        let mut h = Harness::build(move |mut app| {
+            app = app.with_requests(requests);
+            app.set_recent(vec![PathBuf::from("/papers/a.pdf")]);
+            app
+        });
+        open_menu(&mut h);
+        open_recent(&mut h);
+        let clear = h.text_rect("Clear recent").expect("no clear entry");
+        h.click(clear.center());
+        h.frames(2, vec![]);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::shell::Request::ClearRecent)
+        ));
+    }
+
+    #[test]
+    fn hovering_a_recent_file_shows_where_it_is() {
+        let mut h = recent_harness(&["/papers/network-analysis.pdf"]);
+        open_menu(&mut h);
+        open_recent(&mut h);
+        let entry = h.text_rect("network-analysis.pdf").expect("not offered");
+        h.frames(1, vec![Event::PointerMoved(entry.center())]);
+        h.frames(60, vec![]);
+        let shown = [
+            "/papers/network-analysis.pdf",
+            "papers/network-analysis.pdf",
+        ]
+        .iter()
+        .any(|text| h.text_rect(text).is_some());
+        assert!(shown, "no path on hover");
+    }
+
+    #[test]
+    fn clicking_a_recent_file_opens_it() {
+        let mut h = recent_harness(&["/papers/a.pdf"]);
+        let opened: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let into = opened.clone();
+        h.app.open = Arc::new(move |path| into.lock().unwrap().push(path.to_path_buf()));
+        open_menu(&mut h);
+        open_recent(&mut h);
+        let entry = h.text_rect("a.pdf").expect("a.pdf not offered");
+        h.click(entry.center());
+        h.frames(2, vec![]);
+        assert_eq!(
+            opened.lock().unwrap().as_slice(),
+            &[PathBuf::from("/papers/a.pdf")]
+        );
+    }
+
+    /// A harness whose window keeps its state in `store`, and whose menu
+    /// offers the store's recent files.
+    fn persisting_harness(store: &Store, document: &std::path::Path) -> Harness {
+        let store = store.clone();
+        let document = document.to_path_buf();
+        Harness::build(move |mut app| {
+            let slot = store.load(DocKey::new(b"x", &document)).0;
+            app = app.with_persistence(store.clone(), slot, None);
+            app.set_recent(store.load_recent());
+            app
+        })
+    }
+
+    #[test]
+    fn clicking_a_recent_file_moves_it_to_the_front() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let a = dir.path().join("a.pdf");
+        let b = dir.path().join("b.pdf");
+        for path in [&a, &b] {
+            fs::write(path, b"pdf").unwrap();
+        }
+        store.note_recent(&a).unwrap();
+        store.note_recent(&b).unwrap();
+        let mut h = persisting_harness(&store, &b);
+        h.app.open = Arc::new(|_| {});
+        open_menu(&mut h);
+        open_recent(&mut h);
+        let entry = h.text_rect("a.pdf").expect("a.pdf not offered");
+        h.click(entry.center());
+        h.frames(2, vec![]);
+        assert_eq!(
+            store.load_recent(),
+            vec![fs::canonicalize(&a).unwrap(), fs::canonicalize(&b).unwrap()]
+        );
+    }
+
+    #[test]
+    fn without_a_shell_clearing_the_recent_files_clears_the_store() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let a = dir.path().join("a.pdf");
+        fs::write(&a, b"pdf").unwrap();
+        store.note_recent(&a).unwrap();
+        let mut h = persisting_harness(&store, &a);
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, None, Action::ClearRecent);
+        assert!(store.load_recent().is_empty());
+        assert!(h.app.recent.is_empty());
+    }
+
+    #[test]
+    fn clearing_recent_files_asks_the_shell() {
+        let (requests, rx, _) = shell_end();
+        let mut h = Harness::build(|app| app.with_requests(requests));
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, None, Action::ClearRecent);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::shell::Request::ClearRecent)
+        ));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

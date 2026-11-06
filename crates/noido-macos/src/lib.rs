@@ -28,7 +28,7 @@ pub use defaults::keeps_windows;
 pub use launch::launch_in_bundle;
 
 #[cfg(target_os = "macos")]
-pub use menu::{MenuCommand, install_menu, take_commands};
+pub use menu::{MenuCommand, clear_recent, install_menu, note_recent, set_recent, take_commands};
 
 #[cfg(target_os = "macos")]
 pub use open_panel::pick_pdfs;

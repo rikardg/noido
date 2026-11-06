@@ -69,8 +69,10 @@ entry opens it in a window as `Open…` would, with no dialog in between.
 The entry is the file's whole name — no cutting, no extension hidden —
 the same text the native menu and the Dock's recents show for the file,
 so one name reads the same wherever it is offered. Where a name is too
-long for the screen, the frontend that draws it shortens it there: the
-popup at the window's edge, AppKit at the screen's. When two entries
+long for the room it has, the frontend that draws it shortens it there:
+our submenu cuts in the middle, to what fits beside the menu (so it never
+reaches over the menu and hides its entries), keeping the name's start
+and its extension; AppKit shortens at the screen's edge. When two entries
 share a file name, each gets its folder's name after it (`paper.pdf —
 arXiv`); if that collides too, both get their whole path. The entry's
 hover text is the file's whole path.

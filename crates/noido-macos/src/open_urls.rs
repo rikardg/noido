@@ -78,6 +78,11 @@ extern "C-unwind" fn open_urls(
     );
 }
 
+/// Hands `text` over as if Finder had opened it: a file URL, or a path.
+pub fn hand_over(text: String) {
+    queue([text]);
+}
+
 /// Queues `texts` for [`take_opened`] and wakes the GUI.
 fn queue(texts: impl IntoIterator<Item = String>) {
     if let Ok(mut queue) = QUEUE.lock() {

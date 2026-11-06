@@ -1,6 +1,8 @@
 //! noido's own title bar: sidebar toggle, search field, the document's name
 //! with page and zoom, and the menu.
 
+use std::path::PathBuf;
+
 use eframe::egui::text::{CCursor, CCursorRange};
 use eframe::egui::text_edit::TextEditState;
 use eframe::egui::{
@@ -41,6 +43,8 @@ pub struct Bar<'a> {
     pub keymap: &'a Keymap,
     /// The match counter, shown beside the search field; empty for none.
     pub counter: String,
+    /// The recently opened files, newest first.
+    pub recent: &'a [PathBuf],
 }
 
 /// Where the bar's parts were drawn last frame.
@@ -78,6 +82,8 @@ pub struct Output {
     pub left: bool,
     /// The search field has focus.
     pub focused: bool,
+    /// A recently opened file was chosen.
+    pub recent: Option<PathBuf>,
     pub rects: Rects,
 }
 
@@ -95,6 +101,7 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         cancelled: false,
         left: false,
         focused: false,
+        recent: None,
         rects: Rects::default(),
     };
     let full = ui.max_rect();
@@ -205,7 +212,7 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
                     menu_theme.apply_role(mode, style, theme::Role::Menu);
                 })
                 .show(|ui| {
-                    menu_entries(ui, bar, &mut output.actions);
+                    menu_entries(ui, bar, &mut output.actions, &mut output.recent);
                 });
 
             let rest = ui.available_rect_before_wrap();
@@ -215,12 +222,18 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
     output
 }
 
-fn menu_entries(ui: &mut egui::Ui, bar: &Bar, actions: &mut Vec<Action>) {
+fn menu_entries(
+    ui: &mut egui::Ui,
+    bar: &Bar,
+    actions: &mut Vec<Action>,
+    recent: &mut Option<PathBuf>,
+) {
     let platform = if cfg!(target_os = "macos") {
         Platform::Mac
     } else {
         Platform::Other
     };
+    let text = ui.visuals().widgets.inactive.fg_stroke.color;
     for (i, section) in menu().iter().enumerate() {
         if i > 0 {
             ui.separator();
@@ -235,8 +248,6 @@ fn menu_entries(ui: &mut egui::Ui, bar: &Bar, actions: &mut Vec<Action>) {
                 Some(Check::SelectTool) => bar.select_tool,
                 None => false,
             };
-            // An invisible mark keeps all labels aligned.
-            let text = ui.visuals().widgets.inactive.fg_stroke.color;
             let mark = RichText::new("✔").color(if checked { text } else { Color32::TRANSPARENT });
             let label = RichText::new(entry.label).color(text);
             let shortcut = bar
@@ -251,6 +262,92 @@ fn menu_entries(ui: &mut egui::Ui, bar: &Bar, actions: &mut Vec<Action>) {
                 actions.push(entry.action);
             }
         }
+        // Right under Open…, as the File menu has them, and in the same
+        // section, so no rule separates them.
+        if i == 0 {
+            recent_submenu(ui, bar, actions, recent);
+        }
+    }
+}
+
+/// "Open Recent" and the files behind it: the whole names, as the
+/// system's own recents show them, and "Clear recent" under them. With
+/// none, the entry is there but offers nothing.
+fn recent_submenu(
+    ui: &mut egui::Ui,
+    bar: &Bar,
+    actions: &mut Vec<Action>,
+    recent: &mut Option<PathBuf>,
+) {
+    let text = ui.visuals().widgets.inactive.fg_stroke.color;
+    // The same invisible mark the other entries have, so the labels line
+    // up.
+    let mark = RichText::new("✔").color(Color32::TRANSPARENT);
+    let entries = noido_core::recent(bar.recent);
+    let room = label_room(ui, &mark);
+    let width_of = width_of(ui);
+    ui.add_enabled_ui(!entries.is_empty(), |ui| {
+        let label = RichText::new("Open Recent").color(text);
+        ui.menu_button((mark.clone(), label), |ui| {
+            for entry in &entries {
+                let name = noido_core::elide_to_width(&entry.label, room, &width_of);
+                let label = RichText::new(&name).color(text);
+                let button = ui
+                    .add(egui::Button::new((mark.clone(), label)))
+                    // A name cut by the screen still says where the file is.
+                    .on_hover_text(entry.path.display().to_string());
+                if button.clicked() {
+                    *recent = Some(entry.path.clone());
+                    ui.close();
+                }
+            }
+            if entries.is_empty() {
+                return;
+            }
+            ui.separator();
+            let clear = RichText::new("Clear recent").color(text);
+            if ui.add(egui::Button::new((mark.clone(), clear))).clicked() {
+                actions.push(Action::ClearRecent);
+                ui.close();
+            }
+        });
+    });
+}
+
+/// How wide a label in the submenu may be, so that the submenu, which
+/// opens beside the menu `ui` is drawing in, does not reach over the menu
+/// nor past the screen's edge.
+fn label_room(ui: &egui::Ui, mark: &RichText) -> f32 {
+    let menu = ui.max_rect();
+    let screen = ui.ctx().content_rect();
+    let beside = (menu.left() - screen.left()).max(screen.right() - menu.right());
+    let frame = egui::Frame::menu(ui.style()).total_margin();
+    let spacing = ui.spacing().item_spacing.x;
+    // The mark and the arrow on either side of the label, the frame
+    // around them, and the gap egui leaves between the two popups: half
+    // a frame each, and its own.
+    let arrow = ui.spacing().icon_width + spacing;
+    let gap = (frame.left + frame.right) * 0.5 + SUBMENU_GAP;
+    let chrome = frame.left + frame.right + width_of(ui)(mark.text()) + spacing * 2.0 + arrow;
+    // A little to spare: a submenu that misses the room by a hair opens
+    // on the other side, over the menu instead.
+    (beside - chrome - gap - SLACK).max(0.0)
+}
+
+/// The space egui leaves between a menu and its submenu, at least.
+const SUBMENU_GAP: f32 = 2.0;
+/// Room kept spare so the submenu is not placed on the menu's side.
+const SLACK: f32 = 8.0;
+
+/// How wide `text` is drawn in the menu's own text.
+fn width_of(ui: &egui::Ui) -> impl Fn(&str) -> f32 + use<> {
+    let font = ui.style().text_styles[&egui::TextStyle::Button].clone();
+    let color = ui.visuals().widgets.inactive.fg_stroke.color;
+    let ctx = ui.ctx().clone();
+    move |text: &str| {
+        let galley =
+            ctx.fonts_mut(|fonts| fonts.layout_no_wrap(text.to_owned(), font.clone(), color));
+        galley.rect.width()
     }
 }
 
