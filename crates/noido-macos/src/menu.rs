@@ -13,7 +13,9 @@
 //! drains; About and Settings, which go to the focused document window,
 //! are disabled while none is key.
 
+use std::cell::RefCell;
 use std::ffi::{CStr, CString};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -22,8 +24,11 @@ use objc2::ffi::class_addMethod;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, Imp, Sel};
 use objc2::{AnyThread, ClassType, define_class, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSEventModifierFlags, NSMenu, NSMenuItem, NSPanel, NSWindow};
-use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSString};
+use objc2_app_kit::{
+    NSApplication, NSDocumentController, NSEventModifierFlags, NSMenu, NSMenuItem, NSPanel,
+    NSWindow,
+};
+use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSString, NSURL};
 
 /// What a menu item asks of noido's shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +39,8 @@ pub enum MenuCommand {
     /// The Dock icon was clicked, or the app opened again, with no
     /// window showing.
     Reopen,
+    /// The recent files' "Clear Menu" was chosen.
+    ClearRecent,
 }
 
 /// What a menu item does.
@@ -47,6 +54,8 @@ pub enum Does {
     Separator,
     /// AppKit's Services submenu.
     Services,
+    /// The recently opened files' submenu, filled by [`set_recent`].
+    Recent,
 }
 
 /// A modifier key that goes with ⌘ in an item's key.
@@ -75,7 +84,7 @@ pub struct Item {
 /// The menu bar, menu by menu in order. AppKit lists the windows at the
 /// end of the Window menu.
 pub fn menu_items() -> Vec<Item> {
-    use Does::{AppKit, Separator, Services, Shell};
+    use Does::{AppKit, Recent, Separator, Services, Shell};
     use MenuCommand::{About, Open, Settings};
     let item = |menu, title, key, does| Item {
         menu,
@@ -106,6 +115,7 @@ pub fn menu_items() -> Vec<Item> {
         separator("noido"),
         item("noido", "Quit noido", "q", AppKit(c"terminate:")),
         item("File", "Open…", "o", Shell(Open)),
+        item("File", "Open Recent", "", Recent),
         item("File", "Close Window", "w", AppKit(c"performClose:")),
         item("Edit", "Cut", "x", AppKit(c"cut:")),
         item("Edit", "Copy", "c", AppKit(c"copy:")),
@@ -147,11 +157,12 @@ static WAKE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// The commands a shell item can carry, by its tag.
-const COMMANDS: [MenuCommand; 4] = [
+const COMMANDS: [MenuCommand; 5] = [
     MenuCommand::About,
     MenuCommand::Settings,
     MenuCommand::Open,
     MenuCommand::Reopen,
+    MenuCommand::ClearRecent,
 ];
 
 fn tag_of(command: MenuCommand) -> isize {
@@ -178,7 +189,7 @@ fn chosen(tag: isize) {
 fn enabled(command: MenuCommand, key: bool) -> bool {
     match command {
         MenuCommand::About | MenuCommand::Settings => key,
-        MenuCommand::Open | MenuCommand::Reopen => true,
+        MenuCommand::Open | MenuCommand::Reopen | MenuCommand::ClearRecent => true,
     }
 }
 
@@ -228,6 +239,22 @@ define_class!(
             chosen(sender.tag());
         }
 
+        /// Opens the file the item carries, as Finder's would: through
+        /// the opened-URL queue.
+        // SAFETY: A menu item sends its action with itself as the sender.
+        #[unsafe(method(noidoOpenRecent:))]
+        fn open_recent(&self, sender: &NSMenuItem) {
+            let Some(object) = sender.representedObject() else {
+                return;
+            };
+            let Ok(url) = object.downcast::<NSURL>() else {
+                return;
+            };
+            if let Some(text) = url.absoluteString() {
+                crate::open_urls::hand_over(text.to_string());
+            }
+        }
+
         /// Disables About and Settings with no document window to
         /// carry them out; AppKit asks before showing the menu and
         /// before a key equivalent.
@@ -263,9 +290,29 @@ extern "C-unwind" fn should_handle_reopen(
 }
 
 /// The menu item for `item`, sent to `target` if it is the shell's.
-fn menu_item(mtm: MainThreadMarker, item: &Item, target: &Target) -> Retained<NSMenuItem> {
+fn menu_item(
+    mtm: MainThreadMarker,
+    item: &Item,
+    target: &Retained<Target>,
+) -> Retained<NSMenuItem> {
     let action = match item.does {
         Does::Separator => return NSMenuItem::separatorItem(mtm),
+        Does::Recent => {
+            let submenu = NSMenu::initWithTitle(mtm.alloc(), &NSString::from_str(item.title));
+            let holder = NSMenuItem::new(mtm);
+            holder.setTitle(&NSString::from_str(item.title));
+            holder.setSubmenu(Some(&submenu));
+            // Nothing to offer until set_recent fills it.
+            holder.setEnabled(false);
+            RECENT.with(|recent| {
+                *recent.borrow_mut() = Some(RecentMenu {
+                    holder: holder.clone(),
+                    submenu,
+                    target: target.clone(),
+                });
+            });
+            return holder;
+        }
         Does::Services => {
             let services = NSMenu::initWithTitle(mtm.alloc(), &NSString::from_str(item.title));
             let holder = NSMenuItem::new(mtm);
@@ -300,6 +347,97 @@ fn menu_item(mtm: MainThreadMarker, item: &Item, target: &Target) -> Retained<NS
         }
     }
     menu_item
+}
+
+/// The File menu's Open Recent item and its submenu, and the target that
+/// answers them. Main thread only, so a thread-local.
+struct RecentMenu {
+    holder: Retained<NSMenuItem>,
+    submenu: Retained<NSMenu>,
+    target: Retained<Target>,
+}
+
+thread_local! {
+    static RECENT: RefCell<Option<RecentMenu>> = const { RefCell::new(None) };
+}
+
+/// Fills the File menu's Open Recent submenu with `entries`, newest
+/// first, and `Clear Menu` last; with none, the item is disabled. Main
+/// thread only; before [`install_menu`] it does nothing.
+pub fn set_recent(entries: &[(String, PathBuf)]) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    RECENT.with(|recent| {
+        let Ok(recent) = recent.try_borrow() else {
+            return;
+        };
+        let Some(menu) = recent.as_ref() else {
+            return;
+        };
+        menu.submenu.removeAllItems();
+        for (label, path) in entries {
+            // SAFETY: The target answers `noidoOpenRecent:`, and keeps
+            // the URL it is given; both live as long as the process.
+            #[allow(unsafe_code)]
+            let item = unsafe {
+                let item = NSMenuItem::initWithTitle_action_keyEquivalent(
+                    mtm.alloc(),
+                    &NSString::from_str(label),
+                    Some(sel!(noidoOpenRecent:)),
+                    &NSString::from_str(""),
+                );
+                let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+                item.setRepresentedObject(Some(&url));
+                item.setTarget(Some(&menu.target));
+                item
+            };
+            // Not a shell command: `validateMenuItem:` leaves it be.
+            item.setTag(-1);
+            menu.submenu.addItem(&item);
+        }
+        if !entries.is_empty() {
+            menu.submenu.addItem(&NSMenuItem::separatorItem(mtm));
+            // SAFETY: The target answers `noidoCommand:`.
+            #[allow(unsafe_code)]
+            let clear = unsafe {
+                let clear = NSMenuItem::initWithTitle_action_keyEquivalent(
+                    mtm.alloc(),
+                    &NSString::from_str("Clear Menu"),
+                    Some(sel!(noidoCommand:)),
+                    &NSString::from_str(""),
+                );
+                clear.setTarget(Some(&menu.target));
+                clear
+            };
+            clear.setTag(tag_of(MenuCommand::ClearRecent));
+            menu.submenu.addItem(&clear);
+        }
+        menu.holder.setEnabled(!entries.is_empty());
+    });
+}
+
+/// Tells the system the file was opened, so the Dock icon's recents and
+/// the system's Recent Items list it. Main thread only.
+pub fn note_recent(path: &Path) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    NSDocumentController::sharedDocumentController(mtm).noteNewRecentDocumentURL(&url);
+}
+
+/// Forgets the recent files, in the system's list too. Main thread only.
+pub fn clear_recent() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    // SAFETY: The sender is only passed on to the delegate, and there is
+    // none.
+    #[allow(unsafe_code)]
+    unsafe {
+        NSDocumentController::sharedDocumentController(mtm).clearRecentDocuments(None);
+    }
 }
 
 /// Puts noido's menu bar in place of winit's (build the event loop
@@ -471,6 +609,7 @@ mod tests {
                 separator("noido"),
                 item("noido", "Quit noido", "q", AppKit(c"terminate:")),
                 item("File", "Open…", "o", Shell(Open)),
+                item("File", "Open Recent", "", Does::Recent),
                 item("File", "Close Window", "w", AppKit(c"performClose:")),
                 item("Edit", "Cut", "x", AppKit(c"cut:")),
                 item("Edit", "Copy", "c", AppKit(c"copy:")),

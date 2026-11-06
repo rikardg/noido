@@ -33,6 +33,8 @@ pub enum Request {
     SettingsSaved(Settings),
     /// The window was asked to close (its close button, Mod+W).
     Closed(ViewportId),
+    /// The menu's "Clear recent" was chosen.
+    ClearRecent,
     /// A document's load, done on a worker, has finished.
     Loaded(Box<Loaded>),
 }
@@ -65,6 +67,8 @@ pub enum MenuCommand {
     Open,
     /// The app was opened again with no window showing.
     Reopen,
+    /// The recent files' "Clear Menu".
+    ClearRecent,
 }
 
 /// Where the shell takes the menu's commands from.
@@ -121,6 +125,16 @@ struct Loading {
 /// waking it.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const HIDE_FRAMES: u32 = 3;
+
+/// The recent files as the native menu offers them: the whole names, for
+/// a menu AppKit sizes itself, and the paths.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn recent_entries(paths: &[PathBuf]) -> Vec<(String, PathBuf)> {
+    noido_core::recent(paths)
+        .into_iter()
+        .map(|entry| (entry.label, entry.path))
+        .collect()
+}
 
 /// The documents to open at the start: the ones left open at the last
 /// quit when the system keeps windows (`keeps`), then the one the launch
@@ -301,8 +315,11 @@ pub struct Shell {
     frames: u32,
     /// The documents open at the last quit.
     open_at_quit: Option<Vec<PathBuf>>,
-    /// Where the open documents are kept, to reopen at the next start.
+    /// Where the open documents are kept, to reopen at the next start,
+    /// and the recently opened ones.
     open_list: Option<noido_state::Store>,
+    /// The recently opened files, newest first.
+    recent: Vec<PathBuf>,
     /// Whether to show the Open panel once launching has settled.
     start_panel: StartPanel,
     /// The document asked for last (not restored), by canonical path:
@@ -339,6 +356,7 @@ impl Shell {
             frames: 0,
             open_at_quit: None,
             open_list: None,
+            recent: Vec::new(),
             start_panel: StartPanel::default(),
             requested: None,
         }
@@ -370,9 +388,13 @@ impl Shell {
         self
     }
 
-    /// Keeps the open documents in `store` at every quit.
+    /// Keeps the open documents in `store` at every quit, and the
+    /// recently opened ones as they open.
     pub fn with_open_list(mut self, store: noido_state::Store) -> Self {
+        self.recent = store.load_recent();
         self.open_list = Some(store);
+        #[cfg(target_os = "macos")]
+        noido_macos::set_recent(&recent_entries(&self.recent));
         self
     }
 
@@ -438,6 +460,17 @@ impl Shell {
                     ctx.request_repaint_of(id);
                 }
             }
+            Request::ClearRecent => {
+                if let Some(store) = &self.open_list
+                    && let Err(e) = store.clear_recent()
+                {
+                    eprintln!("noido: cannot clear the recent files: {e}");
+                }
+                self.recent.clear();
+                self.show_recent(ctx);
+                #[cfg(target_os = "macos")]
+                noido_macos::clear_recent();
+            }
             Request::Closed(id) => {
                 if let Some(window) = self.windows.remove(id) {
                     lock(&window.app).save_now();
@@ -464,6 +497,10 @@ impl Shell {
             }
             MenuCommand::Settings => noido_core::Action::OpenSettings,
             MenuCommand::About => noido_core::Action::ShowDocumentInfo,
+            MenuCommand::ClearRecent => {
+                self.handle(ctx, Request::ClearRecent);
+                return;
+            }
         };
         let Some((id, window)) = self.windows.iter().find(|(id, _)| focused(ctx, *id)) else {
             return;
@@ -503,7 +540,8 @@ impl Shell {
             return Ok(Answer::Forward { pid: None });
         }
         let app = (self.open_doc)(path, target, Windows::<Window>::id_for(&canonical))?;
-        self.insert(ctx, canonical, app, Opens::InFront);
+        self.insert(ctx, canonical.clone(), app, Opens::InFront);
+        self.note_recent(ctx, &canonical);
         Ok(Answer::Opened { pid: None })
     }
 
@@ -571,7 +609,12 @@ impl Shell {
         match loaded.app {
             Ok(app) => {
                 let opens = self.opens(&canonical, loading.panel_before.is_some());
-                let id = self.insert(ctx, canonical, app, opens);
+                let id = self.insert(ctx, canonical.clone(), app, opens);
+                // A document the reader opened, not one restored at the
+                // start: those were opened before.
+                if loading.panel_before.is_none() {
+                    self.note_recent(ctx, &canonical);
+                }
                 // The first built the app, going to its target.
                 if let Some((_, Some(answer))) = waiting.next() {
                     answer(Answer::Opened { pid: None });
@@ -648,9 +691,10 @@ impl Shell {
             .and_then(|(store, slot)| store.load_frame(slot));
         let activation = Activation::default();
         let title = format!("{} — noido", app.name());
-        let app = app
+        let mut app = app
             .with_requests(self.requests.clone())
             .with_activation(activation.clone());
+        app.set_recent(self.recent.clone());
         let id = self.windows.insert(
             canonical,
             Window {
@@ -681,6 +725,32 @@ impl Shell {
         let mut open = self.open_paths();
         open.extend(self.loading.iter().map(|(p, _)| p.clone()));
         self.record_open(open);
+    }
+
+    /// Puts `path` at the front of the recently opened files, and tells
+    /// the windows and, on macOS, the system.
+    fn note_recent(&mut self, ctx: &egui::Context, path: &Path) {
+        let Some(store) = &self.open_list else {
+            return;
+        };
+        if let Err(e) = store.note_recent(path) {
+            eprintln!("noido: cannot save the recent files: {e}");
+        }
+        self.recent = store.load_recent();
+        self.show_recent(ctx);
+        #[cfg(target_os = "macos")]
+        noido_macos::note_recent(path);
+    }
+
+    /// Hands the recent files to every window, and to the system on
+    /// macOS.
+    fn show_recent(&mut self, ctx: &egui::Context) {
+        for (id, window) in self.windows.iter() {
+            lock(&window.app).set_recent(self.recent.clone());
+            ctx.request_repaint_of(id);
+        }
+        #[cfg(target_os = "macos")]
+        noido_macos::set_recent(&recent_entries(&self.recent));
     }
 
     /// Keeps the documents open at a quit, to reopen on the next start.
@@ -1793,6 +1863,67 @@ mod tests {
         shell.handle(&ctx, Request::Closed(id_of(&b)));
         eframe::App::on_exit(&mut shell);
         assert!(Store::at(dir.path()).load_open().is_empty());
+    }
+
+    #[test]
+    fn the_native_menu_is_offered_the_whole_name() {
+        let name = "x".repeat(80);
+        let path = PathBuf::from(format!("/papers/{name}.pdf"));
+        let entries = recent_entries(&[path]);
+        assert_eq!(entries[0].0, format!("{name}.pdf"));
+        assert!(!entries[0].0.contains('…'), "{}", entries[0].0);
+    }
+
+    #[test]
+    fn opening_a_document_notes_it_as_recent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None).with_open_list(store.clone());
+        let (a, b) = (fixture("text.pdf"), fixture("two-pages.pdf"));
+        handle_now(&mut shell, &ctx, open(a.clone(), None));
+        handle_now(&mut shell, &ctx, open(b.clone(), None));
+        let canonical = |path: &Path| Windows::<Window>::canonical(path);
+        assert_eq!(store.load_recent(), vec![canonical(&b), canonical(&a)]);
+        assert_eq!(shell.recent, store.load_recent());
+        // Every window's menu offers them, newest first.
+        assert_eq!(shell.windows.iter().count(), 2);
+        for (_, window) in shell.windows.iter() {
+            let app = lock(&window.app);
+            assert_eq!(
+                crate::app::tests::recent_of(&app),
+                [canonical(&b), canonical(&a)].as_slice()
+            );
+        }
+    }
+
+    #[test]
+    fn a_document_restored_at_the_start_is_not_noted_as_recent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None).with_open_list(store.clone());
+        shell.open_all_quietly(&ctx, &[fixture("text.pdf")]);
+        shell.receive(&ctx);
+        assert_eq!(shell.open_paths().len(), 1);
+        assert!(store.load_recent().is_empty());
+    }
+
+    #[test]
+    fn clearing_recent_files_empties_the_store_and_the_list() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let ctx = egui::Context::default();
+        let mut shell = shell_with(&ctx, None).with_open_list(store.clone());
+        handle_now(&mut shell, &ctx, open(fixture("text.pdf"), None));
+        assert_eq!(store.load_recent().len(), 1);
+        handle_now(&mut shell, &ctx, Request::ClearRecent);
+        assert!(store.load_recent().is_empty());
+        assert!(shell.recent.is_empty());
+        // The window's menu stops offering them.
+        let (_, window) = shell.windows.iter().next().unwrap();
+        let app = lock(&window.app);
+        assert!(crate::app::tests::recent_of(&app).is_empty());
     }
 
     #[test]

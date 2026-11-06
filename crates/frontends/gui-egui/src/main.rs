@@ -34,6 +34,7 @@ use std::time::Duration;
 use clap::Parser;
 use eframe::egui;
 use noido_core::{Opening, Target, parse_argument};
+use noido_state::Store;
 
 /// The smallest window in which the title bar's controls all fit.
 const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 300.0];
@@ -389,6 +390,7 @@ fn run_app(
                         Native::Settings => MenuCommand::Settings,
                         Native::Open => MenuCommand::Open,
                         Native::Reopen => MenuCommand::Reopen,
+                        Native::ClearRecent => MenuCommand::ClearRecent,
                     })
                     .collect()
             }));
@@ -536,7 +538,11 @@ fn run(opening: Opening) -> Result<(), String> {
             .map(|(store, slot)| store.window_file(slot)),
         ..Default::default()
     };
-    let app = opened.app.with_theme(theme_live);
+    let app = with_recent(
+        opened.app.with_theme(theme_live),
+        shared.store.as_ref(),
+        path,
+    );
     let app = match activation {
         Some(activation) => app.with_activation(activation),
         None => app,
@@ -548,6 +554,20 @@ fn run(opening: Opening) -> Result<(), String> {
         Box::new(|_cc| Ok(Box::new(app))),
     )
     .map_err(|e| format!("cannot open window: {e}"))
+}
+
+/// `app` with the menu's recent files: `path` noted as opened now, and
+/// the ones opened before, from `store`.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn with_recent(mut app: app::NoidoApp, store: Option<&Store>, path: &Path) -> app::NoidoApp {
+    let Some(store) = store else {
+        return app;
+    };
+    if let Err(e) = store.note_recent(path) {
+        eprintln!("noido: cannot save the recent files: {e}");
+    }
+    app.set_recent(store.load_recent());
+    app
 }
 
 /// What a launch on an already open file prints. The running noido answered,
@@ -600,6 +620,29 @@ mod tests {
     use clap::CommandFactory;
 
     use super::*;
+
+    #[test]
+    fn a_launch_offers_its_document_and_the_files_before_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let (a, b) = (dir.path().join("a.pdf"), dir.path().join("b.pdf"));
+        for path in [&a, &b] {
+            std::fs::write(path, b"pdf").unwrap();
+        }
+        store.note_recent(&a).unwrap();
+        let app = with_recent(app::tests::blank_app(), Some(&store), &b);
+        let canonical = |path: &Path| std::fs::canonicalize(path).unwrap();
+        assert_eq!(
+            app::tests::recent_of(&app),
+            [canonical(&b), canonical(&a)].as_slice()
+        );
+    }
+
+    #[test]
+    fn a_launch_with_no_store_offers_no_recent_files() {
+        let app = with_recent(app::tests::blank_app(), None, Path::new("/x.pdf"));
+        assert!(app::tests::recent_of(&app).is_empty());
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
