@@ -382,6 +382,7 @@ impl View {
             | Action::OpenDocument
             | Action::ShowDocumentInfo
             | Action::OpenSettings
+            | Action::ClearRecent
             | Action::CloseWindow
             | Action::Quit => {}
         }
