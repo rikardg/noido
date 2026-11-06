@@ -19,6 +19,9 @@ use serde::{Deserialize, Serialize};
 const VERSION: u32 = 1;
 const STATE_SUFFIX: &str = ".toml";
 const OPEN_FILE: &str = "open.toml";
+const RECENT_FILE: &str = "recent.toml";
+/// How many recently opened files the list keeps.
+pub const RECENT_LIMIT: usize = 10;
 const WINDOW_SUFFIX: &str = ".window.ron";
 const FRAME_SUFFIX: &str = ".frame.toml";
 
@@ -187,8 +190,51 @@ impl Store {
     /// Writes the documents that are open, in order, for the next start to
     /// reopen; the file is replaced atomically. An empty list clears it.
     pub fn save_open(&self, paths: &[PathBuf]) -> io::Result<()> {
+        self.save_list(OPEN_FILE, paths)
+    }
+
+    /// The documents [`save_open`](Self::save_open) wrote; none when the
+    /// file is missing or unreadable.
+    pub fn load_open(&self) -> Vec<PathBuf> {
+        self.read_list(OPEN_FILE)
+    }
+
+    /// Puts `path` at the front of the recently opened files, out of
+    /// wherever it was, and drops the oldest beyond [`RECENT_LIMIT`]; the
+    /// file is replaced atomically. It is remembered by its canonical
+    /// path, so a document reached two ways is one entry.
+    pub fn note_recent(&self, path: &Path) -> io::Result<()> {
+        let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let mut paths = self.read_list(RECENT_FILE);
+        paths.retain(|known| known != &path);
+        paths.insert(0, path);
+        paths.truncate(RECENT_LIMIT);
+        self.save_list(RECENT_FILE, &paths)
+    }
+
+    /// The recently opened files, newest first, without the ones that have
+    /// gone from disk; at most [`RECENT_LIMIT`], whatever the file says.
+    /// The file itself catches up at the next write.
+    pub fn load_recent(&self) -> Vec<PathBuf> {
+        let mut recent: Vec<PathBuf> = self
+            .read_list(RECENT_FILE)
+            .into_iter()
+            .filter(|path| path.exists())
+            .collect();
+        recent.truncate(RECENT_LIMIT);
+        recent
+    }
+
+    /// Forgets every recently opened file.
+    pub fn clear_recent(&self) -> io::Result<()> {
+        self.save_list(RECENT_FILE, &[])
+    }
+
+    /// Writes `paths` to `name` in the state directory, one path a line
+    /// of TOML; the file is replaced atomically. An empty list clears it.
+    fn save_list(&self, name: &str, paths: &[PathBuf]) -> io::Result<()> {
         fs::create_dir_all(&self.dir)?;
-        let list = OpenList {
+        let list = PathList {
             version: VERSION,
             paths: paths
                 .iter()
@@ -196,23 +242,21 @@ impl Store {
                 .collect(),
         };
         let text = toml::to_string(&list).map_err(io::Error::other)?;
-        let target = self.dir.join(OPEN_FILE);
-        let temp = self
-            .dir
-            .join(format!("{OPEN_FILE}.tmp-{}", std::process::id()));
+        let target = self.dir.join(name);
+        let temp = self.dir.join(format!("{name}.tmp-{}", std::process::id()));
         fs::write(&temp, text)?;
         fs::rename(&temp, &target).inspect_err(|_| {
             let _ = fs::remove_file(&temp);
         })
     }
 
-    /// The documents [`save_open`](Self::save_open) wrote; none when the
-    /// file is missing or unreadable.
-    pub fn load_open(&self) -> Vec<PathBuf> {
-        let Ok(text) = fs::read_to_string(self.dir.join(OPEN_FILE)) else {
+    /// The paths [`save_list`](Self::save_list) wrote to `name`; none when
+    /// the file is missing, unreadable or another version's.
+    fn read_list(&self, name: &str) -> Vec<PathBuf> {
+        let Ok(text) = fs::read_to_string(self.dir.join(name)) else {
             return vec![];
         };
-        match toml::from_str::<OpenList>(&text) {
+        match toml::from_str::<PathList>(&text) {
             Ok(list) if list.version == VERSION => {
                 list.paths.into_iter().map(PathBuf::from).collect()
             }
@@ -344,9 +388,10 @@ fn read_entry(path: &Path) -> Option<Entry> {
     (entry.version == VERSION).then_some(entry)
 }
 
-/// The TOML form of the list of open documents.
+/// The TOML form of a list of paths: the open documents, or the recent
+/// ones.
 #[derive(Serialize, Deserialize)]
-struct OpenList {
+struct PathList {
     version: u32,
     paths: Vec<String>,
 }
