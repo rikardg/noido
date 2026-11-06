@@ -1,5 +1,8 @@
 //! The application menu, as data: frontends draw it.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
 use crate::Action;
 
 /// Which state a menu entry's checkmark shows.
@@ -18,6 +21,61 @@ pub struct MenuEntry {
     pub action: Action,
     pub label: &'static str,
     pub check: Option<Check>,
+}
+
+/// A recently opened file, as a frontend offers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentEntry {
+    pub path: PathBuf,
+    pub label: String,
+}
+
+/// The menu's entries for the recently opened `paths`, newest first. Each
+/// is named by its file name; files that share a name also take their
+/// folder's, and those whose folders share a name take their whole path.
+pub fn recent(paths: &[PathBuf]) -> Vec<RecentEntry> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for path in paths {
+        *counts.entry(file_name(path)).or_default() += 1;
+    }
+    let mut entries: Vec<RecentEntry> = paths
+        .iter()
+        .map(|path| {
+            let name = file_name(path);
+            let label = if counts[&name] > 1 {
+                match path.parent().and_then(Path::file_name) {
+                    Some(folder) => format!("{name} — {}", folder.to_string_lossy()),
+                    None => path.display().to_string(),
+                }
+            } else {
+                name
+            };
+            RecentEntry {
+                path: path.clone(),
+                label,
+            }
+        })
+        .collect();
+    // Two can still be labelled alike, one folder's name being another
+    // file's whole path: those get their own path.
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for entry in &entries {
+        *seen.entry(entry.label.clone()).or_default() += 1;
+    }
+    for entry in &mut entries {
+        if seen[&entry.label] > 1 {
+            entry.label = entry.path.display().to_string();
+        }
+    }
+    entries
+}
+
+/// The file's own name; the whole path for one that has no name of its
+/// own.
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 /// The menu's sections, in order; frontends separate them.
@@ -77,6 +135,8 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::Keymap;
 
@@ -119,6 +179,67 @@ mod tests {
                 "Select text"
             ]
         );
+    }
+
+    /// The labels of [`recent`] for `paths`.
+    fn labels(paths: &[&str]) -> Vec<String> {
+        recent(&paths.iter().map(PathBuf::from).collect::<Vec<_>>())
+            .into_iter()
+            .map(|entry| entry.label)
+            .collect()
+    }
+
+    #[test]
+    fn a_recent_file_is_named_by_its_file_name() {
+        assert_eq!(labels(&["/papers/a.pdf"]), vec!["a.pdf"]);
+    }
+
+    #[test]
+    fn files_that_share_a_name_take_their_folder_s_name() {
+        assert_eq!(
+            labels(&["/papers/a.pdf", "/scans/b.pdf", "/scans/a.pdf"]),
+            vec!["a.pdf — papers", "b.pdf", "a.pdf — scans"]
+        );
+    }
+
+    #[test]
+    fn files_that_share_a_folder_s_name_take_their_whole_path() {
+        assert_eq!(
+            labels(&["/one/papers/a.pdf", "/two/papers/a.pdf"]),
+            vec!["/one/papers/a.pdf", "/two/papers/a.pdf"]
+        );
+    }
+
+    #[test]
+    fn a_file_with_no_folder_is_named_alone_but_a_collision_with_it_is_not() {
+        assert_eq!(labels(&["a.pdf"]), vec!["a.pdf"]);
+        assert_eq!(
+            labels(&["a.pdf", "/papers/a.pdf"]),
+            vec!["a.pdf", "a.pdf — papers"]
+        );
+    }
+
+    #[test]
+    fn recents_keep_their_order_and_their_paths() {
+        let entries = recent(&[PathBuf::from("/b.pdf"), PathBuf::from("/a.pdf")]);
+        assert_eq!(
+            entries,
+            vec![
+                RecentEntry {
+                    path: PathBuf::from("/b.pdf"),
+                    label: "b.pdf".into()
+                },
+                RecentEntry {
+                    path: PathBuf::from("/a.pdf"),
+                    label: "a.pdf".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn no_recents_is_no_entries() {
+        assert!(recent(&[]).is_empty());
     }
 
     #[test]

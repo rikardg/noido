@@ -88,6 +88,9 @@ pub enum Action {
     /// Copies the selected text. Not bound: the window acts on the
     /// toolkit's own copy event (Mod+C), which text fields also use.
     Copy,
+    /// Forgets the recently opened files. Not bound: the menu has it,
+    /// beside them.
+    ClearRecent,
     /// Closes the window; for now the same as quitting.
     CloseWindow,
     Quit,
