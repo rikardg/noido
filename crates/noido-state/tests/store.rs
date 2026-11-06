@@ -513,3 +513,121 @@ fn prune_removes_frames() {
     store.prune(0);
     assert_eq!(names(&docs(&dir)), Vec::<String>::new());
 }
+
+/// A file on disk named `name`, by its canonical path, which is how the
+/// recent list knows it.
+fn file(dir: &TempDir, name: &str) -> PathBuf {
+    let path = dir.path().join(name);
+    fs::write(&path, name).unwrap();
+    fs::canonicalize(path).unwrap()
+}
+
+#[test]
+fn recent_files_are_newest_first() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(&dir.path().join("fresh"));
+    let a = file(&dir, "a.pdf");
+    let b = file(&dir, "b.pdf");
+    store.note_recent(&a).unwrap();
+    store.note_recent(&b).unwrap();
+    assert_eq!(store.load_recent(), vec![b, a]);
+}
+
+#[test]
+fn noting_a_recent_file_again_moves_it_to_the_front() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let a = file(&dir, "a.pdf");
+    let b = file(&dir, "b.pdf");
+    let c = file(&dir, "c.pdf");
+    for path in [&a, &b, &c, &a] {
+        store.note_recent(path).unwrap();
+    }
+    assert_eq!(store.load_recent(), vec![a, c, b]);
+}
+
+#[test]
+fn a_recent_file_is_known_by_its_canonical_path() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let a = file(&dir, "a.pdf");
+    store.note_recent(&a).unwrap();
+    store
+        .note_recent(&dir.path().join(".").join("a.pdf"))
+        .unwrap();
+    assert_eq!(store.load_recent(), vec![a]);
+}
+
+#[test]
+fn recent_files_stop_at_ten() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let files: Vec<PathBuf> = (0..12).map(|i| file(&dir, &format!("{i}.pdf"))).collect();
+    for path in &files {
+        store.note_recent(path).unwrap();
+    }
+    let recent = store.load_recent();
+    assert_eq!(recent.len(), 10);
+    assert_eq!(recent.first(), files.last());
+    assert!(!recent.contains(&files[0]));
+}
+
+#[test]
+fn a_recent_file_that_is_gone_is_dropped() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let a = file(&dir, "a.pdf");
+    let b = file(&dir, "b.pdf");
+    store.note_recent(&a).unwrap();
+    store.note_recent(&b).unwrap();
+    fs::remove_file(&a).unwrap();
+    assert_eq!(store.load_recent(), vec![b]);
+}
+
+#[test]
+fn clearing_recent_files_empties_the_list() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let a = file(&dir, "a.pdf");
+    store.note_recent(&a).unwrap();
+    store.clear_recent().unwrap();
+    assert!(store.load_recent().is_empty());
+    // Noting one again starts a new list.
+    store.note_recent(&a).unwrap();
+    assert_eq!(store.load_recent(), vec![a]);
+}
+
+#[test]
+fn no_recent_list_is_empty() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    assert!(store.load_recent().is_empty());
+    fs::write(dir.path().join("recent.toml"), "not [ toml").unwrap();
+    assert!(store.load_recent().is_empty());
+}
+
+#[test]
+fn a_recent_list_is_written_atomically_and_names_its_version() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    store.note_recent(&file(&dir, "a.pdf")).unwrap();
+    let text = fs::read_to_string(dir.path().join("recent.toml")).unwrap();
+    assert!(text.contains("version = 1"), "{text}");
+    assert_eq!(names(dir.path()), vec!["a.pdf", "recent.toml"]);
+}
+
+#[test]
+fn a_hand_written_recent_list_stops_at_ten() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let mut list = String::from("version = 1\npaths = [\n");
+    let files: Vec<PathBuf> = (0..12).map(|i| file(&dir, &format!("{i}.pdf"))).collect();
+    for path in &files {
+        list.push_str(&format!("  \"{}\",\n", path.display()));
+    }
+    list.push_str("]\n");
+    fs::write(dir.path().join("recent.toml"), list).unwrap();
+    let recent = store.load_recent();
+    assert_eq!(recent.len(), 10);
+    assert_eq!(recent, files[..10].to_vec());
+}
