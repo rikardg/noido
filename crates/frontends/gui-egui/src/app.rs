@@ -934,10 +934,16 @@ impl NoidoApp {
         }
     }
 
+    /// Whether the settings or document info page is open: it covers the
+    /// document, so the document must not change behind it.
+    fn page_open(&self) -> bool {
+        self.settings_page.is_some() || self.info_page.is_some()
+    }
+
     fn handle_input(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
         // The settings and info pages are modal: the document doesn't move
         // behind them.
-        if self.settings_page.is_some() || self.info_page.is_some() {
+        if self.page_open() {
             return;
         }
         let editing = ctx.text_edit_focused();
@@ -1181,6 +1187,8 @@ impl NoidoApp {
             }
             Action::FocusSearch => self.search_focus_requested = true,
             Action::ToggleSelectTool => self.select.tool = !self.select.tool,
+            // Behind the settings or info page, where it can't be seen.
+            Action::Undo | Action::Redo if self.page_open() => {}
             Action::Undo => {
                 if self.highlights.undo() {
                     self.select.clear();
@@ -1679,7 +1687,7 @@ impl NoidoApp {
     /// Takes a press on the pages: what its drag will do is decided now,
     /// before the pages' scroll area decides whether to pan.
     fn start_drag(&mut self, ctx: &egui::Context) {
-        if self.settings_page.is_some() || self.info_page.is_some() {
+        if self.page_open() {
             return;
         }
         let (pressed, origin, shift) = ctx.input(|i| {
@@ -1784,7 +1792,7 @@ impl NoidoApp {
         self.select.bar_rect = None;
         self.select.swatches = [None; 5];
         self.select.delete_rect = None;
-        if self.select.drag.is_some() || self.settings_page.is_some() || self.info_page.is_some() {
+        if self.select.drag.is_some() || self.page_open() {
             return;
         }
         let (Some((top, bottom)), Some(last)) = (self.select.caret_lines[1], self.last_scroll)
@@ -9948,6 +9956,50 @@ pub(crate) mod tests {
         h.press(egui::Key::Z, Modifiers::COMMAND);
         h.frames(1, vec![]);
         assert_eq!(selected_on(&h, 0), Some(0..7));
+    }
+
+    #[test]
+    fn backspace_behind_the_settings_page_keeps_the_highlight() {
+        let (mut h, _) = selecting();
+        select_the_highlight(&mut h);
+        open_settings(&mut h);
+        h.press(egui::Key::Backspace, Modifiers::NONE);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.items().len(), 1);
+    }
+
+    #[test]
+    fn delete_behind_the_settings_page_keeps_the_highlight() {
+        let (mut h, _) = selecting();
+        select_the_highlight(&mut h);
+        open_settings(&mut h);
+        h.press(egui::Key::Delete, Modifiers::NONE);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.items().len(), 1);
+    }
+
+    #[test]
+    fn undo_and_redo_behind_the_settings_page_keep_the_highlight() {
+        let (mut h, _) = selecting();
+        select_the_highlight(&mut h);
+        open_settings(&mut h);
+        h.press(egui::Key::Z, Modifiers::COMMAND);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.items().len(), 1);
+        h.app.highlights.undo();
+        h.press(egui::Key::Z, Modifiers::COMMAND | Modifiers::SHIFT);
+        h.frames(1, vec![]);
+        assert!(h.app.highlights.items().is_empty());
+    }
+
+    #[test]
+    fn undo_from_the_menu_behind_the_settings_page_keeps_the_highlight() {
+        let (mut h, _) = selecting();
+        select_the_highlight(&mut h);
+        open_settings(&mut h);
+        h.app.queued.push(Action::Undo);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.items().len(), 1);
     }
 
     #[test]
