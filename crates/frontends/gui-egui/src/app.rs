@@ -1171,6 +1171,8 @@ impl NoidoApp {
             }
             Action::FocusSearch => self.search_focus_requested = true,
             Action::ToggleSelectTool => self.select.tool = !self.select.tool,
+            // Highlights are not wired to undo and redo yet.
+            Action::Undo | Action::Redo => {}
             Action::Copy => self.copy_selection(ctx),
             // Not view moves: going to a hit isn't the reader moving away.
             Action::NextHit => self.step_hit(true),
@@ -2152,6 +2154,8 @@ fn core_key(key: egui::Key) -> Option<Key> {
         egui::Key::Q => Some(Key::Q),
         egui::Key::G => Some(Key::G),
         egui::Key::S => Some(Key::S),
+        egui::Key::Z => Some(Key::Z),
+        egui::Key::Y => Some(Key::Y),
         egui::Key::I => Some(Key::I),
         egui::Key::L => Some(Key::L),
         egui::Key::Comma => Some(Key::Comma),

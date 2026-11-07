@@ -385,6 +385,8 @@ impl View {
             | Action::ShowDocumentInfo
             | Action::OpenSettings
             | Action::ClearRecent
+            | Action::Undo
+            | Action::Redo
             | Action::CloseWindow
             | Action::Quit => {}
         }
