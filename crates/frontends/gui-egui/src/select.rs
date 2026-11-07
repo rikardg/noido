@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2, vec2};
 use noido_core::{
-    Caret, DragKind, HighlightColour, Layout, PageTextState, Selection, Spot, spot_at,
+    Caret, DragKind, HighlightColour, Highlights, Layout, PageTextState, Selection, Spot, spot_at,
 };
 
 use crate::texts::Texts;
@@ -73,6 +73,8 @@ pub struct State {
     /// With the select tool on, a plain drag selects.
     pub tool: bool,
     pub selection: Option<Selection>,
+    /// The highlight being edited: its index in [`Highlights::items`].
+    pub editing: Option<usize>,
     pub drag: Option<Drag>,
     /// The pointer is over text on the pages.
     pub over_text: bool,
@@ -89,6 +91,8 @@ pub struct State {
     /// Where the bar's colour swatches were drawn last frame, in
     /// [`HighlightColour::ALL`] order.
     pub swatches: [Option<Rect>; 5],
+    /// Where the bar's delete button was drawn last frame.
+    pub delete_rect: Option<Rect>,
     /// The pages (not a scroll bar, the sidebar or a popup over them) are
     /// under the pointer.
     pub pages_hovered: bool,
@@ -104,8 +108,41 @@ impl State {
     /// Drops the selection and any drag: a new version of the document.
     pub fn clear(&mut self) {
         self.selection = None;
+        self.editing = None;
         self.drag = None;
         self.copy_pending = None;
+    }
+
+    /// Keeps the highlight being edited in step with the selection: its
+    /// new range while the selection holds characters, its stored one when
+    /// the selection has collapsed.
+    fn settle(&mut self, texts: &Texts, highlights: &mut Highlights) {
+        let Some(index) = self.editing else {
+            return;
+        };
+        let Some(highlight) = highlights.get(index) else {
+            self.editing = None;
+            return;
+        };
+        let selected = self
+            .selection
+            .filter(|s| !s.is_empty(|page| texts.get(page)))
+            .and_then(|s| s.carets());
+        match selected {
+            Some((start, end)) => {
+                highlights.set_range(index, start, end);
+                self.selection = Some(Selection {
+                    anchor: Spot::At(start),
+                    focus: Spot::At(end),
+                });
+            }
+            None => {
+                self.selection = Some(Selection {
+                    anchor: Spot::At(highlight.start),
+                    focus: Spot::At(highlight.end),
+                });
+            }
+        }
     }
 
     /// The handle a press at `pos` takes, with the press's offset from its
@@ -158,9 +195,19 @@ impl State {
 
     /// Follows the drag under way on the pages, whose content starts at
     /// `content`'s top left: a selecting drag moves the selection's focus;
-    /// a click clears the selection. Also notes whether the pointer is
-    /// over text, and places selection ends waiting for their page's text.
-    pub fn update(&mut self, texts: &Texts, layout: &Layout, ui: &egui::Ui, content: Rect) {
+    /// a click selects the highlight under it, or clears the selection when
+    /// there is none or `on_link` gives the click to a link. Also notes
+    /// whether the pointer is over text, and places selection ends waiting
+    /// for their page's text.
+    pub fn update(
+        &mut self,
+        texts: &Texts,
+        layout: &Layout,
+        ui: &egui::Ui,
+        content: Rect,
+        highlights: &mut Highlights,
+        on_link: bool,
+    ) {
         let spot = |pos: egui::Pos2| {
             let p = layout.doc_point(pos.x - content.min.x, pos.y - content.min.y)?;
             Some(spot_at(layout, p, texts.get(p.page)))
@@ -194,6 +241,7 @@ impl State {
                 }
             }
             if drag.kind == DragKind::Select && drag.moved {
+                self.editing = None;
                 if !drag.started
                     && let Some(anchor) = spot(drag.origin)
                 {
@@ -225,7 +273,11 @@ impl State {
             });
             let point =
                 layout.doc_point(drag.origin.x - content.min.x, drag.origin.y - content.min.y);
-            if click && drag.kind == DragKind::Select && (double || triple) {
+            if drag.kind == DragKind::Handle && self.editing.is_some() {
+                // The handles resized the highlight being edited.
+                self.settle(texts, highlights);
+            } else if click && drag.kind == DragKind::Select && (double || triple) {
+                self.editing = None;
                 self.selection = point.and_then(|p| {
                     let PageTextState::Known(text) = texts.get(p.page) else {
                         return None;
@@ -246,11 +298,31 @@ impl State {
                 if let (Some(selection), Some(to)) = (&mut self.selection, spot(drag.origin)) {
                     selection.extend_to(to);
                 }
+                if self.editing.is_some() {
+                    self.settle(texts, highlights);
+                }
+            } else if click {
+                // A plain click: on a link it follows it, on a highlight it
+                // selects it, elsewhere it clears.
+                self.selection = None;
+                self.editing = None;
+                if !(on_link && !drag.shift)
+                    && let Some(p) = point
+                    && let PageTextState::Known(text) = texts.get(p.page)
+                    && let Some(index) = highlights.at_point(p, text)
+                    && let Some(highlight) = highlights.get(index)
+                {
+                    self.selection = Some(Selection {
+                        anchor: Spot::At(highlight.start),
+                        focus: Spot::At(highlight.end),
+                    });
+                    self.editing = Some(index);
+                }
             } else {
                 let empty = self
                     .selection
                     .is_some_and(|s| s.is_empty(|page| texts.get(page)));
-                if click || (drag.kind != DragKind::Pan && empty) {
+                if drag.kind != DragKind::Pan && empty {
                     self.selection = None;
                 }
             }

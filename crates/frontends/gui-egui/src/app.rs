@@ -1013,13 +1013,18 @@ impl NoidoApp {
         }
         // Esc on the pages clears the selection; in a field it's the
         // field's. egui drops focus on Esc before this, so it's the last
-        // frame's focus that tells.
-        if !editing
-            && !self.select.widget_focused
-            && !egui::Popup::is_any_open(ctx)
-            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
-        {
-            self.select.selection = None;
+        // frame's focus that tells. Backspace and Delete remove the
+        // highlight being edited.
+        if !editing && !self.select.widget_focused && !egui::Popup::is_any_open(ctx) {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.select.clear();
+            }
+            let delete = ctx
+                .input(|i| i.key_pressed(egui::Key::Backspace) || i.key_pressed(egui::Key::Delete));
+            if delete && let Some(index) = self.select.editing {
+                self.highlights.remove(index);
+                self.select.clear();
+            }
         }
         // Mod+C reaches egui as a copy event, not a key; a field copies
         // its own text.
@@ -1177,12 +1182,14 @@ impl NoidoApp {
             Action::FocusSearch => self.search_focus_requested = true,
             Action::ToggleSelectTool => self.select.tool = !self.select.tool,
             Action::Undo => {
-                self.highlights.undo();
-                self.select.clear();
+                if self.highlights.undo() {
+                    self.select.clear();
+                }
             }
             Action::Redo => {
-                self.highlights.redo();
-                self.select.clear();
+                if self.highlights.redo() {
+                    self.select.clear();
+                }
             }
             Action::Copy => self.copy_selection(ctx),
             // Not view moves: going to a hit isn't the reader moving away.
@@ -1465,12 +1472,38 @@ impl NoidoApp {
             let search = &self.search_state;
             self.texts.want(page, |page| search.request_text(page));
         }
+        // The pages of the highlight being edited: its ends, and a copy
+        // across them, wait for their text.
+        if let Some(highlight) = self
+            .select
+            .editing
+            .and_then(|index| self.highlights.get(index))
+        {
+            let search = &self.search_state;
+            for page in highlight.pages() {
+                self.texts.want(page, |page| search.request_text(page));
+            }
+        }
         // A press that took a handle is not a click on a link under it.
         let on_handle = self
             .select
             .drag
             .is_some_and(|drag| drag.kind == DragKind::Handle);
-        self.select.update(&self.texts, layout, ui, content);
+        // A press on a link is a click on the link, not on a highlight under
+        // it; Shift asks for the highlight.
+        let on_link = self.select.drag.is_some_and(|drag| {
+            layout
+                .doc_point(drag.origin.x - content.min.x, drag.origin.y - content.min.y)
+                .is_some_and(|p| self.links.at(p.page, p.x, p.y).is_some())
+        });
+        self.select.update(
+            &self.texts,
+            layout,
+            ui,
+            content,
+            &mut self.highlights,
+            on_link,
+        );
         self.select.place(
             &self.texts,
             layout,
@@ -1506,10 +1539,18 @@ impl NoidoApp {
                 paper,
             );
             // The document's highlights, under the selection and the
-            // matches.
+            // matches. The one being edited follows the selection, so a
+            // handle resizes it on screen.
             if let PageTextState::Known(text) = self.texts.get(page) {
-                for highlight in self.highlights.items() {
-                    let Some(range) = highlight.on_page(page, text.char_count()) else {
+                for (index, highlight) in self.highlights.items().iter().enumerate() {
+                    let range = if self.select.editing == Some(index) {
+                        self.select
+                            .selection
+                            .and_then(|s| s.on_page(page, text.char_count()))
+                    } else {
+                        highlight.on_page(page, text.char_count())
+                    };
+                    let Some(range) = range else {
                         continue;
                     };
                     let fill = select::highlight_fill(highlight.colour, dark);
@@ -1520,8 +1561,10 @@ impl NoidoApp {
                     }
                 }
             }
-            // The selection, under the matches.
-            if let Some(selection) = &self.select.selection
+            // The selection, under the matches; a highlight being edited
+            // already shows it in its own colour.
+            if self.select.editing.is_none()
+                && let Some(selection) = &self.select.selection
                 && let PageTextState::Known(text) = self.texts.get(page)
                 && let Some(range) = selection.on_page(page, text.char_count())
             {
@@ -1740,6 +1783,7 @@ impl NoidoApp {
     fn selection_bar(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
         self.select.bar_rect = None;
         self.select.swatches = [None; 5];
+        self.select.delete_rect = None;
         if self.select.drag.is_some() || self.settings_page.is_some() || self.info_page.is_some() {
             return;
         }
@@ -1762,6 +1806,12 @@ impl NoidoApp {
         };
         let mut copy = false;
         let mut clicked = None;
+        let mut delete = false;
+        // The colour of the highlight being edited, ringed in the bar.
+        let selected = self
+            .select
+            .editing
+            .and_then(|index| self.highlights.get(index));
         let shown = egui::Area::new(egui::Id::unique("selection-bar"))
             .order(egui::Order::Foreground)
             .fixed_pos(pos)
@@ -1786,10 +1836,23 @@ impl NoidoApp {
                                 ui.painter()
                                     .circle_stroke(centre, select::SWATCH_RADIUS, stroke);
                             }
+                            if selected.is_some_and(|h| h.colour == colour) {
+                                let ring = ui.visuals().selection.stroke;
+                                ui.painter().circle_stroke(
+                                    centre,
+                                    select::SWATCH_RADIUS + 2.0,
+                                    ring,
+                                );
+                            }
                             if response.clicked() {
                                 clicked = Some(colour);
                             }
                             self.select.swatches[i] = Some(rect);
+                        }
+                        if selected.is_some() {
+                            let response = ui.button("Delete");
+                            delete = response.clicked();
+                            self.select.delete_rect = Some(response.rect);
                         }
                     });
                 });
@@ -1798,11 +1861,21 @@ impl NoidoApp {
         if copy {
             self.apply(ctx, parent, Action::Copy);
         }
-        if let Some(colour) = clicked
-            && let Some((start, end)) = self.select.selection.and_then(|s| s.carets())
-            && start < end
-        {
-            self.highlights.add(Highlight { start, end, colour });
+        if let Some(colour) = clicked {
+            // Over a selected highlight the swatches recolour it; over a
+            // fresh selection they make one.
+            if let Some(index) = self.select.editing {
+                self.highlights.set_colour(index, colour);
+                self.select.clear();
+            } else if let Some((start, end)) = self.select.selection.and_then(|s| s.carets())
+                && start < end
+            {
+                self.highlights.add(Highlight { start, end, colour });
+                self.select.clear();
+            }
+        }
+        if delete && let Some(index) = self.select.editing {
+            self.highlights.remove(index);
             self.select.clear();
         }
     }
@@ -9740,6 +9813,275 @@ pub(crate) mod tests {
         h.press(egui::Key::Y, Modifiers::COMMAND);
         h.frames(1, vec![]);
         assert_eq!(h.app.highlights.items().len(), 1);
+    }
+
+    // Editing a highlight.
+
+    /// Clicks the yellow highlight on "the cat", selecting it for editing.
+    fn click_the_highlight(h: &mut Harness) {
+        let at = screen_pos(h, 0, 85.0, 95.0);
+        h.click(at);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+    }
+
+    /// Makes the yellow highlight on "the cat" and selects it for editing.
+    fn select_the_highlight(h: &mut Harness) {
+        highlight_the_cat(h);
+        click_the_highlight(h);
+    }
+
+    /// The fill the selection is painted with, at the theme's opacity.
+    fn selection_fill(h: &Harness) -> Color32 {
+        h.ctx
+            .global_style()
+            .visuals
+            .selection
+            .bg_fill
+            .gamma_multiply(SELECTION_OPACITY)
+    }
+
+    #[test]
+    fn click_highlight_selects_it_with_tool_off_and_shows_handles_and_delete() {
+        let (mut h, _) = selecting();
+        highlight_the_cat(&mut h);
+        click_the_highlight(&mut h);
+        assert!(
+            h.app.select.handles[0].is_some(),
+            "the start's handle shows"
+        );
+        assert!(h.app.select.handles[1].is_some(), "the end's handle shows");
+        assert!(h.app.select.delete_rect.is_some(), "the bar offers delete");
+        let fill = selection_fill(&h);
+        assert!(
+            filled_with(&h, fill).is_empty(),
+            "the selected highlight is not painted blue"
+        );
+        let empty = screen_pos(&h, 0, 300.0, 400.0);
+        h.click(empty);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.select.editing, None);
+        assert_eq!(h.app.select.selection, None);
+    }
+
+    #[test]
+    fn drag_highlight_handle_resizes_it_and_undoes_in_one_step() {
+        let (mut h, _) = selecting();
+        select_the_highlight(&mut h);
+        let end = h.app.select.handles[1].expect("the end's handle shows");
+        let step = screen_pos(&h, 0, 126.0, 95.0).x - screen_pos(&h, 0, 114.0, 95.0).x;
+        h.drag(end, vec2(step, 0.0));
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.get(0).unwrap().end.char, 9);
+        assert_eq!(h.app.select.editing, Some(0));
+        h.press(egui::Key::Z, Modifiers::COMMAND);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.get(0).unwrap().end.char, 7);
+        assert_eq!(h.app.highlights.get(0).unwrap().start.char, 0);
+        assert_eq!(h.app.select.editing, None);
+    }
+
+    #[test]
+    fn collapsing_highlight_handle_reverts_to_stored_range() {
+        let (mut h, _) = selecting();
+        select_the_highlight(&mut h);
+        let start = h.app.select.handles[0].expect("the start's handle shows");
+        let end = h.app.select.handles[1].expect("the end's handle shows");
+        h.drag(end, start - end);
+        h.frames(1, vec![]);
+        let highlight = h.app.highlights.get(0).expect("the highlight is kept");
+        assert_eq!((highlight.start.char, highlight.end.char), (0, 7));
+        assert_eq!(selected_on(&h, 0), Some(0..7));
+    }
+
+    #[test]
+    fn colour_swatch_recolours_selected_highlight_and_clears_selection() {
+        let (mut h, _) = selecting();
+        select_the_highlight(&mut h);
+        let swatch = h.app.select.swatches[2].expect("the bar offers the colours");
+        h.click(swatch.center());
+        h.frames(1, vec![]);
+        assert_eq!(
+            h.app.highlights.get(0).unwrap().colour,
+            HighlightColour::Blue
+        );
+        assert_eq!(h.app.select.editing, None);
+        assert_eq!(h.app.select.selection, None);
+        h.press(egui::Key::Z, Modifiers::COMMAND);
+        h.frames(1, vec![]);
+        assert_eq!(
+            h.app.highlights.get(0).unwrap().colour,
+            HighlightColour::Yellow
+        );
+    }
+
+    #[test]
+    fn delete_button_and_backspace_remove_selected_highlight() {
+        let (mut h, _) = selecting();
+        select_the_highlight(&mut h);
+        let delete = h.app.select.delete_rect.expect("the bar offers delete");
+        h.click(delete.center());
+        h.frames(1, vec![]);
+        assert!(h.app.highlights.items().is_empty());
+        assert_eq!(h.app.select.editing, None);
+
+        h.press(egui::Key::Z, Modifiers::COMMAND);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.items().len(), 1);
+        click_the_highlight(&mut h);
+        h.press(egui::Key::Backspace, Modifiers::NONE);
+        h.frames(1, vec![]);
+        assert!(h.app.highlights.items().is_empty());
+
+        h.press(egui::Key::Z, Modifiers::COMMAND);
+        h.frames(1, vec![]);
+        click_the_highlight(&mut h);
+        h.press(egui::Key::Delete, Modifiers::NONE);
+        h.frames(1, vec![]);
+        assert!(h.app.highlights.items().is_empty());
+    }
+
+    #[test]
+    fn undo_with_no_history_keeps_the_selection() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.press(egui::Key::Z, Modifiers::COMMAND);
+        h.frames(1, vec![]);
+        assert_eq!(selected_on(&h, 0), Some(0..7));
+    }
+
+    #[test]
+    fn backspace_and_undo_in_search_field_leave_highlight_alone() {
+        let (mut h, _) = selecting();
+        select_the_highlight(&mut h);
+        focus_search(&mut h);
+        h.typed("cat");
+        h.press(egui::Key::Backspace, Modifiers::NONE);
+        h.press(egui::Key::Z, Modifiers::COMMAND);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.items().len(), 1);
+    }
+
+    #[test]
+    fn copy_copies_selected_highlight_across_pages() {
+        let engine =
+            TextEngine::new(&[&["the cat sat", "on the mat"], &["a dog"], &["one more"]]).gated();
+        let mut h = searching(&engine);
+        let at = |page, char| noido_core::Spot::At(Caret { page, char });
+        let index = h
+            .app
+            .highlights
+            .add(Highlight {
+                start: Caret { page: 0, char: 0 },
+                end: Caret { page: 1, char: 3 },
+                colour: HighlightColour::Yellow,
+            })
+            .expect("the highlight is added");
+        h.app.select.editing = Some(index);
+        h.app.select.selection = Some(noido_core::Selection {
+            anchor: at(0, 0),
+            focus: at(1, 3),
+        });
+        h.frames(1, vec![Event::Copy]);
+        assert!(h.copied.is_empty());
+        engine.open_gate();
+        h.until(|h| !h.copied.is_empty());
+        assert_eq!(h.copied, vec!["the cat sat on the mat a d".to_owned()]);
+    }
+
+    #[test]
+    fn click_overlapping_highlights_picks_shorter_and_double_click_selects_word() {
+        let (mut h, _) = selecting();
+        let caret = |char| Caret { page: 0, char };
+        let colour = HighlightColour::Yellow;
+        h.app.highlights.add(Highlight {
+            start: caret(0),
+            end: caret(11),
+            colour,
+        });
+        h.app.highlights.add(Highlight {
+            start: caret(4),
+            end: caret(7),
+            colour: HighlightColour::Green,
+        });
+        // A point inside both highlights picks the shorter one.
+        let cat = screen_pos(&h, 0, 99.0, 95.0);
+        h.click(cat);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.select.editing, Some(1));
+        assert_eq!(selected_on(&h, 0), Some(4..7));
+        // A point only the longer one covers picks it.
+        let the = screen_pos(&h, 0, 75.0, 95.0);
+        h.click(the);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_eq!(selected_on(&h, 0), Some(0..11));
+        // Past the double-click delay, so these two count as a double
+        // click rather than a third and fourth.
+        h.frames(25, vec![]);
+        // A double click selects the word instead, not the highlight.
+        click_times(&mut h, (123.0, 95.0), 2, Modifiers::SHIFT);
+        assert_eq!(h.app.select.editing, None);
+        assert_eq!(selected_on(&h, 0), Some(8..11));
+    }
+
+    #[test]
+    fn link_and_highlight_plain_click_follows_link_shift_click_selects_highlight() {
+        let mut h = linking_text();
+        h.app.highlights.add(Highlight {
+            start: Caret { page: 0, char: 0 },
+            end: Caret { page: 0, char: 10 },
+            colour: HighlightColour::Yellow,
+        });
+        click_link(&mut h, 0, 100.0, 96.0);
+        assert_eq!(h.app.chosen, Some(5));
+        assert_eq!(h.app.select.editing, None);
+
+        // Back to the link's page, past the double-click delay, so each of
+        // the clicks below is a single one.
+        for _ in 0..20 {
+            if h.centre().page == 0 {
+                break;
+            }
+            h.press(egui::Key::PageUp, Modifiers::NONE);
+            h.frames(1, vec![]);
+        }
+        h.app.chosen = None;
+        h.frames(25, vec![]);
+        assert_eq!(h.centre().page, 0);
+        click_times(&mut h, (100.0, 96.0), 1, Modifiers::SHIFT);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_eq!(h.app.chosen, None);
+
+        h.frames(25, vec![]);
+        click_times(&mut h, (120.0, 96.0), 1, Modifiers::SHIFT);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_eq!(h.app.chosen, None);
+        assert_eq!(selected_on(&h, 0), Some(0..8));
+        // The extend reached the stored highlight, not just the selection.
+        assert_eq!(h.app.highlights.get(0).unwrap().end.char, 8);
+
+        // A Shift+click back onto the start swaps the selection's ends
+        // rather than collapsing it, so the stored range stays put.
+        h.frames(25, vec![]);
+        click_times(&mut h, (73.0, 95.0), 1, Modifiers::SHIFT);
+        let highlight = h.app.highlights.get(0).expect("the highlight is kept");
+        assert_eq!((highlight.start.char, highlight.end.char), (0, 8));
+        assert_eq!(selected_on(&h, 0), Some(0..8));
+
+        // A Shift+click while the selection has collapsed to one caret
+        // restores the stored range instead of shrinking the highlight to
+        // nothing.
+        let caret = noido_core::Spot::At(Caret { page: 0, char: 8 });
+        h.app.select.selection = Some(noido_core::Selection {
+            anchor: caret,
+            focus: caret,
+        });
+        h.frames(25, vec![]);
+        click_times(&mut h, (121.0, 95.0), 1, Modifiers::SHIFT);
+        let highlight = h.app.highlights.get(0).expect("the highlight is kept");
+        assert_eq!((highlight.start.char, highlight.end.char), (0, 8));
+        assert_eq!(selected_on(&h, 0), Some(0..8));
     }
 
     #[test]
