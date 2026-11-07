@@ -2,7 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use noido_core::{DocPoint, History, SidebarState, ViewState, ZoomMode};
+use noido_core::{
+    Caret, DocPoint, Highlight, HighlightColour, History, SidebarState, ViewState, ZoomMode,
+};
 use noido_state::{DocKey, DocState, Frame, Slot, Store};
 use tempfile::TempDir;
 
@@ -23,6 +25,22 @@ fn state(page: usize) -> DocState {
         },
         sidebar: SidebarState::default(),
         history: History::default(),
+        highlights: Vec::new(),
+    }
+}
+
+/// A highlight from `start` to `end`, each a page and a char.
+fn highlight(start: (usize, usize), end: (usize, usize), colour: HighlightColour) -> Highlight {
+    Highlight {
+        start: Caret {
+            page: start.0,
+            char: start.1,
+        },
+        end: Caret {
+            page: end.0,
+            char: end.1,
+        },
+        colour,
     }
 }
 
@@ -415,6 +433,65 @@ fn a_file_without_history_loads() {
         ..state(3)
     };
     assert_eq!(loaded(&store, &key), Some(expected));
+}
+
+#[test]
+fn highlights_round_trip() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        highlights: vec![
+            highlight((0, 3), (0, 9), HighlightColour::Yellow),
+            highlight((1, 0), (3, 5), HighlightColour::Green),
+            highlight((2, 10), (2, 12), HighlightColour::Blue),
+            highlight((4, 1), (4, 2), HighlightColour::Pink),
+            highlight((5, 7), (6, 0), HighlightColour::Purple),
+        ],
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    assert_eq!(loaded(&store, &key), Some(saved));
+
+    let text = fs::read_to_string(docs(&dir).join(format!("{}.toml", key.hex()))).unwrap();
+    for colour in ["yellow", "green", "blue", "pink", "purple"] {
+        assert!(text.contains(&format!("colour = \"{colour}\"")), "{text}");
+    }
+}
+
+#[test]
+fn entries_without_highlights_load_empty() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(3)).unwrap();
+
+    let text = fs::read_to_string(docs(&dir).join(format!("{}.toml", key.hex()))).unwrap();
+    assert!(!text.contains("[[highlights]]"), "{text}");
+    let restored = loaded(&store, &key).unwrap();
+    assert!(restored.highlights.is_empty());
+}
+
+#[test]
+fn malformed_highlight_ranges_are_dropped_on_load() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        highlights: vec![highlight((1, 0), (2, 4), HighlightColour::Blue)],
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+
+    let file = docs(&dir).join(format!("{}.toml", key.hex()));
+    let mut text = fs::read_to_string(&file).unwrap();
+    text.push_str(
+        "[[highlights]]\nstart_page = 2\nstart_char = 5\nend_page = 1\nend_char = 0\n\
+         colour = \"yellow\"\n",
+    );
+    fs::write(&file, text).unwrap();
+
+    assert_eq!(loaded(&store, &key), Some(saved));
 }
 
 #[test]
