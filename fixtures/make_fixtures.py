@@ -57,6 +57,18 @@ black.pdf:
   page 0: 612x792 pt (Letter), filled black edge to edge
   page 1: the same page with /Rotate 90
 
+type3.pdf:
+  page 0: 612x792 pt (Letter), one Type 3 font whose glyphs are content
+          streams: each of "a", "b" and "c" is a quarter em wide
+          (FontMatrix 0.001, /Widths 250), drawn at 12 pt starting at (72, 700)
+
+tiling.pdf:
+  page 0: 612x792 pt, filled with a tiling pattern of one 10x10 pt red cell
+          repeated every 99999 pt: a tile far smaller than its step, so only
+          one tile shows. Sizing a tile by its step overflows a 16-bit
+          dimension (hayro 0.8 asked vello for a 65535-px square and
+          panicked on every page like it)
+
 shared-names.pdf:
   page 0: 612x792 pt with one link, GoTo (nowhere); the /Names /Dests tree
           is 40 nodes without /Limits, each with the next twice as /Kids:
@@ -222,6 +234,45 @@ def black() -> bytes:
     )
 
 
+def type3() -> bytes:
+    char_proc = b"250 0 d0"
+    content = b"BT /F1 12 Tf 72 700 Td (abc) Tj ET"
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R"
+            b" /Resources << /Font << /F1 4 0 R >> >> >>",
+            b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000]"
+            b" /FontMatrix [0.001 0 0 0.001 0 0]"
+            b" /CharProcs << /a 5 0 R /b 5 0 R /c 5 0 R >>"
+            b" /Encoding << /Type /Encoding /Differences [97 /a /b /c] >>"
+            b" /FirstChar 97 /LastChar 99 /Widths [250 250 250]"
+            b" /Resources << >> >>",
+            b"<< /Length %d >>\nstream\n" % len(char_proc) + char_proc + b"\nendstream",
+            b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+        ]
+    )
+
+
+def tiling() -> bytes:
+    cell = b"1 0 0 rg 0 0 10 10 re f"
+    content = b"/Pattern cs /P1 scn 0 0 612 792 re f"
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R"
+            b" /Resources << /Pattern << /P1 4 0 R >> >> >>",
+            b"<< /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1"
+            b" /BBox [0 0 10 10] /XStep 99999 /YStep 99999 /Resources << >>"
+            b" /Length %d >>\nstream\n"
+            % len(cell) + cell + b"\nendstream",
+            b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+        ]
+    )
+
+
 def shared_names() -> bytes:
     depth = 40
     nodes = [
@@ -244,6 +295,8 @@ if __name__ == "__main__":
     (here / "two-pages.pdf").write_bytes(two_pages())
     (here / "text.pdf").write_bytes(text())
     (here / "links.pdf").write_bytes(links())
-    (here / "shared-names.pdf").write_bytes(shared_names())
     (here / "properties.pdf").write_bytes(properties())
     (here / "black.pdf").write_bytes(black())
+    (here / "tiling.pdf").write_bytes(tiling())
+    (here / "type3.pdf").write_bytes(type3())
+    (here / "shared-names.pdf").write_bytes(shared_names())

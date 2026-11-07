@@ -18,7 +18,7 @@ const EM: f64 = 1000.0;
 /// units. hayro doesn't give fonts' ascent and descent.
 const DESCENT: f64 = 200.0;
 const ASCENT: f64 = 800.0;
-/// The advance assumed when the font gives none (Type 3).
+/// The advance assumed when the font gives none.
 const DEFAULT_ADVANCE: f64 = 500.0;
 
 /// The glyphs drawn on `page`, in page space.
@@ -62,9 +62,12 @@ impl<'a> Device<'a> for TextDevice {
             };
             let origin = at(0.0, 0.0);
             let size = (t * KurboPoint::new(0.0, EM) - t * KurboPoint::ORIGIN).hypot();
+            // The advance is the width the PDF states; for a font it does not
+            // embed, hayro 0.9 also stretches that width inside the glyph
+            // transform, so the box comes out too wide (issue #57).
             let advance = match &**glyph {
                 HayroGlyph::Outline(outline) => outline.advance_width().map(f64::from),
-                HayroGlyph::Type3(_) => None,
+                HayroGlyph::Type3(type3) => type3.advance_width().map(f64::from),
             }
             .unwrap_or(DEFAULT_ADVANCE);
             let text = match glyph.as_unicode() {

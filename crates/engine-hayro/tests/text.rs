@@ -46,6 +46,19 @@ fn text_glyphs_in_order() {
 }
 
 #[test]
+fn type3_glyphs_have_their_widths() {
+    // Each glyph is a quarter em wide, whatever its outline stream draws:
+    // the box is the advance the pen takes, which comes from /Widths.
+    let glyphs = open("type3.pdf").text(0).unwrap();
+    let glyphs = visible(&glyphs);
+    assert_eq!(glyphs.len(), 3);
+    for glyph in glyphs {
+        let width = glyph.quad.corners[1].x - glyph.quad.corners[0].x;
+        assert!((width - 3.0).abs() < 0.05, "{width} pt wide, not 3");
+    }
+}
+
+#[test]
 fn text_glyph_positions() {
     let glyphs = open("text.pdf").text(0).unwrap();
     let glyphs = visible(&glyphs);
