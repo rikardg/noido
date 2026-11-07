@@ -262,7 +262,9 @@ impl<'a> Worker<'a> {
         true
     }
 
-    /// `page`'s text, extracted now if not yet.
+    /// `page`'s text, extracted now if not yet. A page whose text cannot be
+    /// read is remembered as having none, so the idle extract pass and later
+    /// searches do not ask for it again.
     fn text(&mut self, page: usize) -> &Arc<PageText> {
         let document = self.document;
         self.texts[page].get_or_insert_with(|| {

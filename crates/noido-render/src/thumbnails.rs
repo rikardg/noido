@@ -84,13 +84,12 @@ fn run(
             if delivered[page] {
                 continue;
             }
-            let (scale, result) = match document.page_size(page) {
-                Ok(size) => {
-                    let scale = thumbnail_scale(size);
-                    (scale, crate::render_whole(document, page, size, scale))
-                }
-                Err(e) => (1.0, Err(e)),
-            };
+            let (scale, result) = crate::caught(|| {
+                let size = document.page_size(page)?;
+                let scale = thumbnail_scale(size);
+                Ok((scale, crate::render_whole(document, page, size, scale)))
+            })
+            .unwrap_or_else(|e| (1.0, Err(e)));
             if results
                 .send(Thumbnail {
                     page,

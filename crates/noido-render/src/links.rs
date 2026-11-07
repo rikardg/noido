@@ -93,14 +93,17 @@ fn run(
         let reply = match command {
             Command::Links(page) => LinkReply::Links {
                 page,
-                links: document.links(page).unwrap_or_default(),
+                links: crate::caught(|| document.links(page)).unwrap_or_else(|e| {
+                    eprintln!("noido: links of page {}: {e}", page + 1);
+                    Vec::new()
+                }),
             },
             Command::Flash(target) => LinkReply::Flash {
                 target,
-                area: flash_area(document, target),
+                area: crate::caught_none(|| flash_area(document, target)),
             },
             Command::Named(name) => LinkReply::Named {
-                target: document.named_destination(&name),
+                target: crate::caught_none(|| document.named_destination(&name)),
                 name,
             },
         };
@@ -114,7 +117,11 @@ fn run(
 /// The line at `target`; without one, a bar across the text (or most of
 /// the page) at its height; without a height either, nothing.
 fn flash_area(document: &dyn Document, target: Destination) -> Option<Rect> {
-    let text = PageText::new(crate::glyphs_on_page(document, target.page).unwrap_or_default());
+    let glyphs = crate::glyphs_on_page(document, target.page).unwrap_or_else(|e| {
+        eprintln!("noido: text of page {}: {e}", target.page + 1);
+        Vec::new()
+    });
+    let text = PageText::new(glyphs);
     if let Some(line) = text.line_near(target.x, target.y) {
         return Some(line);
     }

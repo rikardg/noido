@@ -16,6 +16,12 @@ struct LinkEngine {
     links: Vec<Vec<Link>>,
     /// A page whose links fail.
     failing: Option<usize>,
+    /// A page whose links cannot be read: asking panics.
+    panicking: Option<usize>,
+    /// A page whose text cannot be read: asking panics.
+    panicking_text: Option<usize>,
+    /// The name that cannot be read: asking panics.
+    panicking_named: bool,
 }
 
 impl PdfEngine for LinkEngine {
@@ -41,6 +47,11 @@ impl Document for LinkEngine {
     }
 
     fn text(&self, page: usize) -> Result<Vec<Glyph>, EngineError> {
+        assert_ne!(
+            self.panicking_text,
+            Some(page),
+            "the text that cannot be read"
+        );
         let mut glyphs = Vec::new();
         for (i, line) in self.lines[page].iter().enumerate() {
             let baseline = 100.0 + 20.0 * i as f32;
@@ -67,6 +78,7 @@ impl Document for LinkEngine {
     }
 
     fn links(&self, page: usize) -> Result<Vec<Link>, EngineError> {
+        assert_ne!(self.panicking, Some(page), "the links that cannot be read");
         if self.failing == Some(page) {
             return Err(EngineError::Render("broken".into()));
         }
@@ -74,6 +86,10 @@ impl Document for LinkEngine {
     }
 
     fn named_destination(&self, name: &str) -> Option<Destination> {
+        assert!(
+            !(self.panicking_named && name == "boom"),
+            "the name that cannot be read"
+        );
         (name == "a").then(|| target(1, Some(50.0)))
     }
 }
@@ -100,6 +116,9 @@ fn linker() -> Linker {
         lines: vec![vec!["first", "second"], vec![], vec![]],
         links: vec![vec![web_link()], vec![], vec![]],
         failing: Some(1),
+        panicking: None,
+        panicking_text: None,
+        panicking_named: false,
     };
     Linker::start(Arc::new(engine), Arc::new(Vec::new()), Box::new(|| {}))
 }
@@ -157,6 +176,74 @@ fn failed_links_answer_empty() {
             assert!(links.is_empty());
         }
         other => panic!("{other:?}, not links"),
+    }
+}
+
+#[test]
+fn panicking_links_answer_empty_and_the_thread_lives() {
+    let engine = LinkEngine {
+        lines: vec![vec!["first", "second"], vec![]],
+        links: vec![vec![web_link()], vec![]],
+        failing: None,
+        panicking: Some(0),
+        panicking_text: None,
+        panicking_named: false,
+    };
+    let linker = Linker::start(Arc::new(engine), Arc::new(Vec::new()), Box::new(|| {}));
+    linker.request_links(0);
+    match recv(&linker) {
+        LinkReply::Links { page, links } => {
+            assert_eq!(page, 0);
+            assert!(links.is_empty(), "the panicking page gave links");
+        }
+        other => panic!("{other:?}, not links"),
+    }
+
+    // Page 1's links still come.
+    linker.request_links(1);
+    assert!(matches!(recv(&linker), LinkReply::Links { page: 1, .. }));
+}
+
+#[test]
+fn flash_survives_panicking_text() {
+    // Where the glyphs cannot be read there is no line to flash, but the bar
+    // across the page is still found: the links thread lives.
+    let engine = LinkEngine {
+        lines: vec![vec!["first", "second"]],
+        links: vec![vec![]],
+        failing: None,
+        panicking: None,
+        panicking_text: Some(0),
+        panicking_named: false,
+    };
+    let linker = Linker::start(Arc::new(engine), Arc::new(Vec::new()), Box::new(|| {}));
+    let area = flash_area(&linker, target(0, Some(300.0))).expect("no flash area");
+    assert!((area.x - 61.2).abs() < 0.01);
+    assert!((area.width - 489.6).abs() < 0.01);
+}
+
+#[test]
+fn panicking_named_destination_is_none() {
+    let engine = LinkEngine {
+        lines: vec![vec![]],
+        links: vec![vec![]],
+        failing: None,
+        panicking: None,
+        panicking_text: None,
+        panicking_named: true,
+    };
+    let linker = Linker::start(Arc::new(engine), Arc::new(Vec::new()), Box::new(|| {}));
+    linker.request_named("boom".into());
+    assert!(matches!(
+        recv(&linker),
+        LinkReply::Named { target: None, .. }
+    ));
+
+    // The thread lives: the next name is answered.
+    linker.request_named("a".into());
+    match recv(&linker) {
+        LinkReply::Named { target: t, .. } => assert_eq!(t, Some(target(1, Some(50.0)))),
+        other => panic!("{other:?}, not a name"),
     }
 }
 
