@@ -3,7 +3,8 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2, vec2};
 use noido_core::{
-    Caret, DragKind, HighlightColour, Highlights, Layout, PageTextState, Selection, Spot, spot_at,
+    Caret, DocPoint, DragKind, HighlightColour, Highlights, Layout, PageTextState, Selection, Spot,
+    spot_at,
 };
 
 use crate::texts::Texts;
@@ -30,11 +31,11 @@ pub const HANDLE_RADIUS: f32 = 6.0;
 pub const HANDLE_REACH: f32 = 12.0;
 /// The size of a highlight colour's button in the selection's bar, in
 /// points.
-pub const SWATCH_SIZE: f32 = 18.0;
+pub const SWATCH_SIZE: f32 = 27.0;
 /// How many colour buttons the bar has: one per colour.
 pub const SWATCH_COUNT: usize = HighlightColour::ALL.len();
 /// The radius of the colour circle drawn in that button, in points.
-pub const SWATCH_RADIUS: f32 = 6.0;
+pub const SWATCH_RADIUS: f32 = 9.0;
 /// The alpha of a highlight over the page's text, in light and dark mode:
 /// the fill is stronger in dark mode, where the page sits in darker chrome.
 const HIGHLIGHT_ALPHA_LIGHT: u8 = 89;
@@ -89,6 +90,12 @@ pub struct State {
     /// The highlight being edited: its index in [`Highlights::items`].
     pub editing: Option<usize>,
     pub drag: Option<Drag>,
+    /// A highlight being edited was clicked: the page point clicked,
+    /// projected to screen each frame into [`State::bar_at`].
+    bar_doc: Option<DocPoint>,
+    /// Where the bar hangs from on screen, in the same coordinates as
+    /// `caret_lines`; `None` hangs it from the selection's end.
+    pub bar_at: Option<Pos2>,
     /// The pointer is over text on the pages.
     pub over_text: bool,
     /// A widget had keyboard focus at the end of the last frame.
@@ -122,6 +129,8 @@ impl State {
     pub fn clear(&mut self) {
         self.selection = None;
         self.editing = None;
+        self.bar_doc = None;
+        self.bar_at = None;
         self.drag = None;
         self.copy_pending = None;
     }
@@ -135,6 +144,8 @@ impl State {
         };
         let Some(highlight) = highlights.get(index) else {
             self.editing = None;
+            self.bar_doc = None;
+            self.bar_at = None;
             return;
         };
         let selected = self
@@ -174,6 +185,12 @@ impl State {
         self.carets = [None, None];
         self.caret_lines = [None, None];
         self.handles = [None, None];
+        // The click the bar hangs from, moved with the page it was made
+        // on: scrolling, zooming or flipping pages takes it along.
+        self.bar_at = self
+            .bar_doc
+            .and_then(|p| layout.content_point(p))
+            .map(|(x, y)| content.min + vec2(x, y));
         let Some(selection) = self.selection else {
             return;
         };
@@ -247,6 +264,8 @@ impl State {
                     && let Some((start, last)) = selection.carets()
                 {
                     drag.started = true;
+                    self.bar_doc = None;
+                    self.bar_at = None;
                     selection.anchor = Spot::At(if end == 0 { last } else { start });
                 }
                 if let Some(focus) = pointer.and_then(|pos| spot(pos - grab)) {
@@ -255,6 +274,8 @@ impl State {
             }
             if drag.kind == DragKind::Select && drag.moved {
                 self.editing = None;
+                self.bar_doc = None;
+                self.bar_at = None;
                 if !drag.started
                     && let Some(anchor) = spot(drag.origin)
                 {
@@ -291,6 +312,8 @@ impl State {
                 self.settle(texts, highlights);
             } else if click && drag.kind == DragKind::Select && (double || triple) {
                 self.editing = None;
+                self.bar_doc = None;
+                self.bar_at = None;
                 self.selection = point.and_then(|p| {
                     let PageTextState::Known(text) = texts.get(p.page) else {
                         return None;
@@ -307,10 +330,13 @@ impl State {
                     })
                 });
             } else if click && drag.shift && self.selection.is_some() {
-                // Shift+click extends, tool on or off.
+                // Shift+click extends, tool on or off. The bar goes back to
+                // the focus caret it now hangs from.
                 if let (Some(selection), Some(to)) = (&mut self.selection, spot(drag.origin)) {
                     selection.extend_to(to);
                 }
+                self.bar_doc = None;
+                self.bar_at = None;
                 if self.editing.is_some() {
                     self.settle(texts, highlights);
                 }
@@ -319,6 +345,8 @@ impl State {
                 // selects it, elsewhere it clears.
                 self.selection = None;
                 self.editing = None;
+                self.bar_doc = None;
+                self.bar_at = None;
                 if !(on_link && !drag.shift)
                     && let Some(p) = point
                     && let PageTextState::Known(text) = texts.get(p.page)
@@ -330,6 +358,9 @@ impl State {
                         focus: Spot::At(highlight.end),
                     });
                     self.editing = Some(index);
+                    // The bar comes up under the pointer, not at the
+                    // highlight's far end.
+                    self.bar_doc = Some(p);
                 }
             } else {
                 let empty = self

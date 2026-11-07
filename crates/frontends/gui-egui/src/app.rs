@@ -56,7 +56,7 @@ const SELECTION_OPACITY: f32 = 0.35;
 /// The gap between the selection's end and its bar, in points.
 const SELECTION_BAR_GAP: f32 = 8.0;
 /// About how tall the selection's bar is, to tell whether it fits above.
-const SELECTION_BAR_HEIGHT: f32 = 32.0;
+const SELECTION_BAR_HEIGHT: f32 = 48.0;
 
 /// What egui's scroll area reported at the end of the last frame.
 #[derive(Clone, Copy)]
@@ -1798,13 +1798,28 @@ impl NoidoApp {
         if self.select.drag.is_some() || self.page_open() {
             return;
         }
-        let (Some((top, bottom)), Some(last)) = (self.select.caret_lines[1], self.last_scroll)
-        else {
+        let Some(last) = self.last_scroll else {
             return;
         };
-        if !last.inner.contains(top.lerp(bottom, 0.5)) {
-            return;
-        }
+        // A clicked highlight hangs its bar from the click; a fresh
+        // selection hangs it from its end's caret.
+        let (top, bottom) = match (self.select.editing, self.select.bar_at) {
+            (Some(_), Some(at)) => {
+                if !last.inner.contains(at) {
+                    return;
+                }
+                (at, at)
+            }
+            _ => {
+                let Some((top, bottom)) = self.select.caret_lines[1] else {
+                    return;
+                };
+                if !last.inner.contains(top.lerp(bottom, 0.5)) {
+                    return;
+                }
+                (top, bottom)
+            }
+        };
         let above = top.y - SELECTION_BAR_GAP - SELECTION_BAR_HEIGHT >= last.inner.top();
         let (pos, pivot) = if above {
             (
@@ -1829,7 +1844,15 @@ impl NoidoApp {
             .pivot(pivot)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    // The bar stands SELECTION_BAR_HEIGHT tall, its frame's
+                    // margins and all: the colour buttons set the row's
+                    // height and the text buttons centre in it.
+                    let margins = ui.spacing().menu_margin;
+                    let row =
+                        (SELECTION_BAR_HEIGHT - f32::from(margins.top) - f32::from(margins.bottom))
+                            .max(select::SWATCH_SIZE);
                     ui.horizontal(|ui| {
+                        ui.set_min_height(row);
                         copy = ui.button("Copy").clicked();
                         for (i, colour) in HighlightColour::ALL.into_iter().enumerate() {
                             let (rect, response) = ui.allocate_exact_size(
@@ -1837,11 +1860,12 @@ impl NoidoApp {
                                 Sense::click(),
                             );
                             // Above the bar, not just above the swatch: the
-                            // swatch sits inside the bar's frame, so the
-                            // tooltip lifts by that padding and by the bar's
-                            // own gap.
+                            // swatch sits centred in the bar's taller row, so
+                            // the tooltip lifts by the frame's padding and the
+                            // row's slack, and by the bar's own gap.
                             let name = select::colour_name(colour);
-                            let gap = f32::from(ui.spacing().menu_margin.top) + SELECTION_BAR_GAP;
+                            let slack = (row - select::SWATCH_SIZE) / 2.0;
+                            let gap = f32::from(margins.top) + slack + SELECTION_BAR_GAP;
                             let mut tip = egui::Tooltip::for_enabled(&response);
                             tip.popup = tip.popup.align(egui::RectAlign::TOP).gap(gap);
                             tip.show(|ui| ui.label(name));
@@ -1869,11 +1893,13 @@ impl NoidoApp {
                             }
                             self.select.swatches[i] = Some(rect);
                         }
-                        if selected.is_some() {
-                            let response = ui.button("Delete");
-                            delete = response.clicked();
-                            self.select.delete_rect = Some(response.rect);
-                        }
+                        // Always there, so the bar keeps its width as
+                        // a highlight is made or selected; it acts only
+                        // on a highlight being edited.
+                        let response =
+                            ui.add_enabled(selected.is_some(), egui::Button::new("Delete"));
+                        delete = response.clicked();
+                        self.select.delete_rect = Some(response.rect);
                     });
                 });
             });
@@ -1882,16 +1908,15 @@ impl NoidoApp {
             self.apply(ctx, parent, Action::Copy);
         }
         if let Some(colour) = clicked {
-            // Over a selected highlight the swatches recolour it; over a
-            // fresh selection they make one.
+            // A swatch recolours the highlight being edited, or makes one
+            // of the selection and keeps it selected, so the bar stays
+            // open on it.
             if let Some(index) = self.select.editing {
                 self.highlights.set_colour(index, colour);
-                self.select.clear();
             } else if let Some((start, end)) = self.select.selection.and_then(|s| s.carets())
                 && start < end
             {
-                self.highlights.add(Highlight { start, end, colour });
-                self.select.clear();
+                self.select.editing = self.highlights.add(Highlight { start, end, colour });
             }
         }
         if delete && let Some(index) = self.select.editing {
@@ -9823,10 +9848,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn colour_swatch_in_bar_creates_highlight_and_clears_selection() {
+    fn colour_swatch_in_bar_creates_highlight_and_selects_it() {
         let (mut h, _) = selecting();
         highlight_the_cat(&mut h);
-        assert_eq!(h.app.select.selection, None);
+        // The new highlight is selected for editing, so the reader can
+        // recolour or delete it without clicking it again.
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_eq!(selected_on(&h, 0), Some(0..7));
+        assert!(h.app.select.bar_rect.is_some(), "the bar stays open");
+        assert!(h.app.select.delete_rect.is_some(), "the bar offers delete");
         assert_eq!(
             h.app.highlights.items(),
             [Highlight {
@@ -9937,6 +9967,228 @@ pub(crate) mod tests {
         assert!(h.app.select.tool);
         click_the_highlight(&mut h);
         assert_eq!(selected_on(&h, 0), Some(0..7));
+    }
+
+    #[test]
+    fn bar_hangs_from_the_click_on_a_highlight() {
+        let (mut h, _) = selecting();
+        let caret = |char| Caret { page: 0, char };
+        // "the cat sat": a highlight long enough that its end sits well
+        // away from a click near its start.
+        h.app.highlights.add(Highlight {
+            start: caret(0),
+            end: caret(11),
+            colour: HighlightColour::Yellow,
+        });
+        let click = screen_pos(&h, 0, 75.0, 95.0);
+        h.click(click);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        // Hung from the click, the gap above it.
+        assert!(
+            (bar.bottom() - (click.y - SELECTION_BAR_GAP)).abs() <= 1.0,
+            "the bar {bar:?} does not hang from the click at {click:?}"
+        );
+        // Centred on the click, or as near the window's left edge as a
+        // bar this wide can get.
+        assert!(
+            (bar.center().x - click.x).abs() <= 3.0 || bar.left() <= 1.0,
+            "the bar {bar:?} is not over the click at {click:?}"
+        );
+        let line_top = screen_pos(&h, 0, 100.0, 90.4).y;
+        assert!(
+            bar.bottom() <= line_top,
+            "the bar {bar:?} is not above the line at {line_top}"
+        );
+
+        // Further into the highlight there is room to centre it, and the
+        // highlight's own end (its right edge) is the wrong place.
+        past_double_click(&mut h);
+        let into = screen_pos(&h, 0, 127.0, 95.0);
+        h.click(into);
+        h.frames(1, vec![]);
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        assert!(
+            (bar.center().x - into.x).abs() <= 3.0,
+            "the bar {bar:?} is not over the click at {into:?}"
+        );
+
+        // A Shift+click that extends the highlight drops the click
+        // anchor: the bar goes back to the focus caret.
+        assert!(h.app.select.bar_at.is_some(), "the click anchors the bar");
+        past_double_click(&mut h);
+        h.modifiers = Modifiers::SHIFT;
+        h.click(screen_pos(&h, 0, 105.0, 95.0));
+        h.frames(1, vec![]);
+        h.modifiers = Modifiers::NONE;
+        assert_eq!(h.app.select.bar_at, None);
+
+        // A drag's own selection keeps the caret as the bar's anchor.
+        drag_text(&mut h, 0, (73.0, 95.0), (112.0, 95.0), Modifiers::SHIFT);
+        assert_eq!(h.app.select.bar_at, None);
+    }
+
+    #[test]
+    fn bar_follows_the_clicked_line_when_the_view_moves() {
+        let (mut h, _) = selecting();
+        let caret = |char| Caret { page: 0, char };
+        h.app.highlights.add(Highlight {
+            start: caret(0),
+            end: caret(11),
+            colour: HighlightColour::Yellow,
+        });
+        let click = screen_pos(&h, 0, 75.0, 95.0);
+        h.click(click);
+        h.frames(1, vec![]);
+        let before = h.app.select.bar_rect.expect("the bar is drawn");
+        assert!(
+            (before.bottom() - (click.y - SELECTION_BAR_GAP)).abs() <= 1.0,
+            "the bar {before:?} does not hang from the click at {click:?}"
+        );
+
+        // Move the view under the bar: the page point clicked moves on
+        // screen, and the bar goes with it.
+        h.frames(1, vec![Event::PointerMoved(pos2(450.0, 500.0))]);
+        h.frames(
+            1,
+            vec![wheel(
+                egui::MouseWheelUnit::Point,
+                -60.0,
+                egui::MouseWheelSource::Wheel,
+            )],
+        );
+        h.frames(2, vec![]);
+        let now = screen_pos(&h, 0, 75.0, 95.0);
+        let after = h.app.select.bar_rect.expect("the bar is still drawn");
+        assert_ne!(
+            after.bottom(),
+            before.bottom(),
+            "the page did not move: {now:?} is still at the click {click:?}"
+        );
+        assert!(
+            (after.bottom() - (now.y - SELECTION_BAR_GAP)).abs() <= 1.0,
+            "the bar {after:?} is not above the clicked line now at {now:?}"
+        );
+    }
+
+    #[test]
+    fn bar_hides_when_the_clicked_line_leaves_the_view() {
+        let (mut h, _) = selecting();
+        let caret = |char| Caret { page: 0, char };
+        h.app.highlights.add(Highlight {
+            start: caret(0),
+            end: caret(11),
+            colour: HighlightColour::Yellow,
+        });
+        h.click(screen_pos(&h, 0, 75.0, 95.0));
+        h.frames(1, vec![]);
+        assert!(h.app.select.bar_rect.is_some(), "the bar is drawn");
+
+        // Scrolled well past the clicked line, the bar goes with it and
+        // out of the viewport.
+        h.frames(1, vec![Event::PointerMoved(pos2(450.0, 500.0))]);
+        h.frames(
+            2,
+            vec![wheel(
+                egui::MouseWheelUnit::Point,
+                -3000.0,
+                egui::MouseWheelSource::Wheel,
+            )],
+        );
+        assert!(
+            h.app.select.bar_rect.is_none(),
+            "the bar is still drawn at {:?}",
+            h.app.select.bar_rect
+        );
+
+        // Back at the top, the bar hangs from the click again.
+        for _ in 0..5 {
+            h.frames(1, vec![Event::PointerMoved(pos2(450.0, 500.0))]);
+            h.frames(
+                2,
+                vec![wheel(
+                    egui::MouseWheelUnit::Point,
+                    2000.0,
+                    egui::MouseWheelSource::Wheel,
+                )],
+            );
+        }
+        let bar = h.app.select.bar_rect.expect("the bar is back");
+        let click = screen_pos(&h, 0, 75.0, 95.0);
+        assert!(
+            (bar.bottom() - (click.y - SELECTION_BAR_GAP)).abs() <= 1.0,
+            "the bar {bar:?} is not above the click now at {click:?}"
+        );
+    }
+
+    #[test]
+    fn copy_in_the_bar_keeps_the_highlight_selected() {
+        let (mut h, _) = selecting();
+        select_the_highlight(&mut h);
+        let copy = h.text_rect("Copy").expect("the bar shows Copy");
+        h.click(copy.center());
+        h.frames(1, vec![]);
+        assert_eq!(h.copied, vec!["the cat".to_owned()]);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_eq!(selected_on(&h, 0), Some(0..7));
+        assert!(h.app.select.bar_rect.is_some(), "the bar stays open");
+    }
+
+    #[test]
+    fn the_bar_and_its_swatches_are_bigger() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.frames(1, vec![]);
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        // The sizes as literals: a test against the constants would pass
+        // whatever they were shrunk to.
+        for swatch in h.app.select.swatches {
+            let swatch = swatch.expect("the bar offers the colours");
+            assert!(
+                swatch.width() >= 27.0 && swatch.height() >= 27.0,
+                "the swatch {swatch:?} is smaller than 27 points"
+            );
+        }
+        assert!(
+            bar.height() >= 48.0,
+            "the bar is {} tall, not 48: {bar:?}",
+            bar.height()
+        );
+    }
+
+    #[test]
+    fn the_bar_keeps_its_delete_button_until_there_is_a_highlight() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.frames(1, vec![]);
+        let fresh = h.app.select.bar_rect.expect("the bar is drawn");
+        // The button is there from the start, disabled, so the bar does
+        // not widen under the pointer once a highlight is made.
+        let delete = h
+            .app
+            .select
+            .delete_rect
+            .expect("the bar offers Delete before a highlight exists");
+        h.click(delete.center());
+        h.frames(1, vec![]);
+        assert!(
+            h.app.highlights.items().is_empty(),
+            "a disabled Delete acted"
+        );
+        assert_eq!(selected_on(&h, 0), Some(0..7));
+        assert!(h.app.select.delete_rect.is_some(), "the bar stays open");
+
+        let swatch = h.app.select.swatches[0].expect("the bar offers the colours");
+        h.click(swatch.center());
+        h.frames(1, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        let made = h.app.select.bar_rect.expect("the bar is still drawn");
+        assert_eq!(
+            made.width(),
+            fresh.width(),
+            "the bar changed width when the highlight was made: {fresh:?} then {made:?}"
+        );
     }
 
     #[test]
@@ -10075,7 +10327,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn colour_swatch_recolours_selected_highlight_and_clears_selection() {
+    fn colour_swatch_recolours_selected_highlight_and_keeps_it_selected() {
         let (mut h, _) = selecting();
         select_the_highlight(&mut h);
         let swatch = h.app.select.swatches[2].expect("the bar offers the colours");
@@ -10085,8 +10337,9 @@ pub(crate) mod tests {
             h.app.highlights.get(0).unwrap().colour,
             HighlightColour::Blue
         );
-        assert_eq!(h.app.select.editing, None);
-        assert_eq!(h.app.select.selection, None);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_eq!(selected_on(&h, 0), Some(0..7));
+        assert!(h.app.select.bar_rect.is_some(), "the bar stays open");
         h.press(egui::Key::Z, Modifiers::COMMAND);
         h.frames(1, vec![]);
         assert_eq!(
@@ -10104,6 +10357,7 @@ pub(crate) mod tests {
         h.frames(1, vec![]);
         assert!(h.app.highlights.items().is_empty());
         assert_eq!(h.app.select.editing, None);
+        assert_eq!(h.app.select.selection, None);
 
         h.press(egui::Key::Z, Modifiers::COMMAND);
         h.frames(1, vec![]);
