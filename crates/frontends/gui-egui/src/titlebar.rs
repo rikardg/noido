@@ -27,6 +27,9 @@ const ICON_BUTTON: f32 = 28.0;
 const STATUS_GAP: f32 = 8.0;
 /// Room left for macOS's window buttons at the bar's left.
 const TRAFFIC_LIGHTS_INSET: f32 = 76.0;
+/// The least room a scrolling menu keeps for itself, in points: enough for
+/// a few entries, even when the window's edge is closer.
+const MENU_LOWEST_ROOM: f32 = 96.0;
 
 /// What the bar shows.
 pub struct Bar<'a> {
@@ -212,7 +215,19 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
                     menu_theme.apply_role(mode, style, theme::Role::Menu);
                 })
                 .show(|ui| {
-                    menu_entries(ui, bar, &mut output.actions, &mut output.recent);
+                    // A long menu in a short window scrolls instead of
+                    // running past the window's edge, where its last
+                    // entries could not be reached.
+                    let room = (ui.ctx().content_rect().height()
+                        - 2.0 * f32::from(ui.spacing().menu_margin.top))
+                        .max(MENU_LOWEST_ROOM);
+                    ui.set_max_height(room);
+                    egui::ScrollArea::vertical()
+                        .max_height(room)
+                        .auto_shrink([true, true])
+                        .show(ui, |ui| {
+                            menu_entries(ui, bar, &mut output.actions, &mut output.recent);
+                        });
                 });
 
             let rest = ui.available_rect_before_wrap();

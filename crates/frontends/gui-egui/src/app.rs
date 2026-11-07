@@ -1047,11 +1047,17 @@ impl NoidoApp {
             self.apply(ctx, parent, action);
         }
         // Not elsewhere, such as over the sidebar: there the wheel scrolls
-        // what is under it.
+        // what is under it. Nor over a popup: the menu and the dialogs
+        // scroll their own content, and the pages stay put behind them.
         let elsewhere = self
             .last_scroll
             .is_some_and(|last| pointer.is_some_and(|p| !last.inner.contains(p)));
-        let over_pages = !elsewhere;
+        let over_popup = pointer.is_some_and(|p| {
+            ctx.layer_id_at(p).is_some_and(|layer| {
+                matches!(layer.order, egui::Order::Foreground | egui::Order::Tooltip)
+            })
+        });
+        let over_pages = !elsewhere && !over_popup;
         if over_pages {
             let spread = self.view.current_spread();
             for step in wheel {
@@ -6046,13 +6052,85 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_menu_scrolls_when_the_window_is_short() {
+        let mut h = Harness::new();
+        h.size = vec2(900.0, 600.0);
+        h.frames(2, vec![]);
+        h.click(h.app.bar.menu.center());
+        h.frames(30, vec![]);
+        // The menu stops at the window's edge instead of running past it...
+        let first = h.text_rect("Open…").expect("the menu opens");
+        let last = h.text_rect("Dual page").expect("the menu fills the window");
+        assert!(last.bottom() <= 600.0, "{last:?} is inside the window");
+        assert!(
+            h.text_rect("Quit").is_none(),
+            "Quit is past the room the window has"
+        );
+        // ...and the rest is a wheel away.
+        let over = egui::pos2(first.center().x, first.center().y + 80.0);
+        h.frames(1, vec![Event::PointerMoved(over)]);
+        for _ in 0..12 {
+            h.frames(
+                2,
+                vec![wheel(
+                    egui::MouseWheelUnit::Line,
+                    -3.0,
+                    egui::MouseWheelSource::Wheel,
+                )],
+            );
+        }
+        let quit = h.text_rect("Quit").expect("the menu scrolls to Quit");
+        assert!(quit.bottom() <= 600.0, "{quit:?} is inside the window");
+    }
+
+    #[test]
+    fn the_menu_may_use_the_whole_window() {
+        let mut h = Harness::new();
+        h.size = vec2(900.0, 1200.0);
+        h.frames(2, vec![]);
+        h.click(h.app.bar.menu.center());
+        h.frames(30, vec![]);
+        let quit = h
+            .text_rect("Quit")
+            .expect("a tall window shows the whole menu");
+        assert!(quit.bottom() <= 1200.0, "{quit:?} is inside the window");
+    }
+
+    #[test]
+    fn wheeling_the_menu_does_not_turn_the_page() {
+        let mut h = fitted_paged();
+        open_menu(&mut h);
+        let first = h.text_rect("Open…").expect("the menu opens");
+        let over = egui::pos2(first.center().x, first.center().y + 80.0);
+        h.frames(1, vec![Event::PointerMoved(over)]);
+        let page = h.app.current_page();
+        for _ in 0..12 {
+            h.frames(
+                2,
+                vec![wheel(
+                    egui::MouseWheelUnit::Line,
+                    -3.0,
+                    egui::MouseWheelSource::Wheel,
+                )],
+            );
+        }
+        assert_eq!(h.app.current_page(), page, "the wheel turned the page");
+        assert!(
+            h.text_rect("Quit").is_some(),
+            "the wheel did not reach the menu"
+        );
+    }
+
+    #[test]
     fn menu_uses_the_menu_fill_and_hover() {
         let mut h = Harness::new();
         let palette = h.theme().palette(egui::Theme::Dark);
         h.click(h.app.bar.menu.center());
         h.frames(30, vec![]);
         assert!(!filled_deep(&h, palette.menu_fill).is_empty());
-        let entry = h.text_rect("Settings…").expect("settings entry");
+        // An entry near the top: a long menu is taller than the window and
+        // the rest is a wheel away.
+        let entry = h.text_rect("Fit width").expect("the menu's first entries");
         h.frames(30, vec![Event::PointerMoved(entry.center())]);
         assert!(!filled_deep(&h, palette.menu_hover).is_empty());
     }
@@ -6094,7 +6172,7 @@ pub(crate) mod tests {
         let palette = h.theme().palette(egui::Theme::Dark);
         h.click(h.app.bar.menu.center());
         h.frames(1, vec![]);
-        assert_eq!(h.text_color("Settings…"), Some(palette.menu_text));
+        assert_eq!(h.text_color("Open…"), Some(palette.menu_text));
     }
 
     #[test]
