@@ -66,15 +66,16 @@ size; the app holds one request at a time and sends it.
   at least the minimum window size, and no more than the screen.
 - On the key, the app calls `hold_zoom`, then stores a `Shrink` with two
   sends left. It does neither when the page area has no size yet, as on the
-  first frame.
+  first frame, nor when there is no spread to fit to: a document with no
+  pages leaves the view and the window as they are.
 - At the point in the frame where the page area is laid out — where the app
   already tells the view its viewport size — `settle_shrink` compares the
-  equal, and the request is forgotten. Different, and it sends
-  `ViewportCommand::InnerSize` and keeps one fewer send. A maximized or
-  full-screen window is restored first, and resized on the next frame, since
-  a maximized window takes no size; still maximized on that frame, the
-  request is dropped rather than asked again, which would keep the window
-  from ever being maximized.
+  target with the window. Equal, and the request is forgotten. Different,
+  and it sends `ViewportCommand::InnerSize` and keeps one fewer send. A
+  maximized or full-screen window is restored first, and resized on the next
+  frame, since a maximized window takes no size; still maximized on that
+  frame, the request is dropped rather than asked again, which would keep
+  the window from ever being maximized.
 - Two sends, because a scroll bar coming or going changes the page area by
   its thickness: the first resize can land a bar's width off, and the next
   frame corrects it from the chrome it then measures.
@@ -100,3 +101,11 @@ size; the app holds one request at a time and sends it.
   only if it stays maximized; a window with no page area yet asks for
   nothing; the zoom is the scale it was, and fit width still refits
   afterwards.
+- Harness, the screen: the window reports a screen size, and with a page
+  bigger than it the fit stops at the screen on both axes and then settles.
+- Harness, full screen: the window is restored first and asked once only if
+  it stays full screen, as a maximized one is.
+- Harness, a second key press in the frame that resizes: the last press is
+  the one that counts, one size is asked for, and the window settles.
+- Harness, a document with no pages: both keys change nothing — no size is
+  asked for, and the zoom mode and scale stay as they were.
