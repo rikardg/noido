@@ -18,6 +18,7 @@ mod search;
 mod select;
 mod settings;
 mod shell;
+mod shrink;
 mod sidebar;
 mod texts;
 mod theme;

@@ -23,6 +23,7 @@ use crate::open;
 use crate::search::{self, Search};
 use crate::select;
 use crate::settings;
+use crate::shrink::{self, Shrink};
 use crate::sidebar::{self, SidebarView};
 use crate::texts::Texts;
 use crate::titlebar::{self, TITLE_BAR_HEIGHT};
@@ -185,6 +186,9 @@ pub struct NoidoApp {
     requests: Option<crate::shell::Requests>,
     /// The recently opened files, newest first, as the menu offers them.
     recent: Vec<PathBuf>,
+    /// A window size asked for by fitting the window to the page, and the
+    /// corrections left, until the window has it.
+    shrink: Option<Shrink>,
 }
 
 /// Low-res images shown for pages whose full render hasn't arrived.
@@ -296,6 +300,7 @@ impl NoidoApp {
             screen_edge: None,
             page_key_repeated: false,
             recent: Vec::new(),
+            shrink: None,
         }
     }
 
@@ -862,6 +867,68 @@ impl NoidoApp {
         }
     }
 
+    /// Asks the window for the size fitting the page to it asked for: the page
+    /// area wanted plus the chrome the window measures. Runs after the page
+    /// area is laid out, so the window's size and the room it gives come from
+    /// the same frame; a bar coming or going costs one more frame.
+    fn settle_shrink(&mut self, ctx: &egui::Context) {
+        let Some(shrink) = self.shrink else {
+            return;
+        };
+        let area = self.view.viewport_size();
+        if area.0 <= 0.0 || area.1 <= 0.0 {
+            // No layout yet: the next frame has one.
+            return;
+        }
+        let (maximized, fullscreen, screen) = ctx.input(|i| {
+            let viewport = i.viewport();
+            (
+                viewport.maximized.unwrap_or(false),
+                viewport.fullscreen.unwrap_or(false),
+                viewport.monitor_size,
+            )
+        });
+        if maximized || fullscreen {
+            if shrink.restored() {
+                // The window manager kept it maximized: asking again would
+                // keep the window from ever being maximized.
+                self.shrink = None;
+                return;
+            }
+            // A maximized window takes no size; it is sized once it has a
+            // frame of its own again.
+            if maximized {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+            }
+            if fullscreen {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            }
+            if let Some(shrink) = &mut self.shrink {
+                shrink.asked_restore();
+            }
+            return;
+        }
+        let size = ctx.content_rect().size();
+        let target = shrink::target(
+            shrink,
+            &shrink::Room {
+                size,
+                area,
+                sidebar: self.sidebar.open.then_some(self.sidebar.width),
+                min: Vec2::from(crate::MIN_WINDOW_SIZE),
+                screen,
+            },
+        );
+        if (target - size).abs().max_elem() <= 0.5 {
+            self.shrink = None;
+            return;
+        }
+        self.shrink = shrink.spend();
+        if self.shrink.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target));
+        }
+    }
+
     fn handle_input(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
         // The settings and info pages are modal: the document doesn't move
         // behind them.
@@ -1078,6 +1145,21 @@ impl NoidoApp {
             Action::ToggleSidebar => {
                 self.sidebar.open = !self.sidebar.open;
                 self.sidebar_opened_by_search = false;
+            }
+            // The window, not the view: the zoom is held at the scale it has,
+            // so the resize doesn't refit the pages.
+            Action::FitWindowWidth | Action::FitWindowPage => {
+                let (area_width, area_height) = self.view.viewport_size();
+                // Before the first layout there is no page area to fit to.
+                if area_width > 0.0 && area_height > 0.0 {
+                    self.view.hold_zoom();
+                    if let Some((width, height)) = self.view.spread_viewport_size() {
+                        self.shrink = Some(match action {
+                            Action::FitWindowPage => Shrink::new(width, height),
+                            _ => Shrink::new(width, area_height),
+                        });
+                    }
+                }
             }
             Action::FocusSearch => self.search_focus_requested = true,
             Action::ToggleSelectTool => self.select.tool = !self.select.tool,
@@ -1850,6 +1932,7 @@ impl NoidoApp {
         if self.last_scroll.is_some() {
             let (width, height) = solid.map_or((area.width(), area.height()), |(_, room)| room);
             self.view.set_viewport_size(width, height);
+            self.settle_shrink(&ctx);
         }
 
         let (x, y) = self.view.offset();
@@ -2323,6 +2406,17 @@ pub(crate) mod tests {
                 if let Some(viewport) = output.viewport_output.get(&egui::ViewportId::ROOT) {
                     self.commands.extend(viewport.commands.iter().cloned());
                     self.repaint_delay = viewport.repaint_delay;
+                    // What a window does with them, so a resize is measured
+                    // by the next frame.
+                    for command in &viewport.commands {
+                        match command {
+                            egui::ViewportCommand::InnerSize(size) => self.size = *size,
+                            egui::ViewportCommand::Maximized(maximized) => {
+                                self.maximized = *maximized;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 self.cursor = output.platform_output.cursor_icon;
                 for command in &output.platform_output.commands {
@@ -2578,6 +2672,171 @@ pub(crate) mod tests {
         let (x1, y1) = h.app.view.offset();
         assert!(x1 > x0 + 50.0, "x {x0} -> {x1}");
         assert!(y1 > y0 + 150.0, "y {y0} -> {y1}");
+    }
+
+    #[test]
+    fn shift_f_fits_the_window_to_the_page() {
+        let mut h = Harness::new();
+        // Zoomed out, so the page is smaller than the window.
+        for _ in 0..2 {
+            h.press(egui::Key::Minus, Modifiers::COMMAND);
+        }
+        h.frames(2, vec![]);
+        let scale = h.app.view.scale();
+        let (width, height) = h.app.view.spread_viewport_size().unwrap();
+        assert!(width < h.size.x);
+
+        h.press(egui::Key::F, Modifiers::SHIFT);
+        h.frames(8, vec![]);
+
+        let (area_width, area_height) = h.app.view.viewport_size();
+        eprintln!(
+            "after: window {:?} area {:?} page {width}",
+            h.size,
+            h.app.view.viewport_size()
+        );
+        assert!((area_width - width).abs() < 1.0, "{area_width} for {width}");
+        assert!(
+            (area_height - height).abs() < 1.0,
+            "{area_height} for {height}"
+        );
+        assert!(h.size.x < 900.0, "the window is {} wide", h.size.x);
+        assert!(h.size.y < 1000.0, "the window is {} high", h.size.y);
+        // The zoom is held, not refitted.
+        assert_eq!(h.app.view.scale(), scale);
+        assert_eq!(h.app.view.mode(), noido_core::ZoomMode::Custom);
+    }
+
+    #[test]
+    fn shift_w_fits_the_width_and_leaves_the_height() {
+        let mut h = Harness::new();
+        for _ in 0..2 {
+            h.press(egui::Key::Minus, Modifiers::COMMAND);
+        }
+        h.frames(2, vec![]);
+        let (width, _) = h.app.view.spread_viewport_size().unwrap();
+        let height = h.app.view.viewport_size().1;
+
+        h.press(egui::Key::W, Modifiers::SHIFT);
+        h.frames(8, vec![]);
+
+        let (area_width, area_height) = h.app.view.viewport_size();
+        assert!((area_width - width).abs() < 1.0, "{area_width} for {width}");
+        assert!(
+            (area_height - height).abs() < 1.0,
+            "{area_height} for {height}"
+        );
+        assert!(h.size.x < 900.0, "the window is {} wide", h.size.x);
+        assert!((h.size.y - 1000.0).abs() < 1.0, "window {}", h.size.y);
+    }
+
+    #[test]
+    fn fitting_the_window_keeps_the_sidebar_its_width() {
+        let mut h = Harness::new();
+        h.press(egui::Key::F9, Modifiers::NONE);
+        for _ in 0..6 {
+            h.press(egui::Key::Minus, Modifiers::COMMAND);
+        }
+        h.frames(3, vec![]);
+        let width = h.app.sidebar.width;
+
+        h.press(egui::Key::F, Modifiers::SHIFT);
+        h.frames(10, vec![]);
+
+        assert_eq!(h.app.sidebar.width, width);
+    }
+
+    #[test]
+    fn fitting_the_window_restores_it_first() {
+        let mut h = Harness::new();
+        h.maximized = true;
+        h.frames(1, vec![]);
+        h.press(egui::Key::F, Modifiers::SHIFT);
+        assert!(
+            h.commands
+                .contains(&egui::ViewportCommand::Maximized(false))
+        );
+        let sized = |h: &Harness| {
+            h.commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::InnerSize(_)))
+        };
+        assert!(!sized(&h), "a maximized window takes no size");
+        h.frames(8, vec![]);
+        assert!(sized(&h));
+    }
+
+    #[test]
+    fn fitting_the_window_leaves_fit_width_working() {
+        let mut h = Harness::new();
+        for _ in 0..2 {
+            h.press(egui::Key::Minus, Modifiers::COMMAND);
+        }
+        h.press(egui::Key::F, Modifiers::SHIFT);
+        h.frames(8, vec![]);
+        h.press(egui::Key::W, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.view.mode(), noido_core::ZoomMode::FitWidth);
+        assert!(h.app.view.layout().content_width() <= h.app.view.viewport_size().0 + 0.5);
+    }
+
+    #[test]
+    fn fitting_the_window_settles_and_stays() {
+        let mut h = Harness::new().solid_bars();
+        h.press(egui::Key::C, Modifiers::NONE);
+        h.frames(2, vec![]);
+        let (width, height) = h.app.view.spread_viewport_size().unwrap();
+
+        h.press(egui::Key::F, Modifiers::SHIFT);
+        h.frames(8, vec![]);
+
+        let (area_width, area_height) = h.app.view.viewport_size();
+        assert!((area_width - width).abs() < 1.0, "{area_width} for {width}");
+        assert!(
+            (area_height - height).abs() < 1.0,
+            "{area_height} for {height}"
+        );
+        // The bar a solid theme draws comes along and isn't chased.
+        let asked = h.commands.len();
+        h.frames(4, vec![]);
+        assert_eq!(h.commands.len(), asked, "the window settled");
+        // Asking again for the size it has asks for nothing.
+        h.press(egui::Key::F, Modifiers::SHIFT);
+        h.frames(4, vec![]);
+        assert_eq!(h.commands.len(), asked, "nothing to resize");
+    }
+
+    #[test]
+    fn fitting_the_window_before_it_is_laid_out_asks_nothing() {
+        let mut h = Harness::new();
+        // As on the first frame, when the window has given the pages no room.
+        h.app.view = View::new(vec![noido_engine::Size {
+            width: 612.0,
+            height: 792.0,
+        }]);
+        let ctx = h.ctx.clone();
+        for action in [Action::FitWindowWidth, Action::FitWindowPage] {
+            h.app.apply(&ctx, None, action);
+            assert_eq!(h.app.shrink, None, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn fitting_the_window_asks_once_for_a_restore() {
+        let mut h = Harness::new();
+        h.press(egui::Key::F, Modifiers::SHIFT);
+        // A window manager that keeps the window maximized.
+        for _ in 0..6 {
+            h.maximized = true;
+            h.frames(1, vec![]);
+        }
+        let asked = h
+            .commands
+            .iter()
+            .filter(|command| **command == egui::ViewportCommand::Maximized(false))
+            .count();
+        assert_eq!(asked, 1, "asked {asked} times");
+        assert_eq!(h.app.shrink, None, "the request is dropped");
     }
 
     #[test]

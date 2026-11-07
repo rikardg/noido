@@ -141,6 +141,8 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
         vec![
             entry(Action::FitWidth, "Fit width"),
             entry(Action::FitPage, "Fit page"),
+            entry(Action::FitWindowWidth, "Fit window to width"),
+            entry(Action::FitWindowPage, "Fit window to page"),
             entry(Action::ZoomIn, "Zoom in"),
             entry(Action::ZoomOut, "Zoom out"),
         ],
@@ -197,7 +199,14 @@ mod tests {
             labels,
             vec![
                 vec!["Open…"],
-                vec!["Fit width", "Fit page", "Zoom in", "Zoom out"],
+                vec![
+                    "Fit width",
+                    "Fit page",
+                    "Fit window to width",
+                    "Fit window to page",
+                    "Zoom in",
+                    "Zoom out"
+                ],
                 vec!["Continuous", "Dual page", "Odd pages left", "Gapless mode"],
                 vec!["Show sidebar"],
                 vec!["Select text"],
