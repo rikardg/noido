@@ -587,7 +587,7 @@ impl StoredHighlight {
             start_char: highlight.start.char,
             end_page: highlight.end.page,
             end_char: highlight.end.char,
-            colour: StoredColour::new(highlight.colour),
+            colour: StoredColour::new(&highlight.colour),
         }
     }
 
@@ -618,7 +618,7 @@ enum StoredColour {
 }
 
 impl StoredColour {
-    fn new(colour: HighlightColour) -> Self {
+    fn new(colour: &HighlightColour) -> Self {
         match colour {
             HighlightColour::Yellow => Self::Yellow,
             HighlightColour::Green => Self::Green,

@@ -31,6 +31,8 @@ pub const HANDLE_REACH: f32 = 12.0;
 /// The size of a highlight colour's button in the selection's bar, in
 /// points.
 pub const SWATCH_SIZE: f32 = 18.0;
+/// How many colour buttons the bar has: one per colour.
+pub const SWATCH_COUNT: usize = HighlightColour::ALL.len();
 /// The radius of the colour circle drawn in that button, in points.
 pub const SWATCH_RADIUS: f32 = 6.0;
 /// The alpha of a highlight over the page's text, in light and dark mode:
@@ -54,6 +56,17 @@ fn hue(colour: HighlightColour) -> (u8, u8, u8) {
 pub fn swatch_colour(colour: HighlightColour) -> Color32 {
     let (r, g, b) = hue(colour);
     Color32::from_rgb(r, g, b)
+}
+
+/// The name of `colour`'s button in the selection's bar, for its tooltip.
+pub fn colour_name(colour: HighlightColour) -> &'static str {
+    match colour {
+        HighlightColour::Yellow => "Yellow",
+        HighlightColour::Green => "Green",
+        HighlightColour::Blue => "Blue",
+        HighlightColour::Pink => "Pink",
+        HighlightColour::Purple => "Purple",
+    }
 }
 
 /// The fill a highlight of `colour` is drawn with over the page's text,
@@ -90,7 +103,7 @@ pub struct State {
     pub bar_rect: Option<Rect>,
     /// Where the bar's colour swatches were drawn last frame, in
     /// [`HighlightColour::ALL`] order.
-    pub swatches: [Option<Rect>; 5],
+    pub swatches: [Option<Rect>; SWATCH_COUNT],
     /// Where the bar's delete button was drawn last frame.
     pub delete_rect: Option<Rect>,
     /// The pages (not a scroll bar, the sidebar or a popup over them) are

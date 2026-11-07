@@ -935,7 +935,10 @@ impl NoidoApp {
     }
 
     /// Whether the settings or document info page is open: it covers the
-    /// document, so the document must not change behind it.
+    /// document, so the document's highlights must not change behind it.
+    /// Presses and the selection's bar wait for it to close, and Undo, Redo
+    /// and the delete keys are held back; view actions still reach the
+    /// document, from the menu and the title bar.
     fn page_open(&self) -> bool {
         self.settings_page.is_some() || self.info_page.is_some()
     }
@@ -1790,7 +1793,7 @@ impl NoidoApp {
     /// The small bar by the selection's end, once the drag is over.
     fn selection_bar(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
         self.select.bar_rect = None;
-        self.select.swatches = [None; 5];
+        self.select.swatches = [None; select::SWATCH_COUNT];
         self.select.delete_rect = None;
         if self.select.drag.is_some() || self.page_open() {
             return;
@@ -1833,6 +1836,7 @@ impl NoidoApp {
                                 Vec2::splat(select::SWATCH_SIZE),
                                 Sense::click(),
                             );
+                            let response = response.on_hover_text(select::colour_name(colour));
                             let centre = rect.center();
                             let stroke = ui.visuals().widgets.hovered.fg_stroke;
                             ui.painter().circle_filled(
@@ -6171,6 +6175,19 @@ pub(crate) mod tests {
             .collect()
     }
 
+    /// The centre and radius of each circle stroked in `colour` last frame.
+    fn stroked_circles(h: &Harness, colour: Color32) -> Vec<(egui::Pos2, f32)> {
+        h.shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Circle(c) if c.stroke.width > 0.0 && c.stroke.color == colour => {
+                    Some((c.center, c.radius))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn the_harness_uses_the_fixed_theme() {
         let h = Harness::new();
@@ -9135,6 +9152,21 @@ pub(crate) mod tests {
         drag_text(&mut h, 0, (73.0, 95.0), (100.0, 95.0), Modifiers::SHIFT);
         h.press(egui::Key::Escape, Modifiers::NONE);
         assert_eq!(h.app.select.selection, None);
+        assert_eq!(h.app.select.editing, None);
+
+        // With a highlight selected for editing, Esc lets go of it too and
+        // leaves the highlight drawn where it is stored.
+        select_the_highlight(&mut h);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(h.app.select.selection, None);
+        assert_eq!(h.app.select.editing, None);
+        let dark = h.ctx.global_style().visuals.dark_mode;
+        let fill = select::highlight_fill(HighlightColour::Yellow, dark);
+        let at = screen_pos(&h, 0, 80.0, 95.0);
+        assert!(
+            filled_with(&h, fill).iter().any(|r| r.contains(at)),
+            "the highlight is not drawn at {at:?}"
+        );
     }
 
     #[test]
@@ -9440,6 +9472,12 @@ pub(crate) mod tests {
         }
         h.frames(1, vec![]);
         h.modifiers = Modifiers::NONE;
+    }
+
+    /// Runs egui's click window (0.3 s) out, so the next click is a single
+    /// one rather than part of a double click.
+    fn past_double_click(h: &mut Harness) {
+        h.frames(25, vec![]);
     }
 
     #[test]
@@ -9757,12 +9795,21 @@ pub(crate) mod tests {
         assert!(again < first * 1.25, "first {first}, again {again}");
     }
 
-    /// Selects "the cat" on page 0 and makes it a yellow highlight with the
-    /// bar's first swatch.
+    /// Selects "the cat" on page 0 and makes it a yellow highlight.
     fn highlight_the_cat(h: &mut Harness) {
+        highlight_the_cat_in(h, HighlightColour::Yellow);
+    }
+
+    /// Selects "the cat" on page 0 and makes it a highlight in `colour`
+    /// with the bar's swatch.
+    fn highlight_the_cat_in(h: &mut Harness, colour: HighlightColour) {
         select_the_cat(h);
         h.frames(1, vec![]);
-        let swatch = h.app.select.swatches[0].expect("the bar offers the colours");
+        let index = HighlightColour::ALL
+            .iter()
+            .position(|c| *c == colour)
+            .expect("the colour is offered");
+        let swatch = h.app.select.swatches[index].expect("the bar offers the colours");
         h.click(swatch.center());
         h.frames(1, vec![]);
     }
@@ -9854,6 +9901,7 @@ pub(crate) mod tests {
         let (mut h, _) = selecting();
         highlight_the_cat(&mut h);
         click_the_highlight(&mut h);
+        assert!(!h.app.select.tool, "the select tool is off");
         assert!(
             h.app.select.handles[0].is_some(),
             "the start's handle shows"
@@ -9873,6 +9921,73 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn click_highlight_selects_it_with_tool_on() {
+        let (mut h, _) = selecting();
+        highlight_the_cat(&mut h);
+        h.press(egui::Key::S, Modifiers::NONE);
+        h.frames(1, vec![]);
+        assert!(h.app.select.tool);
+        click_the_highlight(&mut h);
+        assert_eq!(selected_on(&h, 0), Some(0..7));
+    }
+
+    #[test]
+    fn the_bar_offers_a_swatch_for_every_colour() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.frames(1, vec![]);
+        assert!(
+            h.app.select.swatches.iter().all(Option::is_some),
+            "the bar leaves a colour out: {:?}",
+            h.app.select.swatches
+        );
+    }
+
+    #[test]
+    fn the_bar_rings_the_swatch_of_the_selected_colour() {
+        let (mut h, _) = selecting();
+        // Not Yellow: the first swatch, which a bar that always rings the
+        // first one would still get right.
+        highlight_the_cat_in(&mut h, HighlightColour::Blue);
+        click_the_highlight(&mut h);
+        // The bar fades in; let it reach full strength before reading it.
+        h.frames(20, vec![]);
+        let ring = h.ctx.global_style().visuals.selection.stroke.color;
+        let ringed = |h: &Harness, colour: HighlightColour| {
+            let index = HighlightColour::ALL
+                .iter()
+                .position(|c| *c == colour)
+                .expect("the colour is offered");
+            let swatch = h.app.select.swatches[index].expect("the bar offers the colours");
+            stroked_circles(h, ring)
+                .iter()
+                .any(|(centre, radius)| swatch.contains(*centre) && *radius > select::SWATCH_RADIUS)
+        };
+        assert!(ringed(&h, HighlightColour::Blue), "blue is ringed");
+        assert!(!ringed(&h, HighlightColour::Yellow), "yellow is not ringed");
+        assert!(!ringed(&h, HighlightColour::Green), "green is not ringed");
+    }
+
+    #[test]
+    fn hovering_a_swatch_names_its_colour() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.frames(1, vec![]);
+        // The names as literals: a mis-mapped colour_name would still match
+        // itself, so two colours sharing a name must fail here.
+        let names = ["Yellow", "Green", "Blue", "Pink", "Purple"];
+        for ((index, colour), name) in HighlightColour::ALL.into_iter().enumerate().zip(names) {
+            let swatch = h.app.select.swatches[index].expect("the bar offers the colours");
+            h.frames(1, vec![Event::PointerMoved(swatch.center())]);
+            h.frames(40, vec![]);
+            assert!(
+                h.text_rect(name).is_some(),
+                "{colour:?} is not named {name:?}"
+            );
+        }
+    }
+
+    #[test]
     fn drag_highlight_handle_resizes_it_and_undoes_in_one_step() {
         let (mut h, _) = selecting();
         select_the_highlight(&mut h);
@@ -9887,6 +10002,49 @@ pub(crate) mod tests {
         assert_eq!(h.app.highlights.get(0).unwrap().end.char, 7);
         assert_eq!(h.app.highlights.get(0).unwrap().start.char, 0);
         assert_eq!(h.app.select.editing, None);
+    }
+
+    #[test]
+    fn dragging_a_handle_draws_the_live_range() {
+        let (mut h, _) = selecting();
+        select_the_highlight(&mut h);
+        let end = h.app.select.handles[1].expect("the end's handle shows");
+        let step = screen_pos(&h, 0, 126.0, 95.0).x - screen_pos(&h, 0, 114.0, 95.0).x;
+        // Hold the end's handle and drag it two characters on, without
+        // letting go.
+        h.frames(1, vec![Event::PointerMoved(end)]);
+        h.frames(
+            1,
+            vec![Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        h.frames(1, vec![Event::PointerMoved(end + vec2(step, 0.0))]);
+        assert_eq!(h.app.highlights.get(0).unwrap().end.char, 7);
+        let dark = h.ctx.global_style().visuals.dark_mode;
+        let fill = select::highlight_fill(HighlightColour::Yellow, dark);
+        let live = screen_pos(&h, 0, 120.0, 95.0);
+        assert!(
+            filled_with(&h, fill).iter().any(|r| r.contains(live)),
+            "the live range is not drawn at {live:?}"
+        );
+    }
+
+    #[test]
+    fn a_fresh_selection_drag_lets_go_of_the_highlight() {
+        let (mut h, _) = selecting();
+        select_the_highlight(&mut h);
+        h.press(egui::Key::S, Modifiers::NONE);
+        h.frames(1, vec![]);
+        assert!(h.app.select.tool);
+        drag_text(&mut h, 0, (90.0, 95.0), (112.0, 95.0), Modifiers::NONE);
+        assert_eq!(h.app.select.editing, None);
+        assert_eq!(selected_on(&h, 0), Some(3..7));
+        let highlight = h.app.highlights.get(0).expect("the highlight is kept");
+        assert_eq!((highlight.start.char, highlight.end.char), (0, 7));
     }
 
     #[test]
@@ -10068,9 +10226,9 @@ pub(crate) mod tests {
         h.frames(1, vec![]);
         assert_eq!(h.app.select.editing, Some(0));
         assert_eq!(selected_on(&h, 0), Some(0..11));
-        // Past the double-click delay, so these two count as a double
-        // click rather than a third and fourth.
-        h.frames(25, vec![]);
+        // These two count as a double click rather than a third and
+        // fourth.
+        past_double_click(&mut h);
         // A double click selects the word instead, not the highlight.
         click_times(&mut h, (123.0, 95.0), 2, Modifiers::SHIFT);
         assert_eq!(h.app.select.editing, None);
@@ -10089,8 +10247,7 @@ pub(crate) mod tests {
         assert_eq!(h.app.chosen, Some(5));
         assert_eq!(h.app.select.editing, None);
 
-        // Back to the link's page, past the double-click delay, so each of
-        // the clicks below is a single one.
+        // Back to the link's page; the clicks below are single ones.
         for _ in 0..20 {
             if h.centre().page == 0 {
                 break;
@@ -10099,13 +10256,13 @@ pub(crate) mod tests {
             h.frames(1, vec![]);
         }
         h.app.chosen = None;
-        h.frames(25, vec![]);
+        past_double_click(&mut h);
         assert_eq!(h.centre().page, 0);
         click_times(&mut h, (100.0, 96.0), 1, Modifiers::SHIFT);
         assert_eq!(h.app.select.editing, Some(0));
         assert_eq!(h.app.chosen, None);
 
-        h.frames(25, vec![]);
+        past_double_click(&mut h);
         click_times(&mut h, (120.0, 96.0), 1, Modifiers::SHIFT);
         assert_eq!(h.app.select.editing, Some(0));
         assert_eq!(h.app.chosen, None);
@@ -10115,7 +10272,7 @@ pub(crate) mod tests {
 
         // A Shift+click back onto the start swaps the selection's ends
         // rather than collapsing it, so the stored range stays put.
-        h.frames(25, vec![]);
+        past_double_click(&mut h);
         click_times(&mut h, (73.0, 95.0), 1, Modifiers::SHIFT);
         let highlight = h.app.highlights.get(0).expect("the highlight is kept");
         assert_eq!((highlight.start.char, highlight.end.char), (0, 8));
@@ -10129,7 +10286,7 @@ pub(crate) mod tests {
             anchor: caret,
             focus: caret,
         });
-        h.frames(25, vec![]);
+        past_double_click(&mut h);
         click_times(&mut h, (121.0, 95.0), 1, Modifiers::SHIFT);
         let highlight = h.app.highlights.get(0).expect("the highlight is kept");
         assert_eq!((highlight.start.char, highlight.end.char), (0, 8));
