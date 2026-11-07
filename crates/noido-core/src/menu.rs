@@ -158,6 +158,7 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
             "Select text",
             Check::SelectTool,
         )],
+        vec![entry(Action::Undo, "Undo"), entry(Action::Redo, "Redo")],
         vec![
             entry(Action::Back, "Back"),
             entry(Action::Forward, "Forward"),
@@ -210,6 +211,7 @@ mod tests {
                 vec!["Continuous", "Dual page", "Odd pages left", "Gapless mode"],
                 vec!["Show sidebar"],
                 vec!["Select text"],
+                vec!["Undo", "Redo"],
                 vec!["Back", "Forward"],
                 vec!["Copy link to page", "Copy Markdown link to page"],
                 vec!["Next match", "Previous match"],

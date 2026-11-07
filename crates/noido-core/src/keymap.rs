@@ -18,6 +18,8 @@ pub enum Key {
     I,
     L,
     S,
+    Z,
+    Y,
     Comma,
     F3,
     F9,
@@ -89,6 +91,10 @@ pub enum Action {
     /// Turns the select tool on or off: with it on, a plain drag selects
     /// text and Shift+drag pans.
     ToggleSelectTool,
+    /// Steps back through the highlights' changes.
+    Undo,
+    /// Steps forward through them again.
+    Redo,
     /// Copies the selected text. Not bound: the window acts on the
     /// toolkit's own copy event (Mod+C), which text fields also use.
     Copy,
@@ -148,6 +154,9 @@ impl Keymap {
             (plain(Key::O), Action::ToggleOddLeft),
             (plain(Key::G), Action::ToggleGapless),
             (plain(Key::S), Action::ToggleSelectTool),
+            (command(Key::Z), Action::Undo),
+            (shift(command(Key::Z)), Action::Redo),
+            (command(Key::Y), Action::Redo),
             (plain(Key::F9), Action::ToggleSidebar),
             (command(Key::F), Action::FocusSearch),
             (command(Key::G), Action::NextHit),
@@ -168,15 +177,21 @@ impl Keymap {
     }
 
     /// The action bound to `press`. While `editing` text, only presses that
-    /// can't be typed act: with Mod, function keys and Page Up/Down.
+    /// can't be typed act: with Mod, function keys and Page Up/Down. Undo and
+    /// Redo are the field's own there.
     pub fn action(&self, press: KeyPress, editing: bool) -> Option<Action> {
         if editing && !acts_while_editing(press) {
             return None;
         }
-        self.bindings
+        let action = self
+            .bindings
             .iter()
             .find(|(bound, _)| *bound == press)
-            .map(|(_, action)| *action)
+            .map(|(_, action)| *action)?;
+        if editing && matches!(action, Action::Undo | Action::Redo) {
+            return None;
+        }
+        Some(action)
     }
 
     /// The key shown for `action`: its first binding.
@@ -219,6 +234,8 @@ pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
         Key::I => "I",
         Key::L => "L",
         Key::S => "S",
+        Key::Z => "Z",
+        Key::Y => "Y",
         Key::Comma => ",",
         Key::F3 => "F3",
         Key::F9 => "F9",
@@ -444,6 +461,26 @@ mod tests {
             shortcut_label(shifted(Key::L, true), Platform::Other),
             "Shift+Ctrl+L"
         );
+    }
+
+    #[test]
+    fn undo_and_redo_keys_and_not_while_editing() {
+        let keymap = Keymap::native();
+        for (press, action) in [
+            (press(Key::Z, true), Action::Undo),
+            (shifted(Key::Z, true), Action::Redo),
+            (press(Key::Y, true), Action::Redo),
+        ] {
+            assert_eq!(keymap.action(press, false), Some(action));
+            // A text field keeps its own undo and redo.
+            assert_eq!(keymap.action(press, true), None);
+        }
+        assert_eq!(keymap.key_for(Action::Redo), Some(shifted(Key::Z, true)));
+        assert_eq!(
+            shortcut_label(shifted(Key::Z, true), Platform::Other),
+            "Shift+Ctrl+Z"
+        );
+        assert_eq!(shortcut_label(shifted(Key::Z, true), Platform::Mac), "⇧⌘Z");
     }
 
     #[test]
