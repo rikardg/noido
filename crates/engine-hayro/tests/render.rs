@@ -114,6 +114,38 @@ fn rejects_too_large() {
 }
 
 #[test]
+fn a_tiling_pattern_with_a_step_bigger_than_the_page_renders() {
+    // One 10 pt red tile, repeated every 99999 pt: a tile that cannot be
+    // sized by its step. Sizing it by the step overflows a 16-bit pixel
+    // dimension, which vello answers with a panic.
+    let bytes: PdfBytes = Arc::new(
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/tiling.pdf"
+        ))
+        .unwrap(),
+    );
+    let doc = HayroEngine.open(bytes).unwrap();
+    let image = doc.render_page(0, 1224, 1584).unwrap();
+    let painted = image
+        .pixels()
+        .chunks(4)
+        .filter(|p| p[..3] != [255, 255, 255])
+        .count();
+    assert!(painted > 0, "the tile was not drawn");
+    assert!(
+        painted < 1000,
+        "{painted} px painted: the tile was repeated"
+    );
+    let red = image
+        .pixels()
+        .chunks(4)
+        .filter(|p| p[0] > 200 && p[1] < 60 && p[2] < 60)
+        .count();
+    assert!(red > 0, "the tile is not painted red");
+}
+
+#[test]
 fn garbage_and_empty_fail_to_open() {
     assert!(matches!(
         HayroEngine.open(Arc::new(b"hello".to_vec())),

@@ -16,7 +16,7 @@ const PDF: &str = "http://ns.adobe.com/pdf/1.3/";
 pub(crate) fn properties(pdf: &Pdf) -> Properties {
     let info = pdf.metadata();
     let text =
-        |bytes: &Option<Vec<u8>>| bytes.as_deref().map(decode_text).filter(|s| !s.is_empty());
+        |bytes: &Option<Box<[u8]>>| bytes.as_deref().map(decode_text).filter(|s| !s.is_empty());
     let mut p = Properties {
         title: text(&info.title),
         author: text(&info.author),
@@ -39,7 +39,7 @@ pub(crate) fn properties(pdf: &Pdf) -> Properties {
             .is_some_and(|o| o.contains_key(b"First"));
         if let Some(xmp) = catalog
             .get::<Stream>(b"Metadata")
-            .and_then(|s| s.decoded().ok())
+            .and_then(|s| s.decoded_data().ok())
             .and_then(|bytes| String::from_utf8(bytes.into_owned()).ok())
         {
             fill_from_xmp(&mut p, &xmp);
