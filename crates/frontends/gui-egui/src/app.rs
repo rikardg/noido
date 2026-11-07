@@ -1836,7 +1836,15 @@ impl NoidoApp {
                                 Vec2::splat(select::SWATCH_SIZE),
                                 Sense::click(),
                             );
-                            let response = response.on_hover_text(select::colour_name(colour));
+                            // Above the bar, not just above the swatch: the
+                            // swatch sits inside the bar's frame, so the
+                            // tooltip lifts by that padding and by the bar's
+                            // own gap.
+                            let name = select::colour_name(colour);
+                            let gap = f32::from(ui.spacing().menu_margin.top) + SELECTION_BAR_GAP;
+                            let mut tip = egui::Tooltip::for_enabled(&response);
+                            tip.popup = tip.popup.align(egui::RectAlign::TOP).gap(gap);
+                            tip.show(|ui| ui.label(name));
                             let centre = rect.center();
                             let stroke = ui.visuals().widgets.hovered.fg_stroke;
                             ui.painter().circle_filled(
@@ -9980,9 +9988,15 @@ pub(crate) mod tests {
             let swatch = h.app.select.swatches[index].expect("the bar offers the colours");
             h.frames(1, vec![Event::PointerMoved(swatch.center())]);
             h.frames(40, vec![]);
+            let Some(tip) = h.text_rect(name) else {
+                panic!("{colour:?} is not named {name:?}");
+            };
+            // The bar sits over the selection, so a tooltip under the swatch
+            // lands on the pointer and is unreadable.
+            let bar = h.app.select.bar_rect.expect("the bar is drawn");
             assert!(
-                h.text_rect(name).is_some(),
-                "{colour:?} is not named {name:?}"
+                tip.bottom() <= bar.top() + 0.5,
+                "{name:?}'s tooltip {tip:?} is not above the bar {bar:?} (0.5px rounding allowed)"
             );
         }
     }
