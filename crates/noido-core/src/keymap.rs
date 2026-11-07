@@ -93,7 +93,7 @@ pub enum Action {
     ToggleSelectTool,
     /// Steps back through the highlights' changes.
     Undo,
-    /// Steps forward through them again.
+    /// Steps forward through the undone highlight changes.
     Redo,
     /// Copies the selected text. Not bound: the window acts on the
     /// toolkit's own copy event (Mod+C), which text fields also use.
