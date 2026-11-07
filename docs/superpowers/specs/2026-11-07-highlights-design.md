@@ -18,8 +18,8 @@ in the document's state file across launches.
 - **Five colours**: yellow, green, blue, pink, and purple.
 - **Making a highlight**: when text is selected, the selection bar shows
   `Copy` followed by the five colour swatches. Clicking a swatch creates a
-  highlight over the selected range and clears the selection (hiding the
-  bar and handles).
+  highlight over the selected range and selects it, so the bar stays open
+  on it (now with its delete button) for a recolour or a delete.
 - **Across pages**: a highlight is a pair of carets `(start, end)` in
   document order (`start < end`) and a colour, so a selection crossing a
   page break becomes one highlight spanning those pages.
@@ -54,9 +54,11 @@ in the document's state file across launches.
     range from before the drag.
   - The bar at the selected highlight's end shows `Copy`, the five colour
     swatches (with the highlight's current colour marked), and a delete
-    button.
+    button. It hangs from the point the highlight was clicked at when a
+    click selects it, and from the focus caret's line otherwise.
   - Clicking a colour swatch sets the highlight's colour (recording an
-    undo step if the colour changed) and deselects the highlight.
+    undo step if the colour changed) and keeps it selected, so the bar
+    stays open.
   - Clicking the delete button, or pressing `Backspace` or `Delete` while
     no widget has keyboard focus, deletes the selected highlight (one undo
     step) and clears the selection.
@@ -192,17 +194,25 @@ in the document's state file across launches.
 - **The bar** (`selection_bar` in `app.rs`):
   - Shown whenever `self.select.selection` has placed carets in the
     viewport and no drag or modal page is active.
+  - Hangs from the click that selected the highlight (`bar_doc`, kept in
+    document coordinates and projected each frame, so it follows the
+    text when the view moves), and from the focus caret's line for a
+    fresh selection.
   - Contains `Copy`, then five circular colour buttons (yellow, green,
     blue, pink, purple; when `editing == Some(idx)`, that highlight's
-    colour button is drawn with a ring around it), and when
-    `editing.is_some()`, a delete (`×` or trash) button.
+    colour button is drawn with a ring around it), and a delete (`×` or
+    trash) button. The delete button is always drawn — disabled while
+    the bar belongs to a plain text selection — so the bar keeps its
+    width when a highlight is made or selected.
+  - Each colour button names its colour in a tooltip above the bar.
   - Clicking a colour button:
     - When `editing == Some(idx)`: calls `highlights.set_colour(idx,
-      colour)` and clears the selection (`selection = None`,
-      `editing = None`).
+      colour)` and leaves the selection and `editing` as they are, so the
+      bar stays open.
     - When `editing == None`: if the selection is non-empty with
       `carets() == Some((start, end))`, calls `highlights.add(Highlight {
-      start, end, colour })` and clears the selection.
+      start, end, colour })` and sets `editing` to the new highlight's
+      index, keeping the selection, so the bar stays open on it.
   - Clicking the delete button calls `highlights.remove(idx)` and clears
     the selection.
 - **Keys**:
@@ -232,13 +242,16 @@ in the document's state file across launches.
   - Old state files without `highlights` load with `highlights: vec![]`.
 - **Harness (`gui-egui`)**:
   - Selecting text and clicking a colour swatch in the bar creates a
-    highlight and clears the selection.
-  - Clicking an existing highlight selects it (handles and bar appear)
-    even with the select tool off; clicking outside clears it.
+    highlight and selects it, leaving the bar open.
+  - Clicking an existing highlight selects it (handles and bar appear,
+    the bar at the click) even with the select tool off; clicking
+    outside clears it, and the bar follows the line when the view
+    scrolls.
   - Dragging a selected highlight's handle resizes it, and `Mod+Z` /
     `Mod+Shift+Z` undoes and redoes the resize.
   - Clicking another colour swatch on a selected highlight changes its
-    colour and deselects it.
+    colour and keeps it selected; clicking `Copy` copies the text and
+    keeps the bar.
   - Pressing `Backspace`/`Delete` or clicking the bar's delete button
     removes the selected highlight; `Mod+Z` brings it back.
   - `Mod+C` with a highlight selected copies its text.
