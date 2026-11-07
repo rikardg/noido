@@ -15,6 +15,29 @@ pub struct Caret {
     pub char: usize,
 }
 
+/// The characters on `page` between `start` and `end`, given its char
+/// count: from `start`'s char on its page to `end`'s char on its page, the
+/// whole page in between. `None` off those pages, or when nothing lies
+/// between the ends there.
+pub(crate) fn range_on_page(
+    start: Caret,
+    end: Caret,
+    page: usize,
+    char_count: usize,
+) -> Option<Range<usize>> {
+    if page < start.page || page > end.page {
+        return None;
+    }
+    let from = if page == start.page { start.char } else { 0 };
+    let to = if page == end.page {
+        end.char
+    } else {
+        char_count
+    };
+    let range = from.min(char_count)..to.min(char_count);
+    (!range.is_empty()).then_some(range)
+}
+
 /// Where a point lands: a caret, or a point on a page whose text hasn't
 /// arrived, kept to be placed when it does.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -148,17 +171,7 @@ impl Selection {
     /// The selected characters on `page`, given its char count.
     pub fn on_page(&self, page: usize, char_count: usize) -> Option<Range<usize>> {
         let (start, end) = self.carets()?;
-        if page < start.page || page > end.page {
-            return None;
-        }
-        let from = if page == start.page { start.char } else { 0 };
-        let to = if page == end.page {
-            end.char
-        } else {
-            char_count
-        };
-        let range = from.min(char_count)..to.min(char_count);
-        (!range.is_empty()).then_some(range)
+        range_on_page(start, end, page, char_count)
     }
 
     /// The pages from start to end.
