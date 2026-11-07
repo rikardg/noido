@@ -94,6 +94,72 @@ fn out_of_range_page_reports_error() {
     ));
 }
 
+/// Engine whose page 1 cannot be drawn: rendering it panics, as hayro does
+/// on a page with a tiling pattern it cannot size.
+struct PanicEngine;
+
+struct PanicDocument;
+
+impl PdfEngine for PanicEngine {
+    fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+        Ok(Box::new(PanicDocument))
+    }
+}
+
+impl Document for PanicDocument {
+    fn page_count(&self) -> usize {
+        3
+    }
+
+    fn page_size(&self, _page: usize) -> Result<Size, EngineError> {
+        Ok(Size {
+            width: 100.0,
+            height: 100.0,
+        })
+    }
+
+    fn render_tile(
+        &self,
+        page: usize,
+        _scale: f32,
+        _rect: PixelRect,
+    ) -> Result<Rgba8Image, EngineError> {
+        assert_ne!(page, 1, "the page that cannot be drawn");
+        Ok(Rgba8Image::from_premultiplied(1, 1, vec![0; 4]).unwrap())
+    }
+}
+
+#[test]
+fn a_panicking_page_does_not_end_the_render_thread() {
+    let (renderer, _) = Renderer::start(Arc::new(PanicEngine), fixture(), no_waker()).unwrap();
+    renderer.request(RenderRequest {
+        page: 1,
+        scale: 1.0,
+    });
+    let rendered = recv(&renderer);
+    assert_eq!(rendered.page, 1);
+    match rendered.result {
+        Err(EngineError::Render(message)) => {
+            assert!(message.contains("the engine panicked"), "{message}");
+            assert!(
+                message.contains("the page that cannot be drawn"),
+                "{message}"
+            );
+        }
+        Ok(_) => panic!("the panicking page was drawn"),
+        Err(other) => panic!("{other}, not a panic"),
+    }
+
+    // The thread lived: the page after the one that panicked still renders.
+    renderer.request(RenderRequest {
+        page: 2,
+        scale: 1.0,
+    });
+    let rendered = recv(&renderer);
+    assert_eq!(rendered.page, 2);
+    assert!(rendered.result.is_ok(), "page 2 failed");
+}
+
 /// Engine whose first render blocks until the test releases it, and which
 /// records the order of renders.
 #[derive(Clone)]

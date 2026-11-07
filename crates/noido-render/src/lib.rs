@@ -14,6 +14,7 @@ pub use properties::read_properties;
 pub use text::{MAX_HITS, SearchUpdate, TextSearcher};
 pub use thumbnails::{Thumbnail, Thumbnailer};
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -21,15 +22,53 @@ use std::thread;
 use noido_core::Keep;
 use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, Rgba8Image, Size};
 
+/// Runs `f`, reporting a panic as an [`EngineError`] rather than letting it
+/// end the thread that asked: one page the engine cannot survive must not
+/// cost the reader every page after it.
+///
+/// The panic hook has already printed what panicked and where; the error
+/// carries the message, so the page's failure names it too.
+pub(crate) fn caught<T>(f: impl FnOnce() -> Result<T, EngineError>) -> Result<T, EngineError> {
+    // The engine is not `UnwindSafe`, and does not need to be: nothing reads
+    // state a half-finished render left behind. The parse is only read, and
+    // each render builds its own cache.
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(payload) => Err(EngineError::Render(format!(
+            "the engine panicked: {}",
+            panic_message(&*payload)
+        ))),
+    }
+}
+
+/// [`caught`] for a call that answers with an `Option`: a panic is `None`.
+pub(crate) fn caught_none<T>(f: impl FnOnce() -> Option<T>) -> Option<T> {
+    caught(|| Ok(f())).unwrap_or_else(|e| {
+        eprintln!("noido: {e}");
+        None
+    })
+}
+
+/// What a panic was raised with, where it can be read.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("no message")
+}
+
 /// `page`'s glyphs, leaving out any drawn wholly outside the page.
 fn glyphs_on_page(
     document: &dyn Document,
     page: usize,
 ) -> Result<Vec<noido_engine::Glyph>, EngineError> {
-    let glyphs = document.text(page)?;
-    Ok(match document.page_size(page) {
-        Ok(size) => noido_text::on_page(glyphs, size.width, size.height),
-        Err(_) => glyphs,
+    caught(|| {
+        let glyphs = document.text(page)?;
+        Ok(match document.page_size(page) {
+            Ok(size) => noido_text::on_page(glyphs, size.width, size.height),
+            Err(_) => glyphs,
+        })
     })
 }
 
@@ -230,9 +269,11 @@ fn run(
         if !keep.lock().unwrap().contains(page) {
             continue;
         }
-        let result = document
-            .page_size(page)
-            .and_then(|size| render_whole(document, page, size, scale));
+        let result = caught(|| {
+            document
+                .page_size(page)
+                .and_then(|size| render_whole(document, page, size, scale))
+        });
         if results
             .send(RenderedPage {
                 page,

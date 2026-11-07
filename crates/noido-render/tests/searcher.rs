@@ -13,6 +13,8 @@ struct TextEngine {
     pages: Vec<String>,
     /// A page whose text fails.
     failing: Option<usize>,
+    /// A page whose text cannot be read: extracting it panics.
+    panicking: Option<usize>,
     /// How often `text` was called.
     calls: Arc<AtomicUsize>,
 }
@@ -22,6 +24,7 @@ impl TextEngine {
         TextEngine {
             pages: pages.iter().map(|&p| p.to_owned()).collect(),
             failing: None,
+            panicking: None,
             calls: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -58,6 +61,7 @@ impl Document for TextEngine {
 
     fn text(&self, page: usize) -> Result<Vec<Glyph>, EngineError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        assert_ne!(self.panicking, Some(page), "the text that cannot be read");
         if self.failing == Some(page) {
             return Err(EngineError::Render("broken text".into()));
         }
@@ -259,6 +263,25 @@ fn failing_page_has_no_hits() {
     let generation = searcher.search("cat", 0);
     let updates = until_done(&searcher, generation);
     assert_eq!(pages(&updates), [(0, 1), (1, 0), (2, 1)]);
+}
+
+#[test]
+fn panicking_page_has_no_hits_and_is_not_extracted_again() {
+    let mut engine = TextEngine::new(&["cat", "cat", "cat"]);
+    engine.panicking = Some(1);
+
+    let mut searcher = start(&engine);
+    let generation = searcher.search("cat", 0);
+    let updates = until_done(&searcher, generation);
+    // The page's text could not be read, so it has no hits; the search went
+    // on to the page after it.
+    assert_eq!(pages(&updates), [(0, 1), (1, 0), (2, 1)]);
+
+    // The failed page is remembered as having no text, so the next search
+    // does not panic on it all over again.
+    let generation = searcher.search("cat", 0);
+    until_done(&searcher, generation);
+    assert_eq!(engine.calls(), 3);
 }
 
 #[test]

@@ -13,12 +13,15 @@ struct LogEngine {
     log: Arc<Mutex<Vec<usize>>>,
     gate: Option<Arc<Mutex<Receiver<()>>>>,
     fail_open: bool,
+    /// A page whose render panics.
+    panic_on: Option<usize>,
 }
 
 struct LogDocument {
     pages: usize,
     log: Arc<Mutex<Vec<usize>>>,
     gate: Option<Arc<Mutex<Receiver<()>>>>,
+    panic_on: Option<usize>,
 }
 
 impl PdfEngine for LogEngine {
@@ -30,6 +33,7 @@ impl PdfEngine for LogEngine {
             pages: self.pages,
             log: self.log.clone(),
             gate: self.gate.clone(),
+            panic_on: self.panic_on,
         }))
     }
 }
@@ -45,6 +49,7 @@ impl Document for LogDocument {
         })
     }
     fn render_tile(&self, page: usize, _: f32, _: PixelRect) -> Result<Rgba8Image, EngineError> {
+        assert_ne!(self.panic_on, Some(page), "the page that cannot be drawn");
         self.log.lock().unwrap().push(page);
         if let Some(gate) = &self.gate {
             let _ = gate.lock().unwrap().recv();
@@ -67,6 +72,7 @@ fn start(pages: usize, gated: bool) -> Setup {
         log: log.clone(),
         gate: gated.then(|| Arc::new(Mutex::new(gate_rx))),
         fail_open: false,
+        panic_on: None,
     };
     let thumbnailer = Thumbnailer::start(Arc::new(engine), Arc::new(vec![]), Box::new(|| {}));
     Setup {
@@ -150,12 +156,54 @@ fn evicted_pages_render_again() {
 }
 
 #[test]
+fn a_panicking_page_does_not_end_the_thumbnails() {
+    // Page 1 cannot be drawn; the ones after it still arrive, so the sidebar
+    // and the pages behind a slow render keep filling in.
+    let engine = LogEngine {
+        pages: 4,
+        log: Arc::new(Mutex::new(vec![])),
+        gate: None,
+        fail_open: false,
+        panic_on: Some(1),
+    };
+    let thumbnailer = Thumbnailer::start(Arc::new(engine), Arc::new(vec![]), Box::new(|| {}));
+    thumbnailer.set_focus(0, Direction::Forward);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut received = Vec::new();
+    while received.len() < 3 {
+        match thumbnailer.try_recv() {
+            Some(thumbnail) => received.push(thumbnail),
+            None => {
+                assert!(
+                    Instant::now() < deadline,
+                    "only {} thumbnails within 5 s",
+                    received.len()
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+    }
+    assert_eq!(received[1].page, 1);
+    match &received[1].result {
+        Err(EngineError::Render(message)) => {
+            assert!(message.contains("the engine panicked"), "{message}")
+        }
+        Ok(_) => panic!("the panicking page was drawn"),
+        Err(other) => panic!("{other}, not a panic"),
+    }
+    assert_eq!(received[2].page, 2);
+    assert!(received[2].result.is_ok(), "page 2 failed");
+}
+
+#[test]
 fn open_failure_stops_quietly() {
     let engine = LogEngine {
         pages: 3,
         log: Arc::new(Mutex::new(vec![])),
         gate: None,
         fail_open: true,
+        panic_on: None,
     };
     let thumbnailer = Thumbnailer::start(Arc::new(engine), Arc::new(vec![]), Box::new(|| {}));
     thumbnailer.set_focus(0, Direction::Forward);
