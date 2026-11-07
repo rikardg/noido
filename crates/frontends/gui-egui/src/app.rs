@@ -6,9 +6,9 @@ use std::time::Duration;
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Vec2, pos2, vec2};
 use noido_core::{
-    Action, Defaults, Direction, DragKind, History, Keep, Key, KeyPress, Keymap, MAX_RENDER_SIDE,
-    PageTextState, RenderTracker, SidebarState, THUMBNAIL_BUDGET, Target, View, ViewState,
-    drag_kind, render_scale, window_keep, window_order,
+    Action, Defaults, Direction, DragKind, Highlights, History, Keep, Key, KeyPress, Keymap,
+    MAX_RENDER_SIDE, PageTextState, RenderTracker, SidebarState, THUMBNAIL_BUDGET, Target, View,
+    ViewState, drag_kind, render_scale, window_keep, window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
 use noido_settings::{Settings, SettingsFile};
@@ -93,6 +93,8 @@ pub struct NoidoApp {
     persistence: Option<Persistence>,
     /// Where Back and Forward go.
     history: History,
+    /// The document's highlights.
+    highlights: Highlights,
     /// A hit was jumped to since the reader last moved: later hits, of this
     /// search or a new one, add no history entry.
     searched_away: bool,
@@ -261,6 +263,7 @@ impl NoidoApp {
             flip_distance: 0.0,
             persistence: None,
             history: History::default(),
+            highlights: Highlights::default(),
             searched_away: false,
             thumbnails: None,
             focus: None,
@@ -818,6 +821,7 @@ impl NoidoApp {
             self.view.restore(&state.view);
             self.sidebar = state.sidebar;
             self.history = state.history.clone();
+            self.highlights = Highlights::from_items(state.highlights.clone());
         }
         self.persistence = Some(Persistence {
             store,
@@ -835,6 +839,7 @@ impl NoidoApp {
             view: self.view.state()?,
             sidebar: self.sidebar,
             history: self.history.clone(),
+            highlights: self.highlights.items().to_vec(),
         })
     }
 
@@ -3380,6 +3385,7 @@ pub(crate) mod tests {
             view: state,
             sidebar: SidebarState::default(),
             history: History::default(),
+            highlights: Vec::new(),
         };
         let h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
@@ -3440,6 +3446,7 @@ pub(crate) mod tests {
             },
             sidebar: SidebarState::default(),
             history: History::default(),
+            highlights: Vec::new(),
         };
         let h = Harness::build(|app| {
             app.with_settings(None, settings).with_persistence(
@@ -3491,6 +3498,7 @@ pub(crate) mod tests {
             },
             sidebar: SidebarState::default(),
             history: History::default(),
+            highlights: Vec::new(),
         };
         let h = Harness::build(|app| {
             app.with_settings(None, settings).with_persistence(
@@ -3842,6 +3850,7 @@ pub(crate) mod tests {
                 width: 2000.0,
             },
             history: History::default(),
+            highlights: Vec::new(),
         };
         let mut h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(state))
@@ -8685,6 +8694,7 @@ pub(crate) mod tests {
             },
             sidebar: SidebarState::default(),
             history: History::default(),
+            highlights: Vec::new(),
         }
     }
 

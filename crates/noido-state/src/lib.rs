@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
-use noido_core::{DocPoint, History, SIDEBAR_DEFAULT_WIDTH, SidebarState, ViewState, ZoomMode};
+use noido_core::{
+    Caret, DocPoint, Highlight, HighlightColour, Highlights, History, SIDEBAR_DEFAULT_WIDTH,
+    SidebarState, ViewState, ZoomMode,
+};
 use serde::{Deserialize, Serialize};
 
 const VERSION: u32 = 1;
@@ -100,6 +103,7 @@ pub struct DocState {
     pub view: ViewState,
     pub sidebar: SidebarState,
     pub history: History,
+    pub highlights: Vec<Highlight>,
 }
 
 /// `noido` under the `XDG_STATE_HOME` value if it is an absolute path;
@@ -420,6 +424,9 @@ struct Entry {
     back: Vec<Point>,
     #[serde(default)]
     forward: Vec<Point>,
+    // Absent from files written before highlights existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    highlights: Vec<StoredHighlight>,
 }
 
 /// The TOML form of the document's own [`ViewState`].
@@ -536,6 +543,7 @@ impl Entry {
             window: Some(window.to_owned()),
             back: places(doc.history.back_entries()),
             forward: places(doc.history.forward_entries()),
+            highlights: doc.highlights.iter().map(StoredHighlight::new).collect(),
         }
     }
 
@@ -548,6 +556,85 @@ impl Entry {
                 width: self.sidebar_width,
             },
             history: History::from_parts(states(&self.back), states(&self.forward)),
+            // Loading through `Highlights` drops the rows whose end is not
+            // after their start, which noido never writes.
+            highlights: Highlights::from_items(
+                self.highlights
+                    .iter()
+                    .map(StoredHighlight::highlight)
+                    .collect(),
+            )
+            .items()
+            .to_vec(),
+        }
+    }
+}
+
+/// The TOML form of a highlight.
+#[derive(Serialize, Deserialize)]
+struct StoredHighlight {
+    start_page: usize,
+    start_char: usize,
+    end_page: usize,
+    end_char: usize,
+    colour: StoredColour,
+}
+
+impl StoredHighlight {
+    fn new(highlight: &Highlight) -> Self {
+        Self {
+            start_page: highlight.start.page,
+            start_char: highlight.start.char,
+            end_page: highlight.end.page,
+            end_char: highlight.end.char,
+            colour: StoredColour::new(highlight.colour),
+        }
+    }
+
+    fn highlight(&self) -> Highlight {
+        Highlight {
+            start: Caret {
+                page: self.start_page,
+                char: self.start_char,
+            },
+            end: Caret {
+                page: self.end_page,
+                char: self.end_char,
+            },
+            colour: self.colour.colour(),
+        }
+    }
+}
+
+/// A [`HighlightColour`] as TOML writes it.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum StoredColour {
+    Yellow,
+    Green,
+    Blue,
+    Pink,
+    Purple,
+}
+
+impl StoredColour {
+    fn new(colour: HighlightColour) -> Self {
+        match colour {
+            HighlightColour::Yellow => Self::Yellow,
+            HighlightColour::Green => Self::Green,
+            HighlightColour::Blue => Self::Blue,
+            HighlightColour::Pink => Self::Pink,
+            HighlightColour::Purple => Self::Purple,
+        }
+    }
+
+    fn colour(&self) -> HighlightColour {
+        match self {
+            Self::Yellow => HighlightColour::Yellow,
+            Self::Green => HighlightColour::Green,
+            Self::Blue => HighlightColour::Blue,
+            Self::Pink => HighlightColour::Pink,
+            Self::Purple => HighlightColour::Purple,
         }
     }
 }
