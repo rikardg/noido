@@ -60,6 +60,10 @@ pub enum Action {
     ZoomOut,
     FitWidth,
     FitPage,
+    /// The window, not the page: its width becomes the spread's.
+    FitWindowWidth,
+    /// The window's width and height become the spread's.
+    FitWindowPage,
     ToggleContinuous,
     ToggleDual,
     ToggleOddLeft,
@@ -137,6 +141,8 @@ impl Keymap {
             (command(Key::Minus), Action::ZoomOut),
             (plain(Key::W), Action::FitWidth),
             (plain(Key::F), Action::FitPage),
+            (shift(plain(Key::W)), Action::FitWindowWidth),
+            (shift(plain(Key::F)), Action::FitWindowPage),
             (plain(Key::C), Action::ToggleContinuous),
             (plain(Key::D), Action::ToggleDual),
             (plain(Key::O), Action::ToggleOddLeft),
@@ -522,6 +528,27 @@ mod tests {
     }
 
     #[test]
+    fn shift_w_and_f_fit_the_window() {
+        let keymap = Keymap::native();
+        let shift = |key| KeyPress {
+            shift: true,
+            ..press(key, false)
+        };
+        assert_eq!(
+            keymap.action(shift(Key::W), false),
+            Some(Action::FitWindowWidth)
+        );
+        assert_eq!(
+            keymap.action(shift(Key::F), false),
+            Some(Action::FitWindowPage)
+        );
+        assert_eq!(keymap.key_for(Action::FitWindowWidth), Some(shift(Key::W)));
+        assert_eq!(keymap.key_for(Action::FitWindowPage), Some(shift(Key::F)));
+        assert_eq!(shortcut_label(shift(Key::W), Platform::Other), "Shift+W");
+        assert_eq!(shortcut_label(shift(Key::F), Platform::Mac), "⇧F");
+    }
+
+    #[test]
     fn plain_c_and_d_toggle_modes() {
         let keymap = Keymap::native();
         assert_eq!(
@@ -626,6 +653,14 @@ mod tests {
         let keymap = Keymap::native();
         for key in [Key::W, Key::F, Key::C, Key::D] {
             assert_eq!(keymap.action(press(key, false), true), None, "{key:?}");
+        }
+        // Shift makes them the window's, not letters either.
+        for key in [Key::W, Key::F] {
+            let shift = KeyPress {
+                shift: true,
+                ..press(key, false)
+            };
+            assert_eq!(keymap.action(shift, true), None, "Shift+{key:?}");
         }
     }
 

@@ -370,6 +370,8 @@ impl View {
             Action::LastPage => self.go_to_page(self.layout.page_count().saturating_sub(1)),
             // Not about the page view; frontends handle these.
             Action::ToggleSidebar
+            | Action::FitWindowWidth
+            | Action::FitWindowPage
             | Action::FocusSearch
             | Action::NextHit
             | Action::PreviousHit
@@ -395,6 +397,26 @@ impl View {
             let anchor = anchor.unwrap_or_else(|| self.centre());
             self.zoom_to(self.scale() * factor, anchor);
         }
+    }
+
+    /// Keeps the scale the view has when the viewport changes: the fit modes
+    /// refit, a held zoom doesn't. What fitting the window to the page does
+    /// before it resizes the window.
+    pub fn hold_zoom(&mut self) {
+        self.mode = ZoomMode::Custom;
+    }
+
+    /// The viewport that shows the spread the reader is on at the current
+    /// scale: its pages, the gap between them and a margin on every side.
+    /// `None` with no pages. Changes nothing.
+    pub fn spread_viewport_size(&self) -> Option<(f32, f32)> {
+        let spread = self.fit_spread();
+        let size = self.layout.spread_size(spread)?;
+        let scale = self.scale();
+        Some((
+            size.width * scale + self.layout.spread_gap(spread) + 2.0 * MARGIN,
+            size.height * scale + 2.0 * MARGIN,
+        ))
     }
 
     /// Changes the arrangement, keeping the page at the centre: in paged mode
@@ -760,6 +782,115 @@ mod tests {
         let layout = resized.layout();
         assert_eq!(size, (layout.content_width(), layout.content_height()));
         assert!(size.1 < view.layout().content_height());
+    }
+
+    #[test]
+    fn spread_viewport_size_is_the_page_and_its_margins() {
+        // Ten Letter pages fitted to a 636-wide viewport: scale 1.0.
+        let view = letter_view();
+        assert_eq!(view.scale(), 1.0);
+        assert_eq!(view.spread_viewport_size(), Some((636.0, 816.0)));
+    }
+
+    #[test]
+    fn spread_viewport_size_keeps_the_gap_between_a_spread() {
+        let mut view = View::new(vec![size(300.0, 400.0); 4]);
+        view.set_viewport_size(700.0, 900.0);
+        let state = ViewState {
+            zoom: ZoomMode::Custom,
+            scale: 1.0,
+            continuous: true,
+            dual: true,
+            odd_left: true,
+            gapless: false,
+            centre: DocPoint {
+                page: 0,
+                x: 0.0,
+                y: 0.0,
+            },
+        };
+        view.restore(&state);
+        assert_eq!(
+            view.spread_viewport_size(),
+            Some((2.0 * 300.0 + PAGE_GAP + 2.0 * MARGIN, 400.0 + 2.0 * MARGIN))
+        );
+        // No gap: the pages meet.
+        view.restore(&ViewState {
+            gapless: true,
+            ..state
+        });
+        assert_eq!(
+            view.spread_viewport_size(),
+            Some((2.0 * 300.0 + 2.0 * MARGIN, 400.0 + 2.0 * MARGIN))
+        );
+    }
+
+    #[test]
+    fn spread_viewport_size_is_the_spread_the_reader_is_on() {
+        let mut view = View::new(vec![
+            size(600.0, 800.0),
+            size(600.0, 400.0),
+            size(600.0, 1200.0),
+        ]);
+        // Fit width: scale 1.0.
+        view.set_viewport_size(624.0, 900.0);
+        view.restore_place(&DocPoint {
+            page: 1,
+            x: 0.0,
+            y: 100.0,
+        });
+        assert_eq!(view.centre_page(), Some(1));
+        assert_eq!(view.spread_viewport_size(), Some((624.0, 424.0)));
+        view.restore_place(&DocPoint {
+            page: 2,
+            x: 0.0,
+            y: 100.0,
+        });
+        assert_eq!(view.centre_page(), Some(2));
+        assert_eq!(view.spread_viewport_size(), Some((624.0, 1224.0)));
+    }
+
+    #[test]
+    fn spread_viewport_size_changes_nothing() {
+        let view = letter_view();
+        let before = (
+            view.offset(),
+            view.scale(),
+            view.mode(),
+            view.viewport_size(),
+        );
+        view.spread_viewport_size();
+        assert_eq!(
+            (
+                view.offset(),
+                view.scale(),
+                view.mode(),
+                view.viewport_size()
+            ),
+            before
+        );
+        assert_eq!(View::new(vec![]).spread_viewport_size(), None);
+    }
+
+    #[test]
+    fn hold_zoom_keeps_the_scale_across_a_resize() {
+        let mut view = letter_view();
+        let scale = view.scale();
+        view.hold_zoom();
+        assert_eq!(view.mode(), ZoomMode::Custom);
+        assert_eq!(view.scale(), scale);
+        view.set_viewport_size(400.0, 800.0);
+        assert_eq!(view.scale(), scale);
+        assert_eq!(view.mode(), ZoomMode::Custom);
+    }
+
+    #[test]
+    fn fitting_the_window_moves_nothing() {
+        let mut view = letter_view();
+        let before = (view.offset(), view.scale(), view.mode());
+        view.apply(Action::FitWindowWidth);
+        view.apply(Action::FitWindowPage);
+        assert_eq!((view.offset(), view.scale(), view.mode()), before);
     }
 
     /// The document point at viewport point `at`.
