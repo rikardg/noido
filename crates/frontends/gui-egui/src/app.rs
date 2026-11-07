@@ -6,9 +6,9 @@ use std::time::Duration;
 use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Vec2, pos2, vec2};
 use noido_core::{
-    Action, Defaults, Direction, DragKind, Highlights, History, Keep, Key, KeyPress, Keymap,
-    MAX_RENDER_SIDE, PageTextState, RenderTracker, SidebarState, THUMBNAIL_BUDGET, Target, View,
-    ViewState, drag_kind, render_scale, window_keep, window_order,
+    Action, Defaults, Direction, DragKind, Highlight, HighlightColour, Highlights, History, Keep,
+    Key, KeyPress, Keymap, MAX_RENDER_SIDE, PageTextState, RenderTracker, SidebarState,
+    THUMBNAIL_BUDGET, Target, View, ViewState, drag_kind, render_scale, window_keep, window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
 use noido_settings::{Settings, SettingsFile};
@@ -1176,8 +1176,14 @@ impl NoidoApp {
             }
             Action::FocusSearch => self.search_focus_requested = true,
             Action::ToggleSelectTool => self.select.tool = !self.select.tool,
-            // Highlights are not wired to undo and redo yet.
-            Action::Undo | Action::Redo => {}
+            Action::Undo => {
+                self.highlights.undo();
+                self.select.clear();
+            }
+            Action::Redo => {
+                self.highlights.redo();
+                self.select.clear();
+            }
             Action::Copy => self.copy_selection(ctx),
             // Not view moves: going to a hit isn't the reader moving away.
             Action::NextHit => self.step_hit(true),
@@ -1483,6 +1489,7 @@ impl NoidoApp {
         let painter = ui.painter();
         let hits = &self.search_state.hits;
         let paper = self.paper_tint(ui.ctx());
+        let dark = ui.visuals().dark_mode;
         let now = ui.input(|i| i.time);
         let mut fading = false;
         for page in visible {
@@ -1498,6 +1505,21 @@ impl NoidoApp {
                 self.fades.alpha(page, now),
                 paper,
             );
+            // The document's highlights, under the selection and the
+            // matches.
+            if let PageTextState::Known(text) = self.texts.get(page) {
+                for highlight in self.highlights.items() {
+                    let Some(range) = highlight.on_page(page, text.char_count()) else {
+                        continue;
+                    };
+                    let fill = select::highlight_fill(highlight.colour, dark);
+                    for area in text.rects(range) {
+                        let min = rect.min + vec2(area.x, area.y) * layout.scale();
+                        let size = vec2(area.width, area.height) * layout.scale();
+                        painter.rect_filled(Rect::from_min_size(min, size), 0.0, fill);
+                    }
+                }
+            }
             // The selection, under the matches.
             if let Some(selection) = &self.select.selection
                 && let PageTextState::Known(text) = self.texts.get(page)
@@ -1717,6 +1739,7 @@ impl NoidoApp {
     /// The small bar by the selection's end, once the drag is over.
     fn selection_bar(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
         self.select.bar_rect = None;
+        self.select.swatches = [None; 5];
         if self.select.drag.is_some() || self.settings_page.is_some() || self.info_page.is_some() {
             return;
         }
@@ -1737,18 +1760,50 @@ impl NoidoApp {
             let below = bottom + vec2(0.0, 2.0 * select::HANDLE_RADIUS + SELECTION_BAR_GAP);
             (below, egui::Align2::CENTER_TOP)
         };
-        let response = egui::Area::new(egui::Id::unique("selection-bar"))
+        let mut copy = false;
+        let mut clicked = None;
+        let shown = egui::Area::new(egui::Id::unique("selection-bar"))
             .order(egui::Order::Foreground)
             .fixed_pos(pos)
             .pivot(pivot)
             .show(ctx, |ui| {
-                egui::Frame::popup(ui.style())
-                    .show(ui, |ui| ui.button("Copy").clicked())
-                    .inner
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        copy = ui.button("Copy").clicked();
+                        for (i, colour) in HighlightColour::ALL.into_iter().enumerate() {
+                            let (rect, response) = ui.allocate_exact_size(
+                                Vec2::splat(select::SWATCH_SIZE),
+                                Sense::click(),
+                            );
+                            let centre = rect.center();
+                            let stroke = ui.visuals().widgets.hovered.fg_stroke;
+                            ui.painter().circle_filled(
+                                centre,
+                                select::SWATCH_RADIUS,
+                                select::swatch_colour(colour),
+                            );
+                            if response.hovered() {
+                                ui.painter()
+                                    .circle_stroke(centre, select::SWATCH_RADIUS, stroke);
+                            }
+                            if response.clicked() {
+                                clicked = Some(colour);
+                            }
+                            self.select.swatches[i] = Some(rect);
+                        }
+                    });
+                });
             });
-        self.select.bar_rect = Some(response.response.rect);
-        if response.inner {
+        self.select.bar_rect = Some(shown.response.rect);
+        if copy {
             self.apply(ctx, parent, Action::Copy);
+        }
+        if let Some(colour) = clicked
+            && let Some((start, end)) = self.select.selection.and_then(|s| s.carets())
+            && start < end
+        {
+            self.highlights.add(Highlight { start, end, colour });
+            self.select.clear();
         }
     }
 
@@ -2185,7 +2240,7 @@ pub(crate) mod tests {
     use egui::{Event, Modifiers, RawInput, pos2};
     use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 
-    use noido_core::{SidebarState, ViewState};
+    use noido_core::{Caret, Highlight, HighlightColour, SidebarState, ViewState};
     use noido_render::{TextSearcher, Thumbnailer};
     use noido_settings::{Settings, SettingsFile};
     use noido_state::{DocKey, DocState, Store};
@@ -9364,14 +9419,15 @@ pub(crate) mod tests {
     #[test]
     fn shift_click_on_link_extends_and_does_not_follow() {
         let mut h = linking_text();
-        drag_text(&mut h, 0, (73.0, 115.0), (130.0, 115.0), Modifiers::SHIFT);
-        assert_eq!(selected_on(&h, 0), Some(11..21));
-        // Left of the bar, which shows above the selection's end.
+        // Right to left, so a shift+click to its left extends it: the
+        // bar covers the line above, not this one.
+        drag_text(&mut h, 0, (130.0, 95.0), (100.0, 95.0), Modifiers::SHIFT);
+        assert_eq!(selected_on(&h, 0), Some(5..10));
         let at = screen_pos(&h, 0, 75.0, 96.0);
         hover_link(&mut h, at);
         h.frames(10, vec![]);
         click_times(&mut h, (75.0, 96.0), 1, Modifiers::SHIFT);
-        assert_eq!(selected_on(&h, 0), Some(1..21));
+        assert_eq!(selected_on(&h, 0), Some(1..10));
         assert_eq!(h.app.chosen, None);
     }
 
@@ -9618,5 +9674,90 @@ pub(crate) mod tests {
         let again = second_at(&mut h);
         assert!(first > 0.0);
         assert!(again < first * 1.25, "first {first}, again {again}");
+    }
+
+    /// Selects "the cat" on page 0 and makes it a yellow highlight with the
+    /// bar's first swatch.
+    fn highlight_the_cat(h: &mut Harness) {
+        select_the_cat(h);
+        h.frames(1, vec![]);
+        let swatch = h.app.select.swatches[0].expect("the bar offers the colours");
+        h.click(swatch.center());
+        h.frames(1, vec![]);
+    }
+
+    #[test]
+    fn colour_swatch_in_bar_creates_highlight_and_clears_selection() {
+        let (mut h, _) = selecting();
+        highlight_the_cat(&mut h);
+        assert_eq!(h.app.select.selection, None);
+        assert_eq!(
+            h.app.highlights.items(),
+            [Highlight {
+                start: Caret { page: 0, char: 0 },
+                end: Caret { page: 0, char: 7 },
+                colour: HighlightColour::Yellow,
+            }]
+        );
+    }
+
+    #[test]
+    fn highlight_is_drawn_and_follows_zoom() {
+        let (mut h, _) = selecting();
+        highlight_the_cat(&mut h);
+        let dark = h.ctx.global_style().visuals.dark_mode;
+        let fill = select::highlight_fill(HighlightColour::Yellow, dark);
+        let at = screen_pos(&h, 0, 80.0, 95.0);
+        assert!(
+            filled_with(&h, fill).iter().any(|r| r.contains(at)),
+            "not drawn at {at:?}"
+        );
+        h.press(egui::Key::Equals, Modifiers::COMMAND);
+        h.frames(3, vec![]);
+        let zoomed = screen_pos(&h, 0, 80.0, 95.0);
+        let rects = filled_with(&h, fill);
+        assert!(
+            rects.iter().any(|r| r.contains(zoomed)),
+            "not at {zoomed:?}"
+        );
+        assert!(!rects.iter().any(|r| r.contains(at)), "still at {at:?}");
+    }
+
+    #[test]
+    fn undo_and_redo_highlight_creation() {
+        let (mut h, _) = selecting();
+        highlight_the_cat(&mut h);
+        assert_eq!(h.app.highlights.items().len(), 1);
+        h.press(egui::Key::Z, Modifiers::COMMAND);
+        h.frames(1, vec![]);
+        assert!(h.app.highlights.items().is_empty());
+        h.press(egui::Key::Z, Modifiers::COMMAND | Modifiers::SHIFT);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.items().len(), 1);
+        h.press(egui::Key::Z, Modifiers::COMMAND);
+        h.frames(1, vec![]);
+        assert!(h.app.highlights.items().is_empty());
+        h.press(egui::Key::Y, Modifiers::COMMAND);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.items().len(), 1);
+    }
+
+    #[test]
+    fn highlights_persist_in_doc_state() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let mut h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), None)
+        });
+        h.app.highlights.add(Highlight {
+            start: Caret { page: 0, char: 0 },
+            end: Caret { page: 0, char: 7 },
+            colour: HighlightColour::Yellow,
+        });
+        h.frames(150, vec![]);
+        assert_eq!(
+            store.load(test_key()).1.unwrap().highlights,
+            h.app.highlights.items()
+        );
     }
 }

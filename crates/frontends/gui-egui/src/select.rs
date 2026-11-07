@@ -1,8 +1,10 @@
 //! The window's text selection: the select tool, the selection, and the
 //! drag under way.
 
-use eframe::egui::{self, Pos2, Rect, Vec2, vec2};
-use noido_core::{Caret, DragKind, Layout, PageTextState, Selection, Spot, spot_at};
+use eframe::egui::{self, Color32, Pos2, Rect, Vec2, vec2};
+use noido_core::{
+    Caret, DragKind, HighlightColour, Layout, PageTextState, Selection, Spot, spot_at,
+};
 
 use crate::texts::Texts;
 
@@ -26,6 +28,45 @@ pub struct Drag {
 pub const HANDLE_RADIUS: f32 = 6.0;
 /// How near a handle's knob a press takes the handle, in points.
 pub const HANDLE_REACH: f32 = 12.0;
+/// The size of a highlight colour's button in the selection's bar, in
+/// points.
+pub const SWATCH_SIZE: f32 = 18.0;
+/// The radius of the colour circle drawn in that button, in points.
+pub const SWATCH_RADIUS: f32 = 6.0;
+/// The alpha of a highlight over the page's text, in light and dark mode:
+/// the fill is stronger in dark mode, where the page sits in darker chrome.
+const HIGHLIGHT_ALPHA_LIGHT: u8 = 89;
+const HIGHLIGHT_ALPHA_DARK: u8 = 115;
+
+/// The hue of `colour`'s highlight, before it is faded over the page.
+fn hue(colour: HighlightColour) -> (u8, u8, u8) {
+    match colour {
+        HighlightColour::Yellow => (0xff, 0xd8, 0x4d),
+        HighlightColour::Green => (0x76, 0xc7, 0x5a),
+        HighlightColour::Blue => (0x5a, 0xa9, 0xe8),
+        HighlightColour::Pink => (0xec, 0x7f, 0xa9),
+        HighlightColour::Purple => (0xa9, 0x8b, 0xd8),
+    }
+}
+
+/// The colour of `colour`'s button in the selection's bar: the hue the page
+/// gets, at full strength.
+pub fn swatch_colour(colour: HighlightColour) -> Color32 {
+    let (r, g, b) = hue(colour);
+    Color32::from_rgb(r, g, b)
+}
+
+/// The fill a highlight of `colour` is drawn with over the page's text,
+/// `dark` for a dark window theme.
+pub fn highlight_fill(colour: HighlightColour, dark: bool) -> Color32 {
+    let (r, g, b) = hue(colour);
+    let alpha = if dark {
+        HIGHLIGHT_ALPHA_DARK
+    } else {
+        HIGHLIGHT_ALPHA_LIGHT
+    };
+    Color32::from_rgba_unmultiplied(r, g, b, alpha)
+}
 
 #[derive(Default)]
 pub struct State {
@@ -45,6 +86,9 @@ pub struct State {
     pub handles: [Option<Pos2>; 2],
     /// Where the bar was drawn last frame.
     pub bar_rect: Option<Rect>,
+    /// Where the bar's colour swatches were drawn last frame, in
+    /// [`HighlightColour::ALL`] order.
+    pub swatches: [Option<Rect>; 5],
     /// The pages (not a scroll bar, the sidebar or a popup over them) are
     /// under the pointer.
     pub pages_hovered: bool,
@@ -242,4 +286,18 @@ fn shown_caret(texts: &Texts, caret: Caret, end: bool) -> Option<(usize, usize)>
         }
     }
     Some((caret.page, caret.char))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_colour_fades_differently_in_light_and_dark_mode() {
+        for colour in HighlightColour::ALL {
+            let (light, dark) = (highlight_fill(colour, false), highlight_fill(colour, true));
+            assert!(light.a() < 255 && dark.a() < 255, "opaque {colour:?}");
+            assert_ne!(light, dark, "{colour:?}");
+        }
+    }
 }
