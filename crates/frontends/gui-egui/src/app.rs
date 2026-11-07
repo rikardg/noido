@@ -1147,18 +1147,20 @@ impl NoidoApp {
                 self.sidebar_opened_by_search = false;
             }
             // The window, not the view: the zoom is held at the scale it has,
-            // so the resize doesn't refit the pages.
+            // so the resize doesn't refit the pages. Held only when there is a
+            // spread to fit to; with no pages the view has nothing to keep.
             Action::FitWindowWidth | Action::FitWindowPage => {
                 let (area_width, area_height) = self.view.viewport_size();
                 // Before the first layout there is no page area to fit to.
-                if area_width > 0.0 && area_height > 0.0 {
+                if area_width > 0.0
+                    && area_height > 0.0
+                    && let Some((width, height)) = self.view.spread_viewport_size()
+                {
                     self.view.hold_zoom();
-                    if let Some((width, height)) = self.view.spread_viewport_size() {
-                        self.shrink = Some(match action {
-                            Action::FitWindowPage => Shrink::new(width, height),
-                            _ => Shrink::new(width, area_height),
-                        });
-                    }
+                    self.shrink = Some(match action {
+                        Action::FitWindowPage => Shrink::new(width, height),
+                        _ => Shrink::new(width, area_height),
+                    });
                 }
             }
             Action::FocusSearch => self.search_focus_requested = true,
@@ -2229,6 +2231,31 @@ pub(crate) mod tests {
         }
     }
 
+    /// Like [`BlankEngine`], with no pages at all.
+    struct EmptyEngine;
+    struct EmptyDocument;
+
+    impl PdfEngine for EmptyEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(EmptyDocument))
+        }
+    }
+
+    impl Document for EmptyDocument {
+        fn page_count(&self) -> usize {
+            0
+        }
+        fn page_size(&self, _page: usize) -> Result<Size, EngineError> {
+            Ok(Size {
+                width: 0.0,
+                height: 0.0,
+            })
+        }
+        fn render_tile(&self, _: usize, _: f32, _: PixelRect) -> Result<Rgba8Image, EngineError> {
+            Ok(Rgba8Image::from_premultiplied(1, 1, vec![255; 4]).unwrap())
+        }
+    }
+
     /// Like [`BlankEngine`], but every render waits until the gate's sender
     /// is dropped.
     struct GatedEngine(Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>);
@@ -2294,6 +2321,10 @@ pub(crate) mod tests {
         copied: Vec<String>,
         /// Whether the window is reported as maximised.
         maximized: bool,
+        /// Whether the window is reported as full screen.
+        fullscreen: bool,
+        /// The size of the screen the window is on, as egui reports it.
+        monitor: Option<Vec2>,
         /// Hands the app new versions of the document, like the watcher.
         reloads: crate::watch::Newest,
         /// When the last frame asked for the next one.
@@ -2347,6 +2378,8 @@ pub(crate) mod tests {
                 opened: vec![],
                 copied: vec![],
                 maximized: false,
+                fullscreen: false,
+                monitor: None,
                 reloads,
                 repaint_delay: Duration::MAX,
                 modifiers: Modifiers::NONE,
@@ -2385,6 +2418,8 @@ pub(crate) mod tests {
                     egui::ViewportId::ROOT,
                     egui::ViewportInfo {
                         maximized: Some(self.maximized),
+                        fullscreen: Some(self.fullscreen),
+                        monitor_size: self.monitor,
                         ..Default::default()
                     },
                 );
@@ -2413,6 +2448,9 @@ pub(crate) mod tests {
                             egui::ViewportCommand::InnerSize(size) => self.size = *size,
                             egui::ViewportCommand::Maximized(maximized) => {
                                 self.maximized = *maximized;
+                            }
+                            egui::ViewportCommand::Fullscreen(fullscreen) => {
+                                self.fullscreen = *fullscreen;
                             }
                             _ => {}
                         }
@@ -2837,6 +2875,149 @@ pub(crate) mod tests {
             .count();
         assert_eq!(asked, 1, "asked {asked} times");
         assert_eq!(h.app.shrink, None, "the request is dropped");
+    }
+
+    #[test]
+    fn fitting_the_window_stops_at_the_screen() {
+        let mut h = Harness::new();
+        let screen = vec2(700.0, 600.0);
+        h.monitor = Some(screen);
+        h.size = vec2(500.0, 400.0);
+        h.frames(2, vec![]);
+        // Zoomed in until the page is bigger than the screen both ways.
+        for _ in 0..6 {
+            h.press(egui::Key::Equals, Modifiers::COMMAND);
+        }
+        h.frames(2, vec![]);
+        let (page_width, _) = h.app.view.spread_viewport_size().unwrap();
+        assert!(page_width > screen.x, "the page is {page_width} wide");
+
+        h.press(egui::Key::F, Modifiers::SHIFT);
+        h.frames(8, vec![]);
+
+        assert!(
+            (h.size.x - screen.x).abs() < 1.0,
+            "the window is {} wide",
+            h.size.x
+        );
+        assert!(
+            (h.size.y - screen.y).abs() < 1.0,
+            "the window is {} high",
+            h.size.y
+        );
+        let asked = h.commands.len();
+        h.frames(4, vec![]);
+        assert_eq!(h.commands.len(), asked, "the window settled");
+    }
+
+    #[test]
+    fn fitting_the_window_restores_a_fullscreen_window_first() {
+        let mut h = Harness::new();
+        h.fullscreen = true;
+        h.frames(1, vec![]);
+        h.press(egui::Key::F, Modifiers::SHIFT);
+        let restores = |h: &Harness| {
+            h.commands
+                .iter()
+                .filter(|command| **command == egui::ViewportCommand::Fullscreen(false))
+                .count()
+        };
+        let sized = |h: &Harness| {
+            h.commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::InnerSize(_)))
+        };
+        assert_eq!(restores(&h), 1);
+        assert!(!sized(&h), "a fullscreen window takes no size");
+        h.frames(8, vec![]);
+        assert!(sized(&h));
+    }
+
+    #[test]
+    fn fitting_the_window_asks_once_for_a_fullscreen_restore() {
+        let mut h = Harness::new();
+        h.press(egui::Key::F, Modifiers::SHIFT);
+        // A window manager that keeps the window full screen.
+        for _ in 0..6 {
+            h.fullscreen = true;
+            h.frames(1, vec![]);
+        }
+        let asked = h
+            .commands
+            .iter()
+            .filter(|command| **command == egui::ViewportCommand::Fullscreen(false))
+            .count();
+        assert_eq!(asked, 1, "asked {asked} times");
+        assert_eq!(h.app.shrink, None, "the request is dropped");
+    }
+
+    #[test]
+    fn fitting_the_window_twice_before_it_resizes_asks_once() {
+        let mut h = Harness::new();
+        for _ in 0..2 {
+            h.press(egui::Key::Minus, Modifiers::COMMAND);
+        }
+        h.frames(2, vec![]);
+        let (width, _) = h.app.view.spread_viewport_size().unwrap();
+        let height = h.app.view.viewport_size().1;
+
+        // Both presses in the frame that resizes: the second replaces the
+        // request the first has not settled yet.
+        let shift = |key| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        };
+        h.frames(1, vec![shift(egui::Key::F), shift(egui::Key::W)]);
+        h.frames(8, vec![]);
+
+        let (area_width, area_height) = h.app.view.viewport_size();
+        assert!((area_width - width).abs() < 1.0, "{area_width} for {width}");
+        // The width press keeps the height the page area had: the last press
+        // is the one that counts.
+        assert!(
+            (area_height - height).abs() < 1.0,
+            "{area_height} for {height}"
+        );
+        // One ask for the replacement, then it settles.
+        let sized = |h: &Harness| {
+            h.commands
+                .iter()
+                .filter(|command| matches!(command, egui::ViewportCommand::InnerSize(_)))
+                .count()
+        };
+        assert_eq!(sized(&h), 1, "asked {} times", sized(&h));
+        let asked = h.commands.len();
+        h.frames(4, vec![]);
+        assert_eq!(h.commands.len(), asked, "the window settled");
+    }
+
+    #[test]
+    fn fitting_the_window_with_no_pages_does_nothing() {
+        let mut h = Harness::build_with(Arc::new(EmptyEngine), |app| app);
+        let size = h.size;
+        let mode = h.app.view.mode();
+        let scale = h.app.view.scale();
+        let ctx = h.ctx.clone();
+        for action in [Action::FitWindowWidth, Action::FitWindowPage] {
+            h.app.apply(&ctx, None, action);
+            assert_eq!(h.app.shrink, None, "{action:?}");
+        }
+        h.frames(6, vec![]);
+
+        assert_eq!(h.size, size, "the window moved");
+        assert_eq!(
+            h.commands
+                .iter()
+                .filter(|command| matches!(command, egui::ViewportCommand::InnerSize(_)))
+                .count(),
+            0,
+            "asked for a size"
+        );
+        assert_eq!(h.app.view.mode(), mode);
+        assert_eq!(h.app.view.scale(), scale);
     }
 
     #[test]
