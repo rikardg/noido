@@ -2059,12 +2059,15 @@ impl NoidoApp {
         self.start_drag(&ctx);
         self.edge_scroll(&ctx);
         if self.sidebar.open {
-            let input = sidebar::Input {
+            let current = self.current_page();
+            let highlighted = self.highlighted();
+            let paper = self.paper_tint(&ctx);
+            let mut input = sidebar::Input {
                 layout: self.view.layout(),
                 lowres: self.thumbnails.as_ref().map(|t| &t.textures),
-                current: self.current_page(),
-                highlighted: self.highlighted(),
-                paper: self.paper_tint(&ctx),
+                current,
+                highlighted,
+                paper,
                 results: self.search_state.searched().map(|_| sidebar::Results {
                     hits: &self.search_state.hits,
                     generation: self.search_state.generation(),
@@ -2075,8 +2078,11 @@ impl NoidoApp {
                 scrolling: self
                     .pages_scrolled_at
                     .is_some_and(|at| ctx.input(|i| i.time) - at < 0.25),
+                highlights: self.highlights.items(),
+                texts: &mut self.texts,
+                request_text: &|page| self.search_state.request_text(page),
             };
-            let output = self.sidebar_view.show(ui, &mut self.sidebar, &input);
+            let output = self.sidebar_view.show(ui, &mut self.sidebar, &mut input);
             if let Some(page) = output.clicked {
                 self.leave_here();
                 self.view.go_to_page(page);
@@ -7382,6 +7388,150 @@ pub(crate) mod tests {
             h.frames(1, vec![]);
         }
         assert!(moved > 0, "the wheel never moved the sidebar");
+    }
+
+    // Text highlights on the thumbnails.
+
+    /// The thumbnail of `page` drawn last frame.
+    fn sidebar_thumb(h: &Harness, page: usize) -> Rect {
+        h.app
+            .sidebar_view
+            .drawn()
+            .iter()
+            .find_map(|&(drawn, rect)| (drawn == page).then_some(rect))
+            .unwrap_or_else(|| panic!("page {page} is not drawn: {:?}", drawn_pages(h)))
+    }
+
+    /// The rectangles of `colour` painted inside `thumb` last frame.
+    fn marks_in(h: &Harness, thumb: Rect, colour: Color32) -> Vec<Rect> {
+        filled_with(h, colour)
+            .into_iter()
+            .filter(|mark| thumb.contains(mark.center()))
+            .collect()
+    }
+
+    #[test]
+    fn sidebar_paints_highlights_on_thumbnails() {
+        let (mut h, _) = selecting();
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.until(|h| drawn_pages(h).contains(&0));
+        let dark = h.ctx.global_style().visuals.dark_mode;
+        let fill = select::highlight_fill(HighlightColour::Yellow, dark);
+        assert!(
+            marks_in(&h, sidebar_thumb(&h, 0), fill).is_empty(),
+            "a mark before the highlight was made"
+        );
+
+        h.app.highlights.add(Highlight {
+            start: Caret { page: 0, char: 0 },
+            end: Caret { page: 0, char: 7 },
+            colour: HighlightColour::Yellow,
+        });
+        h.frames(2, vec![]);
+        let thumb = sidebar_thumb(&h, 0);
+        let marks = marks_in(&h, thumb, fill);
+        assert_eq!(marks.len(), 1, "{marks:?}");
+
+        // Scaled from the highlight's page-point rectangle, as on the page.
+        let noido_core::PageTextState::Known(text) = h.app.texts.get(0) else {
+            panic!("page 0's text is not known");
+        };
+        let area = text.rects(0..7)[0];
+        let scale = thumb.width() / 612.0;
+        let expected =
+            thumb.min + vec2(area.x + area.width / 2.0, area.y + area.height / 2.0) * scale;
+        assert!(
+            (marks[0].center() - expected).length() < 0.5,
+            "{} is not at {expected:?}",
+            marks[0].center()
+        );
+        let expected_size = vec2(area.width, area.height) * scale;
+        assert!(
+            (marks[0].size() - expected_size).length() < 0.5,
+            "{:?} is not {expected_size:?}",
+            marks[0].size()
+        );
+    }
+
+    #[test]
+    fn sidebar_paints_a_highlight_across_pages_on_each_thumbnail() {
+        let (mut h, engine) = selecting();
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.until(|h| drawn_pages(h).contains(&1));
+        h.app.highlights.add(Highlight {
+            start: Caret { page: 0, char: 5 },
+            end: Caret { page: 1, char: 3 },
+            colour: HighlightColour::Blue,
+        });
+        h.until(|h| matches!(h.app.texts.get(1), noido_core::PageTextState::Known(_)));
+        h.frames(2, vec![]);
+        let dark = h.ctx.global_style().visuals.dark_mode;
+        let fill = select::highlight_fill(HighlightColour::Blue, dark);
+        for page in 0..2 {
+            let thumb = sidebar_thumb(&h, page);
+            assert!(
+                !marks_in(&h, thumb, fill).is_empty(),
+                "page {page} has no mark in {thumb:?}"
+            );
+        }
+        // Both pages' text was asked for once; further frames add nothing.
+        let calls = engine.calls();
+        h.frames(5, vec![]);
+        assert_eq!(engine.calls(), calls, "the sidebar asked for text again");
+    }
+
+    #[test]
+    fn sidebar_waits_for_a_pages_text_before_marking_its_thumbnail() {
+        let engine = TextEngine::new(&[&["the cat sat"], &["a dog"]]).gated();
+        let mut h = searching(&engine);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        h.app.highlights.add(Highlight {
+            start: Caret { page: 0, char: 0 },
+            end: Caret { page: 0, char: 7 },
+            colour: HighlightColour::Green,
+        });
+        h.frames(2, vec![]);
+        let dark = h.ctx.global_style().visuals.dark_mode;
+        let fill = select::highlight_fill(HighlightColour::Green, dark);
+        assert!(
+            marks_in(&h, sidebar_thumb(&h, 0), fill).is_empty(),
+            "a mark before the page's text arrived"
+        );
+
+        engine.open_gate();
+        h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
+        h.frames(2, vec![]);
+        assert!(
+            !marks_in(&h, sidebar_thumb(&h, 0), fill).is_empty(),
+            "no mark after the text arrived"
+        );
+    }
+
+    #[test]
+    fn search_results_show_no_thumbnail_marks() {
+        let (mut h, _) = selecting();
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.until(|h| drawn_pages(h).contains(&0));
+        h.app.highlights.add(Highlight {
+            start: Caret { page: 0, char: 0 },
+            end: Caret { page: 0, char: 7 },
+            colour: HighlightColour::Pink,
+        });
+        h.frames(2, vec![]);
+        let dark = h.ctx.global_style().visuals.dark_mode;
+        let fill = select::highlight_fill(HighlightColour::Pink, dark);
+        let in_sidebar = |h: &Harness| {
+            filled_with(h, fill)
+                .into_iter()
+                .any(|mark| mark.max.x < h.app.sidebar.width)
+        };
+        assert!(in_sidebar(&h), "no mark in the sidebar to begin with");
+
+        search_for(&mut h, "cat");
+        h.frames(2, vec![]);
+        assert!(h.app.sidebar_view.drawn().is_empty());
+        assert!(!in_sidebar(&h), "a mark over the matches");
     }
 
     // ---- Search ----
