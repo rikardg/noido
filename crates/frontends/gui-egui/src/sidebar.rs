@@ -10,12 +10,14 @@ use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
-    Column, Eased, Hits, Layout, MAX_RENDER_SIDE, Pace, RenderTracker, SIDEBAR_MIN_WIDTH,
-    SidebarState, max_width, render_scale,
+    Column, Eased, Highlight, Hits, Layout, MAX_RENDER_SIDE, Pace, PageTextState, RenderTracker,
+    SIDEBAR_MIN_WIDTH, SidebarState, max_width, render_scale,
 };
 use noido_render::{RenderRequest, Renderer};
 
 use crate::image::{Fades, PageImage, paint_page};
+use crate::select::highlight_fill;
+use crate::texts::Texts;
 use crate::theme;
 
 /// How far the current page's highlight reaches around its thumbnail, and
@@ -55,6 +57,12 @@ pub struct Input<'a> {
     /// The pages are moving by wheel, flick or drag: following them, the
     /// thumb catches up gently.
     pub scrolling: bool,
+    /// The document's highlights, drawn on the thumbnails they cover.
+    pub highlights: &'a [Highlight],
+    /// The pages' text layouts, for placing the highlights.
+    pub texts: &'a mut Texts,
+    /// How to ask the text thread for a page's text.
+    pub request_text: &'a dyn Fn(usize),
 }
 
 /// The matches of a search, for the sidebar.
@@ -209,7 +217,12 @@ impl SidebarView {
 
     /// Draws the open sidebar at the left of `ui` and records its width,
     /// which the reader may have changed by dragging its edge.
-    pub fn show(&mut self, ui: &mut egui::Ui, state: &mut SidebarState, input: &Input) -> Output {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut SidebarState,
+        input: &mut Input,
+    ) -> Output {
         let window = ui.max_rect().width();
         let max = max_width(window);
         let frame = theme::Theme::current(ui.ctx()).frame(
@@ -244,7 +257,7 @@ impl SidebarView {
     }
 
     /// The scrolling column, kept on the current page.
-    fn scrolled(&mut self, ui: &mut egui::Ui, input: &Input) -> Output {
+    fn scrolled(&mut self, ui: &mut egui::Ui, input: &mut Input) -> Output {
         // egui fades the edges of scroll areas; on pages it reads as a shadow.
         ui.spacing_mut().scroll.fade.strength = 0.0;
         // No overscroll at the ends, as on the pages; it would also undo the
@@ -354,7 +367,7 @@ impl SidebarView {
         ui: &mut egui::Ui,
         viewport: Rect,
         column: &Column,
-        input: &Input,
+        input: &mut Input,
     ) -> Option<usize> {
         self.thumb_width = column.thumb_width();
         self.highlighted = input.highlighted.clone();
@@ -364,11 +377,14 @@ impl SidebarView {
         );
         let visible = column.visible(viewport.min.y, viewport.max.y);
         self.request(column, &visible, ui.ctx().pixels_per_point(), input.layout);
+        let pages = with_margin(&visible, input.layout.page_count());
+        want_texts(input, pages);
         self.visible = visible.clone();
 
         let outline = ui.visuals().widgets.noninteractive.bg_stroke.color;
         let selection = ui.visuals().selection;
         let text = ui.visuals().text_color();
+        let dark = ui.visuals().dark_mode;
         let font = egui::TextStyle::Body.resolve(ui.style());
         let mut clicked = None;
         let now = ui.input(|i| i.time);
@@ -400,6 +416,21 @@ impl SidebarView {
                 self.fades.alpha(page, now),
                 input.paper,
             );
+            // The document's highlights, as on the page.
+            if let PageTextState::Known(text) = input.texts.get(page)
+                && let Some(size) = input.layout.page_size(page)
+                && size.width > 0.0
+            {
+                for highlight in input.highlights {
+                    let Some(range) = highlight.on_page(page, text.char_count()) else {
+                        continue;
+                    };
+                    let fill = highlight_fill(highlight.colour, dark);
+                    for area in text.rects(range) {
+                        painter.rect_filled(mark_rect(rect, size.width, area), 0.0, fill);
+                    }
+                }
+            }
             painter.rect_stroke(
                 rect,
                 0.0,
@@ -687,6 +718,39 @@ impl SidebarView {
     }
 }
 
+/// The thumbnail rectangle a highlight's `area`, in page points, falls on:
+/// `thumb`'s width over the page's `page_width`, with each side at least a
+/// point so a small mark still shows at thumbnail size, and clipped to the
+/// thumbnail.
+fn mark_rect(thumb: Rect, page_width: f32, area: noido_text::Rect) -> Rect {
+    let scale = thumb.width() / page_width;
+    let scaled = Rect::from_min_size(
+        thumb.min + vec2(area.x, area.y) * scale,
+        vec2(area.width, area.height) * scale,
+    );
+    Rect::from_center_size(
+        scaled.center(),
+        vec2(scaled.width().max(1.0), scaled.height().max(1.0)),
+    )
+    .intersect(thumb)
+}
+
+/// Asks for the text of `pages` that hold a highlight, so their marks can be
+/// placed.
+fn want_texts(input: &mut Input, pages: Range<usize>) {
+    let Input {
+        texts,
+        request_text,
+        highlights,
+        ..
+    } = input;
+    for page in pages {
+        if highlights.iter().any(|h| h.pages().contains(&page)) {
+            texts.want(page, *request_text);
+        }
+    }
+}
+
 /// The height of a match's card: its header, its excerpt and the space
 /// around them.
 fn card_height(ui: &egui::Ui) -> f32 {
@@ -806,5 +870,58 @@ mod tests {
     fn rows_around_few_rows_takes_all() {
         assert_eq!(rows_around(&[10, 5], 12, 3), 0..2);
         assert_eq!(rows_around(&[], 0, 3), 0..0);
+    }
+
+    fn area(x: f32, y: f32, width: f32, height: f32) -> noido_text::Rect {
+        noido_text::Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn mark_rect_scales_page_points_into_the_thumbnail() {
+        let thumb = Rect::from_min_size(egui::pos2(10.0, 20.0), vec2(100.0, 130.0));
+        // A 500 pt wide page at 100 pt: one fifth.
+        let mark = mark_rect(thumb, 500.0, area(250.0, 100.0, 20.0, 10.0));
+        assert!((mark.min.x - 60.0).abs() < 0.01, "{mark:?}");
+        assert!((mark.min.y - 40.0).abs() < 0.01, "{mark:?}");
+        assert!((mark.width() - 4.0).abs() < 0.01, "{mark:?}");
+        assert!((mark.height() - 2.0).abs() < 0.01, "{mark:?}");
+    }
+
+    #[test]
+    fn mark_rect_grows_thin_marks_to_a_point_centred() {
+        let thumb = Rect::from_min_size(egui::pos2(10.0, 20.0), vec2(100.0, 130.0));
+        let mark = mark_rect(thumb, 500.0, area(100.0, 50.0, 2.0, 0.5));
+        // 0.4 pt wide and 0.1 pt tall at one fifth: a point each, centred on
+        // the scaled mark's centre.
+        assert!((mark.center().x - 30.2).abs() < 0.01, "{mark:?}");
+        assert!((mark.center().y - 30.05).abs() < 0.01, "{mark:?}");
+        assert!((mark.width() - 1.0).abs() < 0.01, "{mark:?}");
+        assert!((mark.height() - 1.0).abs() < 0.01, "{mark:?}");
+    }
+
+    #[test]
+    fn mark_rect_grows_only_the_thin_side() {
+        let thumb = Rect::from_min_size(egui::pos2(10.0, 20.0), vec2(100.0, 130.0));
+        // 20 pt wide and 0.1 pt tall at one fifth: the width stands, the
+        // height grows to a point.
+        let mark = mark_rect(thumb, 500.0, area(0.0, 100.0, 100.0, 0.5));
+        assert!((mark.width() - 20.0).abs() < 0.01, "{mark:?}");
+        assert!((mark.height() - 1.0).abs() < 0.01, "{mark:?}");
+    }
+
+    #[test]
+    fn mark_rect_stays_inside_the_thumbnail() {
+        let thumb = Rect::from_min_size(egui::pos2(10.0, 20.0), vec2(100.0, 130.0));
+        // A line whose glyphs hang off the page's left edge, and a thin mark
+        // there that the minimum size grows outwards: both clip to the page.
+        let off_page = mark_rect(thumb, 500.0, area(-10.0, 0.0, 20.0, 10.0));
+        assert!(thumb.contains_rect(off_page), "{off_page:?} in {thumb:?}");
+        let thin = mark_rect(thumb, 500.0, area(0.0, 0.0, 0.1, 0.1));
+        assert!(thumb.contains_rect(thin), "{thin:?} in {thumb:?}");
     }
 }
