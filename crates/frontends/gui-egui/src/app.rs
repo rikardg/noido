@@ -55,8 +55,11 @@ const FLASH_OUTLINE_WIDTH: f32 = 2.5;
 const SELECTION_OPACITY: f32 = 0.35;
 /// The gap between the selection's end and its bar, in points.
 const SELECTION_BAR_GAP: f32 = 8.0;
-/// About how tall the selection's bar is, to tell whether it fits above.
+/// How tall the selection's bar is laid out to be, with its frame's margins;
+/// it measures a little more.
 const SELECTION_BAR_HEIGHT: f32 = 48.0;
+/// The bar's size before it has been drawn and measured.
+const SELECTION_BAR_ESTIMATE: Vec2 = vec2(355.0, 50.0);
 
 /// What egui's scroll area reported at the end of the last frame.
 #[derive(Clone, Copy)]
@@ -1825,16 +1828,15 @@ impl NoidoApp {
                 (top, bottom)
             }
         };
-        let above = top.y - SELECTION_BAR_GAP - SELECTION_BAR_HEIGHT >= last.inner.top();
-        let (pos, pivot) = if above {
-            (
-                top - vec2(0.0, SELECTION_BAR_GAP),
-                egui::Align2::CENTER_BOTTOM,
-            )
-        } else {
-            let below = bottom + vec2(0.0, 2.0 * select::HANDLE_RADIUS + SELECTION_BAR_GAP);
-            (below, egui::Align2::CENTER_TOP)
-        };
+        let (pos, pivot) = select::bar_place(
+            (top, bottom),
+            self.select.caret_lines,
+            last.inner,
+            ctx.content_rect(),
+            self.select.bar_size.unwrap_or(SELECTION_BAR_ESTIMATE),
+            SELECTION_BAR_GAP,
+            self.select.bar_end(),
+        );
         let mut copy = false;
         let mut clicked = None;
         let mut delete = false;
@@ -1849,8 +1851,8 @@ impl NoidoApp {
             .pivot(pivot)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    // The bar stands SELECTION_BAR_HEIGHT tall, its frame's
-                    // margins and all: the colour buttons set the row's
+                    // The bar stands about SELECTION_BAR_HEIGHT tall, its
+                    // frame's margins and all: the colour buttons set the row's
                     // height and the text buttons centre in it.
                     let margins = ui.spacing().menu_margin;
                     let row =
@@ -1909,6 +1911,12 @@ impl NoidoApp {
                 });
             });
         self.select.bar_rect = Some(shown.response.rect);
+        // Placed with a size that was out, so place it again.
+        let size = shown.response.rect.size();
+        if self.select.bar_size != Some(size) {
+            self.select.bar_size = Some(size);
+            ctx.request_repaint();
+        }
         if copy {
             self.apply(ctx, parent, Action::Copy);
         }
@@ -10184,24 +10192,55 @@ pub(crate) mod tests {
         );
     }
 
+    /// The bar is drawn above the selection's first line, centred on `x`
+    /// or as near the window's left edge as a bar this wide can get.
+    fn assert_bar_above_the_start(h: &Harness, x: f32) {
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        let (top, _) = h.app.select.caret_lines[0].expect("the start is placed");
+        assert!(
+            (bar.bottom() - (top.y - SELECTION_BAR_GAP)).abs() <= 1.0,
+            "the bar {bar:?} is not above the start at {top:?}"
+        );
+        assert!(
+            (bar.center().x - x).abs() <= 3.0 || bar.left() <= 1.0,
+            "the bar {bar:?} is not over {x}"
+        );
+    }
+
     #[test]
-    fn bar_comes_up_at_the_release_of_an_upward_drag() {
+    fn clicking_a_highlight_keeps_the_bar_by_the_mouse() {
+        let (mut h, _) = selecting();
+        let caret = |char| Caret { page: 0, char };
+        h.app.highlights.add(Highlight {
+            start: caret(0),
+            end: caret(21),
+            colour: HighlightColour::Yellow,
+        });
+        let click = screen_pos(&h, 0, 127.0, 95.0);
+        h.click(click);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_bar_hangs_from(&h, click);
+    }
+
+    #[test]
+    fn bar_goes_above_an_upward_drag() {
         let (mut h, _) = selecting();
         drag_text(&mut h, 0, (130.0, 115.0), (127.0, 95.0), Modifiers::SHIFT);
         h.frames(1, vec![]);
-        assert_bar_hangs_from(&h, screen_pos(&h, 0, 127.0, 95.0));
+        assert_bar_above_the_start(&h, screen_pos(&h, 0, 127.0, 95.0).x);
     }
 
     #[test]
-    fn bar_stays_by_the_mouse_when_a_drag_overshoots_the_line() {
+    fn bar_goes_above_one_line_at_the_mouses_x() {
         let (mut h, _) = selecting();
         drag_text(&mut h, 0, (73.0, 95.0), (200.0, 95.0), Modifiers::SHIFT);
         h.frames(1, vec![]);
-        assert_bar_hangs_from(&h, screen_pos(&h, 0, 200.0, 95.0));
+        assert_bar_above_the_start(&h, screen_pos(&h, 0, 200.0, 95.0).x);
     }
 
     #[test]
-    fn bar_comes_up_at_the_release_of_a_selections_start_handle() {
+    fn bar_goes_above_a_selections_start_handle_let_go() {
         let (mut h, _) = selecting();
         drag_text(&mut h, 0, (73.0, 95.0), (130.0, 95.0), Modifiers::SHIFT);
         h.frames(1, vec![]);
@@ -10209,11 +10248,11 @@ pub(crate) mod tests {
         let by = vec2(screen_pos(&h, 0, 114.0, 95.0).x - knob.x, 0.0);
         h.drag(knob, by);
         h.frames(2, vec![]);
-        assert_bar_hangs_from(&h, knob + by);
+        assert_bar_above_the_start(&h, (knob + by).x);
     }
 
     #[test]
-    fn bar_comes_up_at_the_release_of_a_highlights_start_handle() {
+    fn bar_goes_above_a_highlights_start_handle_let_go() {
         let (mut h, _) = selecting();
         let caret = |char| Caret { page: 0, char };
         h.app.highlights.add(Highlight {
@@ -10228,7 +10267,252 @@ pub(crate) mod tests {
         h.drag(knob, by);
         h.frames(2, vec![]);
         assert_eq!(h.app.select.editing, Some(0));
-        assert_bar_hangs_from(&h, knob + by);
+        assert_bar_above_the_start(&h, (knob + by).x);
+    }
+
+    /// The bar is drawn below the selection's last knob, and below the mouse
+    /// if that is further down, as it is on a handle let go.
+    fn assert_bar_below_the_end(h: &Harness, mouse: egui::Pos2) {
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        let (_, bottom) = h.app.select.caret_lines[1].expect("the end is placed");
+        let clear = bottom.y.max(mouse.y) + BELOW_END;
+        assert!(
+            (bar.top() - clear).abs() <= 1.0,
+            "the bar {bar:?} is not below the end at {bottom:?} and the mouse at {mouse:?}"
+        );
+    }
+
+    /// Over more than one line, which end a handle is decides where the bar
+    /// goes. On one line it goes above either way.
+    #[test]
+    fn bar_goes_above_a_two_line_selections_start_handle_let_go() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 95.0), (127.0, 115.0), Modifiers::SHIFT);
+        h.frames(2, vec![]);
+        let knob = h.app.select.handles[0].expect("the start's handle shows");
+        let by = vec2(12.0, 0.0);
+        h.drag(knob, by);
+        h.frames(2, vec![]);
+        assert_bar_above_the_start(&h, (knob + by).x);
+    }
+
+    #[test]
+    fn bar_goes_below_a_two_line_selections_end_handle_let_go() {
+        let (mut h, _) = selecting();
+        // Made upwards, so that the end let go of differs from the one before.
+        drag_text(&mut h, 0, (127.0, 115.0), (73.0, 95.0), Modifiers::SHIFT);
+        h.frames(2, vec![]);
+        let knob = h.app.select.handles[1].expect("the end's handle shows");
+        let by = vec2(12.0, 0.0);
+        h.drag(knob, by);
+        h.frames(2, vec![]);
+        assert_bar_below_the_end(&h, knob + by);
+    }
+
+    #[test]
+    fn bar_goes_above_an_end_handle_let_go_across_the_start() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 115.0), (127.0, 115.0), Modifiers::SHIFT);
+        h.frames(2, vec![]);
+        let knob = h.app.select.handles[1].expect("the end's handle shows");
+        let to = screen_pos(&h, 0, 100.0, 95.0);
+        let by = vec2(to.x - knob.x, to.y - knob.y + 6.0);
+        h.drag(knob, by);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.select.bar_end(), Some(0));
+        assert_bar_above_the_start(&h, (knob + by).x);
+    }
+
+    /// A highlight over the two lines, clicked so that its bar is by the mouse.
+    fn two_line_highlight(h: &mut Harness, click: (f32, f32)) {
+        let caret = |char| Caret { page: 0, char };
+        h.app.highlights.add(Highlight {
+            start: caret(0),
+            end: caret(21),
+            colour: HighlightColour::Yellow,
+        });
+        h.click(screen_pos(h, 0, click.0, click.1));
+        h.frames(2, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_eq!(h.app.select.bar_end(), None);
+    }
+
+    #[test]
+    fn bar_goes_above_a_two_line_highlights_start_handle_let_go() {
+        let (mut h, _) = selecting();
+        two_line_highlight(&mut h, (120.0, 115.0));
+        let knob = h.app.select.handles[0].expect("the start's handle shows");
+        let by = vec2(12.0, 0.0);
+        h.drag(knob, by);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_bar_above_the_start(&h, (knob + by).x);
+    }
+
+    #[test]
+    fn bar_goes_below_a_two_line_highlights_end_handle_let_go() {
+        let (mut h, _) = selecting();
+        two_line_highlight(&mut h, (75.0, 95.0));
+        let knob = h.app.select.handles[1].expect("the end's handle shows");
+        let by = vec2(-12.0, 0.0);
+        h.drag(knob, by);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_bar_below_the_end(&h, knob + by);
+    }
+
+    #[test]
+    fn a_highlights_handle_pressed_and_let_go_keeps_the_bar_by_the_click() {
+        let (mut h, _) = selecting();
+        two_line_highlight(&mut h, (75.0, 95.0));
+        let before = h.app.select.bar_rect.expect("the bar is drawn");
+        let knob = h.app.select.handles[1].expect("the end's handle shows");
+        h.click(knob);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_eq!(h.app.select.bar_end(), None);
+        assert_eq!(h.app.select.bar_rect, Some(before));
+    }
+
+    #[test]
+    fn bar_clears_a_knob_scrolled_out_of_view() {
+        let engine = TextEngine::new(&[
+            &[
+                "the cat sat",
+                "on the mat",
+                "a third one",
+                "and a fourth",
+                "and a fifth",
+            ],
+            &["a dog"],
+        ]);
+        let mut h = searching(&engine);
+        h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
+        let caret = |char| Caret { page: 0, char };
+        h.app.highlights.add(Highlight {
+            start: caret(0),
+            end: caret(55),
+            colour: HighlightColour::Yellow,
+        });
+        h.frames(2, vec![]);
+        h.click(screen_pos(&h, 0, 80.0, 155.0));
+        h.frames(2, vec![]);
+        let inner = h.app.last_scroll.unwrap().inner;
+        let knob = |h: &Harness| {
+            let (_, bottom) = h.app.select.caret_lines[0].expect("the start is placed");
+            Rect::from_center_size(
+                bottom + vec2(0.0, select::HANDLE_RADIUS),
+                Vec2::splat(2.0 * select::HANDLE_RADIUS),
+            )
+        };
+        // The wheel scrolls by what it is asked, with no momentum: the knob's
+        // centre just above the view, so no handle shows but its lower part
+        // is in view.
+        let dy = knob(&h).center().y - (inner.top() - 3.0);
+        h.frames(1, vec![Event::PointerMoved(inner.center())]);
+        h.frames(
+            30,
+            vec![wheel(
+                egui::MouseWheelUnit::Point,
+                -dy,
+                egui::MouseWheelSource::Wheel,
+            )],
+        );
+        h.frames(30, vec![]);
+        assert!(
+            knob(&h).bottom() > inner.top(),
+            "the knob is wholly out of view"
+        );
+        // A click on the highlight where the bar above it just fits in the
+        // view, reaching over the knob's lower part.
+        let size = h.app.select.bar_size.expect("the bar was measured");
+        let click = pos2(
+            screen_pos(&h, 0, 80.0, 95.0).x,
+            inner.top() + 1.0 + size.y + SELECTION_BAR_GAP,
+        );
+        assert!(click.y - SELECTION_BAR_GAP - size.y < knob(&h).bottom());
+        past_double_click(&mut h);
+        h.click(click);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_eq!(h.app.select.handles[0], None);
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        assert!(
+            !bar.intersects(knob(&h)),
+            "the bar {bar:?} covers {:?}",
+            knob(&h)
+        );
+    }
+
+    #[test]
+    fn a_highlights_handle_let_go_on_its_other_end_leaves_the_bar_where_it_is() {
+        let (mut h, _) = selecting();
+        two_line_highlight(&mut h, (75.0, 95.0));
+        let before = h.app.select.bar_rect.expect("the bar is drawn");
+        let from = h.app.select.handles[0].expect("the start's handle shows");
+        let to = h.app.select.handles[1].expect("the end's handle shows");
+        h.drag(from, to - from);
+        h.frames(2, vec![]);
+        // Nothing changed: the highlight keeps its range, and the bar its place.
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_eq!(h.app.select.bar_rect, Some(before));
+    }
+
+    #[test]
+    fn bar_goes_below_a_shift_click_extending_a_selection_downwards() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (150.0, 95.0), (127.0, 95.0), Modifiers::SHIFT);
+        past_double_click(&mut h);
+        let at = screen_pos(&h, 0, 300.0, 115.0);
+        h.modifiers = Modifiers::SHIFT;
+        h.click(at);
+        h.frames(2, vec![]);
+        h.modifiers = Modifiers::NONE;
+        assert_bar_below_the_end(&h, at);
+    }
+
+    #[test]
+    fn bar_goes_below_a_shift_click_extending_a_highlight_downwards() {
+        let (mut h, _) = selecting();
+        let caret = |char| Caret { page: 0, char };
+        h.app.highlights.add(Highlight {
+            start: caret(0),
+            end: caret(7),
+            colour: HighlightColour::Yellow,
+        });
+        h.click(screen_pos(&h, 0, 80.0, 95.0));
+        h.frames(2, vec![]);
+        past_double_click(&mut h);
+        let at = screen_pos(&h, 0, 300.0, 115.0);
+        h.modifiers = Modifiers::SHIFT;
+        h.click(at);
+        h.frames(2, vec![]);
+        h.modifiers = Modifiers::NONE;
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_bar_below_the_end(&h, at);
+    }
+
+    #[test]
+    fn bar_goes_above_a_shift_click_extending_a_highlight_upwards() {
+        let (mut h, _) = selecting();
+        let caret = |char| Caret { page: 0, char };
+        // Only the second line.
+        h.app.highlights.add(Highlight {
+            start: caret(12),
+            end: caret(21),
+            colour: HighlightColour::Yellow,
+        });
+        h.click(screen_pos(&h, 0, 110.0, 115.0));
+        h.frames(2, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        past_double_click(&mut h);
+        let at = screen_pos(&h, 0, 300.0, 95.0);
+        h.modifiers = Modifiers::SHIFT;
+        h.click(at);
+        h.frames(2, vec![]);
+        h.modifiers = Modifiers::NONE;
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_bar_above_the_start(&h, at.x);
     }
 
     #[test]
@@ -10244,35 +10528,35 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn bar_comes_up_at_a_double_click() {
+    fn bar_goes_above_a_double_click() {
         let (mut h, _) = selecting();
         click_times(&mut h, (127.0, 95.0), 2, Modifiers::SHIFT);
         assert_eq!(selected_on(&h, 0), Some(8..11));
         h.frames(1, vec![]);
-        assert_bar_hangs_from(&h, screen_pos(&h, 0, 127.0, 95.0));
+        assert_bar_above_the_start(&h, screen_pos(&h, 0, 127.0, 95.0).x);
     }
 
     #[test]
-    fn bar_comes_up_at_a_triple_click() {
+    fn bar_goes_above_a_triple_click() {
         let (mut h, _) = selecting();
         click_times(&mut h, (127.0, 95.0), 3, Modifiers::SHIFT);
         assert_eq!(selected_on(&h, 0).map(|r| r.start), Some(0));
         h.frames(1, vec![]);
-        assert_bar_hangs_from(&h, screen_pos(&h, 0, 127.0, 95.0));
+        assert_bar_above_the_start(&h, screen_pos(&h, 0, 127.0, 95.0).x);
     }
 
     #[test]
-    fn bar_comes_up_at_a_shift_click() {
+    fn bar_goes_above_a_shift_click_on_the_first_line() {
         let (mut h, _) = selecting();
-        drag_text(&mut h, 0, (73.0, 95.0), (100.0, 95.0), Modifiers::SHIFT);
+        drag_text(&mut h, 0, (73.0, 115.0), (100.0, 115.0), Modifiers::SHIFT);
         past_double_click(&mut h);
-        // On the line below: the bar hangs over the line above.
-        let at = screen_pos(&h, 0, 127.0, 115.0);
+        // Off to the side of the bar, which would take the press.
+        let at = screen_pos(&h, 0, 300.0, 95.0);
         h.modifiers = Modifiers::SHIFT;
         h.click(at);
         h.frames(2, vec![]);
         h.modifiers = Modifiers::NONE;
-        assert_bar_hangs_from(&h, at);
+        assert_bar_above_the_start(&h, at.x);
     }
 
     #[test]
@@ -10319,6 +10603,118 @@ pub(crate) mod tests {
             (bar_at - point).length() <= 1.0,
             "the bar hangs from {bar_at:?}, not its page point at {point:?}"
         );
+    }
+
+    /// The knob of each end is free of the bar.
+    fn assert_bar_clears_the_handles(h: &Harness) {
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        for knob in h.app.select.handles.into_iter().flatten() {
+            let knob = Rect::from_center_size(knob, Vec2::splat(2.0 * select::HANDLE_RADIUS));
+            assert!(!bar.intersects(knob), "the bar {bar:?} covers {knob:?}");
+        }
+    }
+
+    /// The bar below the selection has its top this far under the end's
+    /// caret, or the mouse past it: past the knob and the gap.
+    const BELOW_END: f32 = 2.0 * select::HANDLE_RADIUS + SELECTION_BAR_GAP;
+
+    #[test]
+    fn bar_goes_past_a_mouse_let_go_below_the_text() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 95.0), (130.0, 160.0), Modifiers::SHIFT);
+        h.frames(2, vec![]);
+        // Let go in the blank below the text: past the mouse too, so a
+        // click where it let go does not land on the bar.
+        let mouse = screen_pos(&h, 0, 130.0, 160.0);
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        assert!(
+            (bar.top() - (mouse.y + BELOW_END)).abs() <= 1.0,
+            "the bar {bar:?} is not below the mouse at {mouse:?}"
+        );
+    }
+
+    #[test]
+    fn bar_goes_below_a_drag_down() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 95.0), (127.0, 115.0), Modifiers::SHIFT);
+        h.frames(2, vec![]);
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        let (_, bottom) = h.app.select.caret_lines[1].expect("the end is placed");
+        assert!(
+            (bar.top() - (bottom.y + BELOW_END)).abs() <= 1.0,
+            "the bar {bar:?} is not below the end at {bottom:?}"
+        );
+    }
+
+    #[test]
+    fn bar_goes_below_a_drag_down_at_any_zoom() {
+        let (mut h, _) = selecting();
+        // Zoomed out until the first line's knob reaches the second line.
+        for _ in 0..4 {
+            h.press(egui::Key::Minus, Modifiers::COMMAND);
+            h.frames(3, vec![]);
+        }
+        assert!(h.app.view.layout().scale() < 0.7, "not zoomed out enough");
+        // Zooming moved the page: back to its top, for the lines to be in view.
+        h.frames(1, vec![Event::PointerMoved(pos2(600.0, 700.0))]);
+        h.frames(
+            2,
+            vec![wheel(
+                egui::MouseWheelUnit::Point,
+                2000.0,
+                egui::MouseWheelSource::Wheel,
+            )],
+        );
+        drag_text(&mut h, 0, (73.0, 95.0), (127.0, 115.0), Modifiers::SHIFT);
+        h.frames(2, vec![]);
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        let (_, bottom) = h.app.select.caret_lines[1].expect("the end is placed");
+        assert!(
+            bar.top() > bottom.y,
+            "the bar {bar:?} is not below the end at {bottom:?}"
+        );
+    }
+
+    #[test]
+    fn clicking_a_highlight_moves_the_bar_off_a_handle_it_would_cover() {
+        let (mut h, _) = selecting();
+        let caret = |char| Caret { page: 0, char };
+        h.app.highlights.add(Highlight {
+            start: caret(0),
+            end: caret(21),
+            colour: HighlightColour::Yellow,
+        });
+        // On the second line, the bar over the mouse lands on the first's knob.
+        h.click(screen_pos(&h, 0, 110.0, 115.0));
+        h.frames(2, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_bar_clears_the_handles(&h);
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        let (_, bottom) = h.app.select.caret_lines[1].expect("the end is placed");
+        assert!(
+            (bar.top() - (bottom.y + BELOW_END)).abs() <= 1.0,
+            "the bar {bar:?} is not below the end at {bottom:?}"
+        );
+    }
+
+    #[test]
+    fn bar_is_placed_with_its_measured_size() {
+        let (mut h, _) = selecting();
+        select_the_cat(&mut h);
+        h.frames(2, vec![]);
+        let drawn = h.app.select.bar_rect.expect("the bar is drawn");
+        assert_eq!(h.app.select.bar_size, Some(drawn.size()));
+        // Told it is far wider, it is pushed that far in from the window's
+        // edge, for the frame until it measures itself again.
+        h.app.select.bar_size = Some(vec2(800.0, drawn.height()));
+        h.frames(1, vec![]);
+        let pushed = h.app.select.bar_rect.expect("the bar is drawn");
+        assert!(
+            (pushed.center().x - 400.0).abs() <= 1.0,
+            "the bar {pushed:?} did not go by its size"
+        );
+        h.frames(1, vec![]);
+        assert_eq!(h.app.select.bar_rect, Some(drawn));
     }
 
     #[test]
