@@ -1,7 +1,7 @@
 //! The links on the pages, as the links thread reads them: asked for once
 //! per page when it shows, kept for the whole document (they are small).
 
-use noido_core::PageNumbers;
+use noido_core::{OutlineTree, PageNumbers};
 use noido_engine::{Destination, Link, Rect};
 use noido_render::{LinkReply, Linker};
 
@@ -32,6 +32,12 @@ pub struct Links {
     named: Option<String>,
     /// The pages' labels, once known; kept until a new version's arrive.
     pub numbers: PageNumbers,
+    /// The outline, `None` until the first reply.
+    pub outline: Option<OutlineTree>,
+    /// A new outline replaced a different one since it was last asked.
+    outline_changed: bool,
+    /// The outline replies taken in since the linker was set.
+    outline_replies: usize,
 }
 
 impl Links {
@@ -43,16 +49,35 @@ impl Links {
             flash: None,
             named: None,
             numbers: PageNumbers::default(),
+            outline: None,
+            outline_changed: false,
+            outline_replies: 0,
         }
     }
 
+    /// Whether a reply replaced the outline with a different one since the
+    /// last call: marks made on the old one no longer mean anything.
+    pub fn take_outline_changed(&mut self) -> bool {
+        std::mem::take(&mut self.outline_changed)
+    }
+
+    /// How many outline replies came since the linker was set.
+    #[cfg(test)]
+    pub fn outline_replies(&self) -> usize {
+        self.outline_replies
+    }
+
     /// Reads links with `linker` from now on, forgetting those known: a
-    /// new version of the document has its own.
+    /// new version of the document has its own. The numbers and outline
+    /// stay until the new version's replies.
     pub fn set_linker(&mut self, linker: Linker, page_count: usize) {
         let numbers = std::mem::take(&mut self.numbers);
+        let outline = self.outline.take();
         *self = Links::new(page_count);
         self.numbers = numbers;
+        self.outline = outline;
         linker.request_labels();
+        linker.request_outline();
         self.linker = Some(linker);
     }
 
@@ -114,8 +139,13 @@ impl Links {
                     }
                 }
                 LinkReply::Labels(labels) => self.numbers = PageNumbers::new(labels),
-                // Not asked for yet.
-                LinkReply::Outline(_) => {}
+                LinkReply::Outline(entries) => {
+                    self.outline_replies += 1;
+                    match &mut self.outline {
+                        Some(tree) => self.outline_changed |= !tree.replace(entries),
+                        None => self.outline = Some(OutlineTree::new(entries)),
+                    }
+                }
             }
         }
         answer

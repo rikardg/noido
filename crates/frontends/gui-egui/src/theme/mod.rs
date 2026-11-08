@@ -281,6 +281,19 @@ pub fn solid_bar(ui: &egui::Ui) -> Option<f32> {
     (!scroll.floating).then(|| scroll.allocated_width())
 }
 
+/// The room an overlay bar covers across the right edge of its area, under
+/// the scrollbar role: lists that draw to the edge keep clear of it. `None`
+/// for solid bars, which take their room themselves.
+pub fn floating_bar(ui: &egui::Ui) -> Option<f32> {
+    let theme = Theme::current(ui.ctx());
+    let mut style = (**ui.style()).clone();
+    theme.apply_role(ui.ctx().theme(), &mut style, Role::Scrollbar);
+    let scroll = style.spacing.scroll;
+    scroll
+        .floating
+        .then(|| scroll.bar_width.max(scroll.allocated_width()))
+}
+
 /// `area` showing exactly the solid `bars`, at once: egui would otherwise
 /// show a bar from the frame after it is needed, and slide it in, while the
 /// content is already laid out beside it. `last` is the area's id from the

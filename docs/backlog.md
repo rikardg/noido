@@ -266,8 +266,6 @@ when it is fixed.
   a 1 pt box), `/BS`, `/C`, `/H` (click look) and `/AP` appearance streams,
   maybe behind a setting, since hyperref's default red boxes are often
   unwanted.
-- **Outline in the sidebar.** The document's bookmarks (`/Outlines`) as a
-  tree in the left sidebar; uses the same destinations as links.
 - **More link kinds.** Links to another file (GoToR), named actions
   (NextPage, PrevPage, FirstPage, LastPage), Launch. Today they do nothing.
 

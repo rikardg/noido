@@ -113,6 +113,8 @@ pub struct NoidoApp {
     /// reader moves the page view, since the page at the centre may be
     /// another one (short pages, the last pages).
     chosen: Option<usize>,
+    /// The outline entry clicked, while `chosen` stands.
+    clicked_entry: Option<usize>,
     /// The page at the middle of the sidebar after the reader scrolled it;
     /// the low-res thumbnails follow it until the current page changes.
     browse: Option<usize>,
@@ -274,6 +276,7 @@ impl NoidoApp {
             sidebar: SidebarState::default(),
             sidebar_view: SidebarView::new(page_count),
             chosen: None,
+            clicked_entry: None,
             browse: None,
             told: None,
             search_focus_requested: false,
@@ -422,6 +425,25 @@ impl NoidoApp {
         }
     }
 
+    /// Makes `page` the current page, as after a jump: it stands until the
+    /// reader moves the page view. Any outline entry clicked is forgotten.
+    fn choose_page(&mut self, page: usize) {
+        self.chosen = Some(page);
+        self.clicked_entry = None;
+    }
+
+    /// The outline entry the reader is in: the one just clicked while its
+    /// page stands, else the one at the reader's position.
+    fn current_entry(&self) -> Option<usize> {
+        let tree = self.links.outline.as_ref()?;
+        if self.chosen.is_some()
+            && let Some(entry) = self.clicked_entry
+        {
+            return Some(entry);
+        }
+        tree.current(self.view.reading_point(self.chosen)?)
+    }
+
     /// The page the reader is at: the one clicked in the sidebar, else the
     /// page at the centre of the page view.
     fn current_page(&self) -> Option<usize> {
@@ -447,6 +469,7 @@ impl NoidoApp {
         // A named place found later would pull the reader away.
         self.links.cancel_named();
         self.chosen = None;
+        self.clicked_entry = None;
         self.search_state.reader_moved();
         self.searched_away = false;
     }
@@ -707,7 +730,7 @@ impl NoidoApp {
                 }
                 let page = page.min(last);
                 self.view.go_to_page(page);
-                self.chosen = Some(page);
+                self.choose_page(page);
                 self.search_state.reader_moved();
             }
             Target::Named(name) => {
@@ -726,7 +749,7 @@ impl NoidoApp {
                 }
                 self.view.go_to_target(&target);
                 let last = self.view.layout().page_count().saturating_sub(1);
-                self.chosen = Some(target.page.min(last));
+                self.choose_page(target.page.min(last));
                 self.search_state.reader_moved();
             }
             Named::Unknown(name) => {
@@ -789,6 +812,7 @@ impl NoidoApp {
         self.search_state.rerun(from);
         self.focus = None;
         self.chosen = None;
+        self.clicked_entry = None;
         self.browse = None;
         if let Some(persistence) = &mut self.persistence {
             persistence.store.rekey(&mut persistence.slot, reload.key);
@@ -1964,12 +1988,18 @@ impl NoidoApp {
     /// Follows `link`: jumps to an internal target and flashes it, or
     /// opens a web or mail address.
     fn follow(&mut self, ctx: &egui::Context, link: noido_engine::Link) {
-        match link.target {
+        self.follow_target(ctx, link.target);
+    }
+
+    /// Goes to `target` and flashes it if it is in the document, or opens
+    /// it if it is a web or mail address: for a link and an outline entry.
+    fn follow_target(&mut self, ctx: &egui::Context, target: noido_engine::LinkTarget) {
+        match target {
             noido_engine::LinkTarget::Internal(target) => {
                 self.leave_here();
                 self.view.go_to_target(&target);
                 let last = self.view.layout().page_count().saturating_sub(1);
-                self.chosen = Some(target.page.min(last));
+                self.choose_page(target.page.min(last));
                 self.search_state.reader_moved();
                 self.links.start_flash(target);
             }
@@ -2039,6 +2069,11 @@ impl NoidoApp {
         if let Some(named) = self.links.receive(ctx.input(|i| i.time)) {
             self.arrive_at_named(named);
         }
+        // A different outline: an entry clicked in the old one means nothing.
+        if self.links.take_outline_changed() {
+            self.clicked_entry = None;
+            self.sidebar_view.outline_changed();
+        }
         self.arrive();
         self.handle_input(&ctx, parent);
         for action in std::mem::take(&mut self.queued) {
@@ -2079,6 +2114,7 @@ impl NoidoApp {
         self.edge_scroll(&ctx);
         if self.sidebar.open {
             let current = self.current_page();
+            let current_entry = self.current_entry();
             let highlighted = self.highlighted();
             let paper = self.paper_tint(&ctx);
             let mut input = sidebar::Input {
@@ -2102,13 +2138,28 @@ impl NoidoApp {
                 texts: &mut self.texts,
                 request_text: &|page| self.search_state.request_text(page),
                 numbers: &self.links.numbers,
+                outline: self.links.outline.as_mut(),
+                current_entry,
             };
             let output = self.sidebar_view.show(ui, &mut self.sidebar, &mut input);
             if let Some(page) = output.clicked {
                 self.leave_here();
                 self.view.go_to_page(page);
-                self.chosen = Some(page);
+                self.choose_page(page);
                 self.search_state.reader_moved();
+            }
+            if let Some(entry) = output.outline_entry
+                && let Some(target) = self
+                    .links
+                    .outline
+                    .as_ref()
+                    .and_then(|tree| tree.target(entry).cloned())
+            {
+                let internal = matches!(target, noido_engine::LinkTarget::Internal(_));
+                self.follow_target(&ctx, target);
+                if internal {
+                    self.clicked_entry = Some(entry);
+                }
             }
             if output.browsing.is_some() {
                 self.browse = output.browsing;
@@ -2117,7 +2168,7 @@ impl NoidoApp {
                 self.go_to_hit(index);
             }
         } else {
-            self.sidebar_view.closed();
+            self.sidebar_view.hidden();
         }
 
         // The page area changes size this frame when the sidebar opens or
@@ -7603,6 +7654,8 @@ pub(crate) mod tests {
         named: Arc<Vec<(String, noido_engine::Destination)>>,
         /// Each page's label.
         labels: Arc<Vec<Option<String>>>,
+        /// The outline.
+        outline: Arc<Vec<noido_engine::OutlineEntry>>,
     }
 
     impl TextEngine {
@@ -7621,7 +7674,13 @@ pub(crate) mod tests {
                 link_gate: None,
                 named: Arc::default(),
                 labels: Arc::default(),
+                outline: Arc::default(),
             }
+        }
+
+        fn with_outline(mut self, outline: Vec<noido_engine::OutlineEntry>) -> TextEngine {
+            self.outline = Arc::new(outline);
+            self
         }
 
         fn with_labels(mut self, labels: &[Option<&str>]) -> TextEngine {
@@ -7762,6 +7821,15 @@ pub(crate) mod tests {
                 }
             }
             self.labels.to_vec()
+        }
+        fn outline(&self) -> Vec<noido_engine::OutlineEntry> {
+            if let Some(gate) = &self.link_gate {
+                let mut open = gate.0.lock().unwrap();
+                while !*open {
+                    open = gate.1.wait(open).unwrap();
+                }
+            }
+            self.outline.to_vec()
         }
     }
 
@@ -11604,5 +11672,719 @@ pub(crate) mod tests {
             store.load(test_key()).1.unwrap().highlights,
             h.app.highlights.items()
         );
+    }
+
+    // ---- Outline ----
+
+    const NO_OUTLINE: &str = "This document has no outline";
+
+    fn entry(title: &str, target: Option<noido_engine::LinkTarget>) -> noido_engine::OutlineEntry {
+        noido_engine::OutlineEntry {
+            title: title.into(),
+            target,
+            open: false,
+            children: Vec::new(),
+        }
+    }
+
+    /// An entry going to page `page`, `y` points down.
+    fn heading_at(title: &str, page: usize, y: f32) -> noido_engine::OutlineEntry {
+        entry(
+            title,
+            Some(noido_engine::LinkTarget::Internal(
+                noido_engine::Destination {
+                    page,
+                    x: None,
+                    y: Some(y),
+                },
+            )),
+        )
+    }
+
+    fn heading(title: &str, page: usize) -> noido_engine::OutlineEntry {
+        heading_at(title, page, 100.0)
+    }
+
+    fn untargeted(title: &str) -> noido_engine::OutlineEntry {
+        entry(title, None)
+    }
+
+    fn address(title: &str, uri: &str) -> noido_engine::OutlineEntry {
+        entry(title, Some(noido_engine::LinkTarget::Web(uri.into())))
+    }
+
+    fn branch(
+        mut parent: noido_engine::OutlineEntry,
+        open: bool,
+        children: Vec<noido_engine::OutlineEntry>,
+    ) -> noido_engine::OutlineEntry {
+        parent.open = open;
+        parent.children = children;
+        parent
+    }
+
+    /// Ten pages, page 5 labelled "61", the rest not. The outline, entries
+    /// 0 to 7 in tree order: Preface, Part One (no target, open), Chapter 1
+    /// (folded), Section 1.1, Chapter 2, Web, Script, Void (no target).
+    fn outline_engine() -> TextEngine {
+        let mut labels = [None; 10];
+        labels[5] = Some("61");
+        TextEngine::new(&[&["x"] as &[&str]; 10])
+            .with_labels(&labels)
+            .with_outline(vec![
+                heading("Preface", 0),
+                branch(
+                    untargeted("Part One"),
+                    true,
+                    vec![
+                        branch(
+                            heading("Chapter 1", 2),
+                            false,
+                            vec![heading("Section 1.1", 3)],
+                        ),
+                        heading("Chapter 2", 5),
+                    ],
+                ),
+                address("Web", "https://example.org/"),
+                address("Script", "javascript:alert(1)"),
+                untargeted("Void"),
+            ])
+    }
+
+    /// `count` pages, one heading on each.
+    fn long_outline(count: usize) -> TextEngine {
+        let headings = (0..count)
+            .map(|i| heading(&format!("Heading {i}"), i))
+            .collect();
+        TextEngine::new(&vec![&["x"] as &[&str]; count]).with_outline(headings)
+    }
+
+    /// A harness on the outline tab, its document and links thread `engine`.
+    fn outline_harness(engine: &TextEngine) -> Harness {
+        outline_harness_at(engine, None)
+    }
+
+    /// Like [`outline_harness`], the sidebar `width` wide from its first
+    /// frame (later changes to the saved width don't reach the panel).
+    fn outline_harness_at(engine: &TextEngine, width: Option<f32>) -> Harness {
+        let linker = engine.clone();
+        Harness::build_with(Arc::new(engine.clone()), move |mut app| {
+            app.sidebar.open = true;
+            if let Some(width) = width {
+                app.sidebar.width = width;
+            }
+            app.sidebar.choose(SidebarTab::Outline);
+            app.with_linker(noido_render::Linker::start(
+                Arc::new(linker),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+        })
+    }
+
+    /// Like [`outline_harness`], once the outline has come and been drawn.
+    fn outline_ready(engine: &TextEngine) -> Harness {
+        let mut h = outline_harness(engine);
+        h.until(|h| h.app.links.outline.is_some());
+        h.frames(3, vec![]);
+        h
+    }
+
+    fn outline_rows(h: &Harness) -> Vec<crate::sidebar::OutlineRowRects> {
+        h.app.sidebar_view.outline_rows().to_vec()
+    }
+
+    fn row_titles(h: &Harness) -> Vec<String> {
+        outline_rows(h).into_iter().map(|r| r.title).collect()
+    }
+
+    fn row_entries(h: &Harness) -> Vec<usize> {
+        outline_rows(h).into_iter().map(|r| r.entry).collect()
+    }
+
+    fn row_of(h: &Harness, title: &str) -> crate::sidebar::OutlineRowRects {
+        outline_rows(h)
+            .into_iter()
+            .find(|r| r.title == title)
+            .unwrap_or_else(|| panic!("no row {title:?}: {:?}", row_titles(h)))
+    }
+
+    /// The titles of the rows filled as the current entry's.
+    fn marked_rows(h: &Harness) -> Vec<String> {
+        let fill = h.ctx.global_style().visuals.selection.bg_fill;
+        outline_rows(h)
+            .into_iter()
+            .filter(|r| {
+                h.shapes.iter().any(|c| {
+                    matches!(&c.shape, egui::Shape::Rect(s) if s.fill == fill && r.row.contains_rect(s.rect))
+                })
+            })
+            .map(|r| r.title)
+            .collect()
+    }
+
+    fn click_row(h: &mut Harness, title: &str) {
+        let row = row_of(h, title);
+        h.click(row.row.center());
+        h.frames(2, vec![]);
+    }
+
+    /// Moves the pointer onto the row and runs a frame there.
+    fn hover_row(h: &mut Harness, title: &str) {
+        let row = row_of(h, title);
+        h.frames(1, vec![Event::PointerMoved(row.row.center())]);
+        h.frames(1, vec![]);
+    }
+
+    /// Where `text` was drawn last frame, within `row`'s height.
+    fn text_in_row(h: &Harness, text: &str, row: Rect) -> Option<Rect> {
+        h.latest_texts()
+            .into_iter()
+            .find(|(t, r)| t == text && row.y_range().contains(r.center().y))
+            .map(|(_, r)| r)
+    }
+
+    fn shows_no_outline(h: &Harness) -> bool {
+        h.texts().iter().any(|t| t == NO_OUTLINE)
+    }
+
+    #[test]
+    fn row_shows_title_and_number() {
+        let h = outline_ready(&outline_engine());
+        assert_eq!(
+            row_titles(&h),
+            [
+                "Preface",
+                "Part One",
+                "Chapter 1",
+                "Chapter 2",
+                "Web",
+                "Script",
+                "Void"
+            ]
+        );
+        let number = |title: &str| row_of(&h, title).number;
+        // The short form: a printed number alone, a file number where the
+        // page has no label.
+        assert_eq!(number("Chapter 2"), "61");
+        assert_eq!(number("Preface"), "(1)");
+        // Web and no-target rows have none.
+        assert_eq!(number("Web"), "");
+        assert_eq!(number("Void"), "");
+        assert_eq!(number("Part One"), "");
+        assert!(h.texts().contains(&"61".to_owned()), "{:?}", h.texts());
+        assert!(h.texts().contains(&"Chapter 2".to_owned()));
+        // Deeper rows are indented, and the number is the weak colour.
+        let (preface, chapter) = (row_of(&h, "Preface"), row_of(&h, "Chapter 2"));
+        let left = |title: &str, row: &crate::sidebar::OutlineRowRects| {
+            text_in_row(&h, title, row.row).unwrap().min.x
+        };
+        assert!(left("Chapter 2", &chapter) > left("Preface", &preface) + 5.0);
+        assert_ne!(h.text_color("61"), h.text_color("Chapter 2"));
+    }
+
+    #[test]
+    fn click_jumps_flashes_and_adds_history() {
+        let mut h = outline_ready(&outline_engine());
+        hover_row(&mut h, "Chapter 2");
+        assert_eq!(h.cursor, egui::CursorIcon::PointingHand);
+        click_row(&mut h, "Chapter 2");
+        assert_eq!(h.app.chosen, Some(5));
+        assert_eq!(h.app.clicked_entry, Some(4));
+        assert_eq!(h.centre().page, 5);
+        assert_eq!(h.app.history.back_entries().len(), 1);
+        h.until(|h| !flash_outlines(h).is_empty());
+        assert!(!flash_outlines(&h).is_empty());
+        assert_eq!(marked_rows(&h), ["Chapter 2"]);
+        h.press(egui::Key::ArrowLeft, Modifiers::ALT);
+        assert_eq!(h.centre().page, 0);
+    }
+
+    #[test]
+    fn click_on_chevron_folds_without_jumping() {
+        let mut h = outline_ready(&outline_engine());
+        let row = row_of(&h, "Chapter 1");
+        let chevron = row.chevron.expect("a branch has a chevron");
+        assert!(chevron.width() >= row.row.height(), "{chevron:?}");
+        assert!(row_of(&h, "Chapter 2").chevron.is_none());
+        assert!(row_of(&h, "Preface").chevron.is_none());
+        h.click(chevron.center());
+        h.frames(2, vec![]);
+        assert!(row_titles(&h).contains(&"Section 1.1".to_owned()));
+        assert_eq!(h.app.chosen, None);
+        assert_eq!(h.app.clicked_entry, None);
+        assert!(h.app.history.back_entries().is_empty());
+        assert_eq!(h.centre().page, 0);
+        let chevron = row_of(&h, "Chapter 1").chevron.unwrap();
+        h.click(chevron.center());
+        h.frames(2, vec![]);
+        assert!(!row_titles(&h).contains(&"Section 1.1".to_owned()));
+        assert!(h.app.history.back_entries().is_empty());
+    }
+
+    #[test]
+    fn click_on_targetless_parent_toggles() {
+        let mut h = outline_ready(&outline_engine());
+        hover_row(&mut h, "Part One");
+        assert_eq!(h.cursor, egui::CursorIcon::PointingHand);
+        click_row(&mut h, "Part One");
+        assert_eq!(
+            row_titles(&h),
+            ["Preface", "Part One", "Web", "Script", "Void"]
+        );
+        assert_eq!(h.app.chosen, None);
+        assert!(h.app.history.back_entries().is_empty());
+        click_row(&mut h, "Part One");
+        assert!(row_titles(&h).contains(&"Chapter 2".to_owned()));
+    }
+
+    #[test]
+    fn click_on_targetless_leaf_does_nothing() {
+        let mut h = outline_ready(&outline_engine());
+        let before = row_titles(&h);
+        hover_row(&mut h, "Void");
+        assert_ne!(h.cursor, egui::CursorIcon::PointingHand);
+        click_row(&mut h, "Void");
+        assert_eq!(row_titles(&h), before);
+        assert_eq!(h.app.chosen, None);
+        assert_eq!(h.app.clicked_entry, None);
+        assert!(h.app.history.back_entries().is_empty());
+        assert_eq!(h.centre().page, 0);
+    }
+
+    #[test]
+    fn drag_scrolls_without_jumping() {
+        let mut h = outline_ready(&long_outline(100));
+        let first = outline_rows(&h)[0].row.center();
+        assert_eq!(h.app.sidebar_view.outline_offset(), 0.0);
+        h.drag(first + vec2(0.0, 300.0), vec2(0.0, -300.0));
+        h.frames(30, vec![]);
+        assert!(h.app.sidebar_view.outline_offset() > 100.0);
+        assert_eq!(h.app.chosen, None);
+        assert_eq!(h.app.clicked_entry, None);
+        assert!(h.app.history.back_entries().is_empty());
+    }
+
+    #[test]
+    fn web_entry_opens_only_allowed_schemes() {
+        let mut h = outline_ready(&outline_engine());
+        click_row(&mut h, "Web");
+        assert_eq!(h.opened, ["https://example.org/".to_owned()]);
+        click_row(&mut h, "Script");
+        assert_eq!(h.opened.len(), 1, "{:?}", h.opened);
+        assert_eq!(h.app.chosen, None);
+        assert!(h.app.history.back_entries().is_empty());
+    }
+
+    #[test]
+    fn mark_follows_the_pages_without_unfolding() {
+        let mut h = outline_ready(&outline_engine());
+        let before = row_titles(&h);
+        go_to(&mut h, 4);
+        h.frames(2, vec![]);
+        // Section 1.1 is inside the folded Chapter 1: it stands for it.
+        assert_eq!(marked_rows(&h), ["Chapter 1"]);
+        assert_eq!(row_titles(&h), before);
+        go_to(&mut h, 6);
+        h.frames(2, vec![]);
+        assert_eq!(marked_rows(&h), ["Chapter 2"]);
+        let selection = h.ctx.global_style().visuals.selection.stroke.color;
+        assert_eq!(h.text_color("Chapter 2"), Some(selection));
+        assert_eq!(h.text_color("61"), Some(selection));
+        assert_eq!(row_titles(&h), before);
+    }
+
+    #[test]
+    fn mark_lands_on_visible_ancestor() {
+        let mut h = outline_ready(&outline_engine());
+        let chevron = row_of(&h, "Chapter 1").chevron.unwrap();
+        h.click(chevron.center());
+        go_to(&mut h, 4);
+        h.frames(3, vec![]);
+        assert_eq!(marked_rows(&h), ["Section 1.1"]);
+        let chevron = row_of(&h, "Chapter 1").chevron.unwrap();
+        h.click(chevron.center());
+        h.frames(2, vec![]);
+        assert_eq!(marked_rows(&h), ["Chapter 1"]);
+    }
+
+    #[test]
+    fn tree_scrolls_to_the_marked_row() {
+        let mut h = outline_ready(&long_outline(80));
+        assert!(!row_entries(&h).contains(&70));
+        go_to(&mut h, 70);
+        h.frames(4, vec![]);
+        let current = h.app.current_entry().expect("an entry is current");
+        assert!(current >= 69, "{current}");
+        assert!(row_entries(&h).contains(&current), "{:?}", row_entries(&h));
+        assert!(!marked_rows(&h).is_empty());
+    }
+
+    #[test]
+    fn folding_does_not_scroll() {
+        let headings = (0..100)
+            .map(|i| match i {
+                60 => branch(
+                    heading("Heading 60", 60),
+                    true,
+                    vec![heading_at("60.1", 60, 300.0), heading_at("60.2", 60, 500.0)],
+                ),
+                i => heading(&format!("Heading {i}"), i),
+            })
+            .collect();
+        let engine = TextEngine::new(&[&["x"] as &[&str]; 100]).with_outline(headings);
+        let mut h = outline_ready(&engine);
+        go_to(&mut h, 62);
+        h.frames(4, vec![]);
+        // The reader scrolls the outline until the current entry is just
+        // out of sight below, the branch still in view.
+        let rows = outline_rows(&h);
+        let height = rows[1].row.min.y - rows[0].row.min.y;
+        let current = h.app.current_entry().unwrap();
+        h.frames(1, vec![Event::PointerMoved(rows[5].row.center())]);
+        for _ in 0..40 {
+            if !row_entries(&h).contains(&current) {
+                break;
+            }
+            h.frames(
+                1,
+                vec![Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, height),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                    modifiers: Modifiers::NONE,
+                }],
+            );
+            h.frames(30, vec![]);
+        }
+        assert!(!row_entries(&h).contains(&current));
+        assert!(row_of(&h, "Heading 60").chevron.is_some());
+        let offset = h.app.sidebar_view.outline_offset();
+        assert!(offset > 100.0, "{offset}");
+        let chevron = row_of(&h, "Heading 60").chevron.unwrap();
+        h.click(chevron.center());
+        h.frames(4, vec![]);
+        assert!(!row_titles(&h).contains(&"60.1".to_owned()));
+        assert_eq!(h.app.sidebar_view.outline_offset(), offset);
+    }
+
+    #[test]
+    fn reader_scrolling_stands_until_the_entry_changes() {
+        let mut h = outline_ready(&long_outline(100));
+        let at = outline_rows(&h)[0].row.center() + vec2(0.0, 300.0);
+        h.drag(at, vec2(0.0, -300.0));
+        h.frames(120, vec![]);
+        let offset = h.app.sidebar_view.outline_offset();
+        assert!(offset > 100.0, "{offset}");
+        h.frames(30, vec![]);
+        assert_eq!(h.app.sidebar_view.outline_offset(), offset);
+        // The entry (the first) is out of sight and stays so.
+        assert!(!row_entries(&h).contains(&0));
+        go_to(&mut h, 90);
+        h.frames(4, vec![]);
+        let current = h.app.current_entry().unwrap();
+        assert!(row_entries(&h).contains(&current), "{current}");
+    }
+
+    #[test]
+    fn clicked_entry_stays_marked_near_the_end() {
+        let engine = TextEngine::new(&[&["x"] as &[&str]; 10]).with_outline(vec![
+            heading("Intro", 0),
+            heading("Last", 9),
+            heading_at("Back", 9, 700.0),
+        ]);
+        let mut h = outline_ready(&engine);
+        click_row(&mut h, "Back");
+        h.frames(3, vec![]);
+        // The jump stops short of the target at the end of the document.
+        assert_eq!(marked_rows(&h), ["Back"]);
+    }
+
+    #[test]
+    fn clicked_entry_mark_ends_when_the_reader_moves() {
+        let mut h = outline_ready(&outline_engine());
+        click_row(&mut h, "Chapter 1");
+        assert_eq!(marked_rows(&h), ["Chapter 1"]);
+        assert_eq!(h.app.clicked_entry, Some(2));
+        go_to(&mut h, 6);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.clicked_entry, None);
+        assert_eq!(marked_rows(&h), ["Chapter 2"]);
+        // Another way of choosing a page ends it too.
+        click_row(&mut h, "Chapter 1");
+        assert_eq!(marked_rows(&h), ["Chapter 1"]);
+        h.press(egui::Key::Home, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.clicked_entry, None);
+        assert_eq!(marked_rows(&h), ["Preface"]);
+    }
+
+    #[test]
+    fn dual_mode_marks_a_right_hand_chapter() {
+        let headings = (0..10)
+            .map(|i| heading(&format!("P{}", i + 1), i))
+            .collect();
+        let engine = TextEngine::new(&[&["x"] as &[&str]; 10]).with_outline(headings);
+        let mut h = outline_ready(&engine);
+        h.press(egui::Key::D, Modifiers::NONE);
+        assert!(h.app.view.dual());
+        let mut right_hand = 0;
+        for spread in 0..h.app.view.layout().spread_count() {
+            let pages = h.app.view.layout().spread_pages(spread);
+            if pages.len() != 2 {
+                continue;
+            }
+            h.app.view.go_to_page(pages.start);
+            h.frames(4, vec![]);
+            let point = h.app.view.reading_point(None).unwrap();
+            right_hand += usize::from(point.page == pages.end - 1);
+            assert_eq!(
+                marked_rows(&h),
+                [format!("P{}", point.page + 1)],
+                "spread {pages:?}"
+            );
+        }
+        assert!(right_hand > 0, "no spread read on its right-hand page");
+    }
+
+    #[test]
+    fn empty_state_after_the_reply_not_before() {
+        let engine = TextEngine::new(&[&["x"] as &[&str]; 3]).gated_links();
+        let mut h = outline_harness(&engine);
+        h.frames(4, vec![]);
+        assert!(h.app.links.outline.is_none());
+        assert!(!shows_no_outline(&h), "{:?}", h.texts());
+        engine.open_link_gate();
+        h.until(shows_no_outline);
+        assert!(shows_no_outline(&h), "{:?}", h.texts());
+    }
+
+    /// The empty-state text wraps in a narrow sidebar rather than widening it.
+    #[test]
+    fn empty_outline_text_keeps_a_narrow_sidebar_narrow() {
+        let bare = TextEngine::new(&[&["x"] as &[&str]; 3]);
+        let mut h = outline_harness_at(&bare, Some(noido_core::SIDEBAR_MIN_WIDTH));
+        h.until(shows_no_outline);
+        h.frames(3, vec![]);
+        assert!(shows_no_outline(&h), "{:?}", h.texts());
+        assert_eq!(h.app.sidebar.width, 160.0);
+    }
+
+    #[test]
+    fn no_search_text_keeps_a_narrow_sidebar_narrow() {
+        let mut h = Harness::build_with(Arc::new(BlankEngine), |mut app| {
+            app.sidebar.open = true;
+            app.sidebar.choose(SidebarTab::Results);
+            app.sidebar.width = noido_core::SIDEBAR_MIN_WIDTH;
+            app
+        });
+        h.frames(3, vec![]);
+        assert!(h.texts().iter().any(|t| t == "No search"));
+        assert_eq!(h.app.sidebar.width, 160.0);
+    }
+
+    #[test]
+    fn saved_outline_tab_with_no_outline_shows_the_empty_state() {
+        let mut h = outline_ready(&outline_engine());
+        assert_eq!(h.app.sidebar.last, SidebarTab::Outline);
+        let bare = TextEngine::new(&[&["x"] as &[&str]; 10]).gated_links();
+        h.reload(Arc::new(bare.clone()), recompiled_key());
+        h.frames(2, vec![]);
+        // The old tree stands until the reply.
+        assert!(row_titles(&h).contains(&"Preface".to_owned()));
+        bare.open_link_gate();
+        h.until(shows_no_outline);
+        assert!(shows_no_outline(&h), "{:?}", h.texts());
+        assert!(outline_rows(&h).is_empty());
+        assert_eq!(h.app.sidebar.tab, SidebarTab::Outline);
+    }
+
+    #[test]
+    fn reload_same_outline_keeps_folding() {
+        let mut h = outline_ready(&outline_engine());
+        click_row(&mut h, "Part One");
+        let folded = row_titles(&h);
+        assert!(!folded.contains(&"Chapter 2".to_owned()));
+        let same = outline_engine().gated_links();
+        h.reload(Arc::new(same.clone()), recompiled_key());
+        same.open_link_gate();
+        h.until(|h| h.app.links.outline_replies() > 0);
+        h.frames(3, vec![]);
+        assert_eq!(row_titles(&h), folded);
+    }
+
+    /// The outline's rows and page numbers end left of the scroll bar when
+    /// the list overflows, solid or floating; a list that fits gets the
+    /// whole width.
+    #[test]
+    fn outline_rows_leave_the_scroll_bar_clear() {
+        for (solid, bar) in [(false, 12.0), (true, 17.0)] {
+            let make = |engine: &TextEngine| {
+                let mut h = outline_harness(engine);
+                if solid {
+                    h = h.solid_bars();
+                }
+                h.until(|h| h.app.links.outline.is_some());
+                h.frames(4, vec![]);
+                h
+            };
+            let h = make(&long_outline(200));
+            // Inside the panel's 1-point border on its right.
+            let bar_left = h.app.sidebar.width - 1.0 - bar;
+            let rows = outline_rows(&h);
+            assert!(rows.len() > 5, "{}", rows.len());
+            for row in &rows {
+                assert!(
+                    row.row.max.x <= bar_left + 0.5,
+                    "solid {solid}: row {} ends at {}, the bar starts at {bar_left}",
+                    row.title,
+                    row.row.max.x
+                );
+                let number = text_in_row(&h, &row.number, row.row)
+                    .unwrap_or_else(|| panic!("no number {:?}", row.number));
+                assert!(number.max.x <= bar_left + 0.5, "solid {solid}: {number:?}");
+            }
+            let short = make(&long_outline(3));
+            let rows = outline_rows(&short);
+            assert_eq!(rows.len(), 3);
+            for row in &rows {
+                assert!(
+                    row.row.max.x >= short.app.sidebar.width - 1.0 - 0.5,
+                    "solid {solid}: a list that fits ends at {}",
+                    row.row.max.x
+                );
+            }
+        }
+    }
+
+    /// Folding starts over with a changed tree, so rows move under an
+    /// entry index that stays: the sidebar follows the mark again.
+    #[test]
+    fn reload_changed_outline_follows_the_mark_again() {
+        let tree = |changed: &str| {
+            let kids = (0..200)
+                .map(|i| {
+                    let title = if i == 50 {
+                        changed.to_owned()
+                    } else {
+                        format!("Kid {i}")
+                    };
+                    heading(&title, 1)
+                })
+                .collect();
+            TextEngine::new(&[&["x"] as &[&str]; 10]).with_outline(vec![
+                branch(untargeted("Big"), true, kids),
+                heading("After", 5),
+            ])
+        };
+        let mut h = outline_ready(&tree("Kid 50"));
+        h.click(row_of(&h, "Big").chevron.unwrap().center());
+        h.frames(2, vec![]);
+        go_to(&mut h, 5);
+        h.frames(3, vec![]);
+        assert_eq!(marked_rows(&h), ["After"]);
+        let changed = tree("Kid fifty").gated_links();
+        h.reload(Arc::new(changed.clone()), recompiled_key());
+        changed.open_link_gate();
+        h.until(|h| h.app.links.outline_replies() > 0);
+        h.frames(4, vec![]);
+        assert!(
+            h.app.sidebar_view.outline_offset() > 0.0,
+            "scrolled to the mark"
+        );
+        assert_eq!(marked_rows(&h), ["After"], "{:?}", row_titles(&h));
+    }
+
+    #[test]
+    fn reload_shorter_outline_drops_stale_mark() {
+        let mut h = outline_ready(&outline_engine());
+        let short = TextEngine::new(&[&["x"] as &[&str]; 3])
+            .with_outline(vec![heading("A", 0), heading("B", 1)])
+            .gated_links();
+        h.reload(Arc::new(short.clone()), recompiled_key());
+        h.frames(2, vec![]);
+        // The old tree is still shown, and the reader clicks in it.
+        click_row(&mut h, "Chapter 2");
+        assert_eq!(h.app.clicked_entry, Some(4));
+        short.open_link_gate();
+        h.until(|h| h.app.links.outline_replies() > 0);
+        h.frames(3, vec![]);
+        assert_eq!(row_titles(&h), ["A", "B"]);
+        assert_eq!(h.app.clicked_entry, None);
+        assert!(h.app.chosen <= Some(2), "{:?}", h.app.chosen);
+        assert!(h.app.current_entry().is_none_or(|entry| entry < 2));
+        assert!(marked_rows(&h).len() <= 1);
+    }
+
+    #[test]
+    fn target_past_the_end_goes_to_the_last_page() {
+        let mut labels = [None; 10];
+        labels[9] = Some("end");
+        let engine = TextEngine::new(&[&["x"] as &[&str]; 10])
+            .with_labels(&labels)
+            .with_outline(vec![heading("Intro", 0), heading("Beyond", 99)]);
+        let mut h = outline_ready(&engine);
+        assert_eq!(row_of(&h, "Beyond").number, "end");
+        click_row(&mut h, "Beyond");
+        assert_eq!(h.app.chosen, Some(9));
+        assert_eq!(h.centre().page, 9);
+        assert_eq!(marked_rows(&h), ["Beyond"]);
+    }
+
+    #[test]
+    fn narrow_sidebar_keeps_chevron_and_number() {
+        const LONG: &str = "with a title far too long to fit into any outline row";
+        let mut node = heading(&format!("Depth 64 {LONG}"), 9);
+        for depth in (0..64).rev() {
+            node = branch(
+                heading(&format!("Depth {depth} {LONG}"), 9),
+                true,
+                vec![node],
+            );
+        }
+        let mut labels = [None; 10];
+        labels[9] = Some("A label far too long for a row");
+        let engine = TextEngine::new(&[&["x"] as &[&str]; 10])
+            .with_labels(&labels)
+            .with_outline(vec![node]);
+        let mut h = outline_harness_at(&engine, Some(noido_core::SIDEBAR_MIN_WIDTH));
+        h.size = vec2(900.0, 2400.0);
+        h.until(|h| h.app.links.outline.is_some() && numbers_known(h));
+        h.frames(4, vec![]);
+        let rows = outline_rows(&h);
+        assert!(rows.len() > 60, "{}", rows.len());
+        assert_eq!(h.app.sidebar.width, 160.0);
+        assert!(rows[0].row.width() <= 160.0, "{:?}", rows[0].row);
+        assert!(rows.last().unwrap().row.width() <= 160.0);
+        for row in &rows {
+            let inside = |rect: Rect| row.row.contains_rect(rect.expand(-0.01));
+            let number = text_in_row(&h, &row.number, row.row)
+                .unwrap_or_else(|| panic!("no number {:?}", row.number));
+            assert!(inside(number), "{number:?} in {:?}", row.row);
+            assert!(number.width() <= row.row.width() / 3.0 + 1.0, "{number:?}");
+            let title = text_in_row(&h, &row.title, row.row)
+                .unwrap_or_else(|| panic!("no title {:?}", row.title));
+            assert!(inside(title), "{title:?} in {:?}", row.row);
+            assert!(title.max.x <= number.min.x + 0.5, "{title:?} {number:?}");
+            if let Some(chevron) = row.chevron {
+                assert!(inside(chevron), "{chevron:?} in {:?}", row.row);
+                assert!(chevron.max.x <= title.min.x + 0.5, "{chevron:?} {title:?}");
+            }
+        }
+        let deepest = rows.last().unwrap();
+        assert!(deepest.title.starts_with("Depth 64"), "{}", deepest.title);
+    }
+
+    #[test]
+    fn hundred_thousand_rows_draw_only_the_visible() {
+        let headings = (0..100_000)
+            .map(|i| heading(&format!("Heading {i}"), i % 10))
+            .collect();
+        let engine = TextEngine::new(&[&["x"] as &[&str]; 10]).with_outline(headings);
+        let h = outline_ready(&engine);
+        let drawn = outline_rows(&h).len();
+        assert!(drawn > 0 && drawn < 100, "{drawn}");
+        assert_eq!(h.app.links.outline.as_ref().unwrap().rows().len(), 100_000);
     }
 }
