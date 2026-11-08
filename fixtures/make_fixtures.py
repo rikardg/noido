@@ -80,6 +80,26 @@ page-labels.pdf: 12 blank pages; /PageLabels is a number tree with /Kids:
   second kid: 8 upper roman from 4, 9 lower letters from 27, 10 upper letters
               with /St 0, 11 decimal; and /Kids back to the root, a cycle
   page 0 comes before the first range
+
+outline.pdf: 5 pages at 612x792 pt with this outline:
+  Chapter 1      /Dest [p0 /XYZ 72 700 null], /Count 2
+    Section 1.1  /A GoTo (sec), in the /Names tree, to [p1 /FitH 600], /Count 1
+      Deep       /Dest [p2 /Fit]
+    Section 1.2  /Dest [p0 /XYZ 72 700 null]
+  Chapter 2      /A URI https://example.org/, /Count -1
+    Hidden       /Dest [p3 /Fit]
+  Part           no target, /Count 1
+    Unresolved   /Dest (nowhere)
+  "\u00c5sa" in UTF-16BE, /Dest [p4 /Fit]
+  an empty title, no target
+  "Two\n  lines", /A GoToR, which noido doesn't follow
+  Cycle A        /Dest [p0 /Fit], no /Count, /Next Cycle B
+  Cycle B        /Next Cycle A (a /Next cycle), /First Chapter 1 (a /First cycle)
+
+outline-empty.pdf: one page; /Outlines has no /First
+
+outline-deep.pdf: one page; 70 outline items, each the only child of the one
+  before
 """
 
 from pathlib import Path
@@ -316,8 +336,88 @@ def page_labels() -> bytes:
     )
 
 
+def outline() -> bytes:
+    first = 9  # The object number of the first outline item.
+    # Name, then the dictionary's other entries, by name of what they link to.
+    items = [
+        ("ch1", b"(Chapter 1)", b"/Dest [3 0 R /XYZ 72 700 null] /Count 2", "root", {"First": "sec11", "Next": "ch2"}),
+        ("sec11", b"(Section 1.1)", b"/A << /S /GoTo /D (sec) >> /Count 1", "ch1", {"First": "deep", "Next": "sec12"}),
+        ("deep", b"(Deep)", b"/Dest [5 0 R /Fit]", "sec11", {}),
+        ("sec12", b"(Section 1.2)", b"/Dest [3 0 R /XYZ 72 700 null]", "ch1", {}),
+        ("ch2", b"(Chapter 2)", b"/A << /S /URI /URI (https://example.org/) >> /Count -1", "root", {"First": "hidden", "Next": "part"}),
+        ("hidden", b"(Hidden)", b"/Dest [6 0 R /Fit]", "ch2", {}),
+        ("part", b"(Part)", b"/Count 1", "root", {"First": "unresolved", "Next": "asa"}),
+        ("unresolved", b"(Unresolved)", b"/Dest (nowhere)", "part", {}),
+        ("asa", b"<FEFF00C500730061>", b"/Dest [7 0 R /Fit]", "root", {"Next": "empty"}),
+        ("empty", b"()", b"", "root", {"Next": "two"}),
+        ("two", b"(Two\\n  lines)", b"/A << /S /GoToR /F (other.pdf) /D [0 /Fit] >>", "root", {"Next": "cycle_a"}),
+        ("cycle_a", b"(Cycle A)", b"/Dest [3 0 R /Fit]", "root", {"Next": "cycle_b"}),
+        ("cycle_b", b"(Cycle B)", b"", "root", {"Next": "cycle_a", "First": "ch1"}),
+    ]
+    number = {item[0]: first + i for i, item in enumerate(items)} | {"root": 8}
+    bodies = [
+        b"<< /Title %s %s /Parent %d 0 R %s >>"
+        % (
+            title,
+            rest,
+            number[parent],
+            b" ".join(
+                b"/%s %d 0 R" % (key.encode(), number[to]) for key, to in links.items()
+            ),
+        )
+        for _, title, rest, parent, links in items
+    ]
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R /Outlines 8 0 R"
+            b" /Names << /Dests << /Names [(sec) [4 0 R /FitH 600]] >> >> >>",
+            b"<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R 7 0 R] /Count 5 >>",
+        ]
+        + [b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"] * 5
+        + [b"<< /Type /Outlines /First %d 0 R /Last %d 0 R >>" % (first, number["cycle_b"])]
+        + bodies
+    )
+
+
+def outline_empty() -> bytes:
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+            b"<< /Type /Outlines /Count 0 >>",
+        ]
+    )
+
+
+def outline_deep() -> bytes:
+    depth = 70
+    first = 5
+    items = [
+        b"<< /Title (Level %d) /Dest [3 0 R /Fit] /Count 1 /Parent %d 0 R%s >>"
+        % (
+            i,
+            first + i - 1 if i else 4,
+            b" /First %d 0 R" % (first + i + 1) if i + 1 < depth else b"",
+        )
+        for i in range(depth)
+    ]
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R /Outlines 4 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
+            b"<< /Type /Outlines /First %d 0 R >>" % first,
+        ]
+        + items
+    )
+
+
 if __name__ == "__main__":
     here = Path(__file__).resolve().parent
+    (here / "outline.pdf").write_bytes(outline())
+    (here / "outline-empty.pdf").write_bytes(outline_empty())
+    (here / "outline-deep.pdf").write_bytes(outline_deep())
     (here / "page-labels.pdf").write_bytes(page_labels())
     (here / "two-pages.pdf").write_bytes(two_pages())
     (here / "text.pdf").write_bytes(text())

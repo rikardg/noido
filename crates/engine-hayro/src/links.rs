@@ -118,7 +118,7 @@ fn page_rect(transform: Affine, min: Point, max: Point, width: f32, height: f32)
     })
 }
 
-fn target(pdf: &Pdf, index: &PageIndex, annot: &Dict<'_>) -> Option<LinkTarget> {
+pub(crate) fn target(pdf: &Pdf, index: &PageIndex, annot: &Dict<'_>) -> Option<LinkTarget> {
     if let Some(dest) = annot.get::<Object>(b"Dest") {
         return destination(pdf, index, dest).map(LinkTarget::Internal);
     }
