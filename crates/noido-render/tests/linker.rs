@@ -305,3 +305,69 @@ fn answers_a_named_place() {
         LinkReply::Named { target: None, .. }
     ));
 }
+
+/// Answers only the document-wide questions.
+#[derive(Clone, Default)]
+struct WholeDocument {
+    labels: Vec<Option<String>>,
+    panicking_labels: bool,
+}
+
+impl PdfEngine for WholeDocument {
+    fn open(&self, _: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+        Ok(Box::new(self.clone()))
+    }
+}
+
+impl Document for WholeDocument {
+    fn page_count(&self) -> usize {
+        1
+    }
+
+    fn page_size(&self, _: usize) -> Result<Size, EngineError> {
+        Ok(Size {
+            width: 612.0,
+            height: 792.0,
+        })
+    }
+
+    fn render_tile(&self, _: usize, _: f32, _: PixelRect) -> Result<Rgba8Image, EngineError> {
+        Err(EngineError::Render("not drawn".into()))
+    }
+
+    fn page_labels(&self) -> Vec<Option<String>> {
+        assert!(!self.panicking_labels, "the labels that cannot be read");
+        self.labels.clone()
+    }
+}
+
+fn whole_document(engine: WholeDocument) -> Linker {
+    Linker::start(Arc::new(engine), Arc::new(Vec::new()), Box::new(|| {}))
+}
+
+#[test]
+fn labels_reply_comes_back() {
+    let labels = vec![Some("i".to_owned()), None];
+    let linker = whole_document(WholeDocument {
+        labels: labels.clone(),
+        ..WholeDocument::default()
+    });
+    linker.request_labels();
+    match recv(&linker) {
+        LinkReply::Labels(got) => assert_eq!(got, labels),
+        other => panic!("unexpected reply: {other:?}"),
+    }
+}
+
+#[test]
+fn panicking_labels_give_none() {
+    let linker = whole_document(WholeDocument {
+        panicking_labels: true,
+        ..WholeDocument::default()
+    });
+    linker.request_labels();
+    match recv(&linker) {
+        LinkReply::Labels(got) => assert!(got.is_empty()),
+        other => panic!("unexpected reply: {other:?}"),
+    }
+}

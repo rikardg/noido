@@ -75,6 +75,13 @@ pub trait Document {
         None
     }
 
+    /// The label each page declares for itself, usually the number printed
+    /// on it, `None` for a page without one. Empty when no page has one, or
+    /// for engines that can't read them.
+    fn page_labels(&self) -> Vec<Option<String>> {
+        Vec::new()
+    }
+
     /// What the document says about itself, and the fonts it uses. Slow on
     /// a long document: every page's resources are visited. Engines that
     /// can't read it give none.

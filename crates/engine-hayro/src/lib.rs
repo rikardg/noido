@@ -1,6 +1,8 @@
 //! noido PDF engine backed by hayro, a pure-Rust PDF rasterizer.
 
+mod labels;
 mod links;
+mod pdf_string;
 mod properties;
 mod text;
 
@@ -145,6 +147,10 @@ impl Document for HayroDocument {
     fn named_destination(&self, name: &str) -> Option<Destination> {
         let index = self.pages.get_or_init(|| links::page_index(&self.pdf));
         links::named_destination(&self.pdf, index, name.as_bytes())
+    }
+
+    fn page_labels(&self) -> Vec<Option<String>> {
+        labels::page_labels(&self.pdf)
     }
 
     fn properties(&self) -> Properties {
