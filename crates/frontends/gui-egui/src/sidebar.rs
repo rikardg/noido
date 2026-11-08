@@ -1,7 +1,7 @@
 //! The left sidebar: tabs over a column of page thumbnails, as wide as the
-//! sidebar, or the list of matches of a search. Visible thumbnails are rendered
-//! sharp by a renderer of their own; the low-res thumbnails stand in until
-//! those arrive. The outline will appear here too.
+//! sidebar, the document's outline as a tree, or the list of matches of a
+//! search. Visible thumbnails are rendered sharp by a renderer of their own;
+//! the low-res thumbnails stand in until those arrive.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -10,10 +10,11 @@ use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
-    Column, Eased, Highlight, Hits, Layout, MAX_RENDER_SIDE, Pace, PageNumber, PageNumbers,
-    PageTextState, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState, SidebarTab, max_width,
-    render_scale,
+    Column, Eased, Highlight, Hits, Layout, MAX_RENDER_SIDE, OutlineRow, OutlineTree, Pace,
+    PageNumber, PageNumbers, PageTextState, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState,
+    SidebarTab, max_width, render_scale, reveal_row,
 };
+use noido_engine::LinkTarget;
 use noido_render::{RenderRequest, Renderer};
 
 use crate::image::{Fades, PageImage, paint_page};
@@ -51,6 +52,19 @@ const TAB_PADDING: f32 = 4.0;
 const TAB_GAP: f32 = 4.0;
 /// A tab's corner radius.
 const TAB_ROUNDING: f32 = 4.0;
+/// Space left and right of an outline row's contents.
+const OUTLINE_MARGIN: f32 = 4.0;
+/// Space above and below an outline row's text.
+const OUTLINE_PADDING: f32 = 3.0;
+/// How far each level of the outline is indented, in points.
+const OUTLINE_INDENT: f32 = 12.0;
+/// The most of a row's width its indent may take, as a fraction: deeper
+/// levels line up, so a deep title keeps its chevron, number and some room.
+const OUTLINE_MAX_INDENT: f32 = 0.25;
+/// The most of a row's width its page number may take, as a fraction.
+const OUTLINE_NUMBER_SHARE: f32 = 1.0 / 3.0;
+/// Space between an outline row's title and its page number.
+const OUTLINE_GAP: f32 = 6.0;
 /// What the sidebar needs from the app each frame.
 pub struct Input<'a> {
     pub layout: &'a Layout,
@@ -75,6 +89,10 @@ pub struct Input<'a> {
     pub request_text: &'a dyn Fn(usize),
     /// How pages are numbered.
     pub numbers: &'a PageNumbers,
+    /// The document's outline; `None` until it is known.
+    pub outline: Option<&'a mut OutlineTree>,
+    /// The outline entry the reader is in.
+    pub current_entry: Option<usize>,
 }
 
 /// The matches of a search, for the sidebar.
@@ -97,6 +115,22 @@ pub struct Output {
     pub browsing: Option<usize>,
     /// A match was clicked: its index.
     pub hit: Option<usize>,
+    /// An outline entry with a target was clicked: its index.
+    pub outline_entry: Option<usize>,
+}
+
+/// A visible outline row, for the tests.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub struct OutlineRowRects {
+    pub entry: usize,
+    pub row: Rect,
+    /// The chevron's hit area, on a row with children.
+    pub chevron: Option<Rect>,
+    /// The whole title, which may be drawn elided.
+    pub title: String,
+    /// The number as drawn; empty for none.
+    pub number: String,
 }
 
 /// The sidebar's thumbnails and their sharp renders.
@@ -137,6 +171,19 @@ pub struct SidebarView {
     results_id: Option<egui::Id>,
     /// The tabs' screen rects last frame.
     tabs: Vec<(SidebarTab, Rect)>,
+    /// The outline's visible rows last frame.
+    #[cfg(test)]
+    outline_rows: Vec<OutlineRowRects>,
+    /// The entry the outline last scrolled to (or that was clicked).
+    followed_entry: Option<usize>,
+    /// The outline's scroll offset at the end of last frame.
+    outline_offset: f32,
+    /// The outline's width last frame.
+    outline_width: f32,
+    /// The outline's scroll area's id, once shown.
+    outline_id: Option<egui::Id>,
+    /// Whether the outline was drawn last frame.
+    outline_shown: bool,
 }
 
 impl SidebarView {
@@ -162,7 +209,27 @@ impl SidebarView {
             results_offset: 0.0,
             results_id: None,
             tabs: Vec::new(),
+            #[cfg(test)]
+            outline_rows: Vec::new(),
+            followed_entry: None,
+            outline_offset: 0.0,
+            outline_width: 0.0,
+            outline_id: None,
+            outline_shown: false,
         }
+    }
+
+    /// The sidebar is closed: no sharp renders, and the outline follows the
+    /// reader again when it opens.
+    pub fn hidden(&mut self) {
+        self.closed();
+        self.outline_shown = false;
+    }
+
+    /// A different outline: its folding started over and its rows moved, so
+    /// the outline follows the reader again.
+    pub fn outline_changed(&mut self) {
+        self.outline_shown = false;
     }
 
     /// Renders visible thumbnails sharp with `renderer`.
@@ -262,6 +329,11 @@ impl SidebarView {
                         self.result_rows.clear();
                         self.followed_hit = None;
                     }
+                    if state.tab != SidebarTab::Outline {
+                        #[cfg(test)]
+                        self.outline_rows.clear();
+                        self.outline_shown = false;
+                    }
                     match state.tab {
                         SidebarTab::Thumbnails => self.scrolled(ui, input),
                         SidebarTab::Results => {
@@ -274,16 +346,14 @@ impl SidebarView {
                                     ..Output::default()
                                 },
                                 None => {
-                                    let muted = ui.visuals().weak_text_color();
-                                    ui.add_space(RESULT_MARGIN);
-                                    ui.label(egui::RichText::new("No search").color(muted));
+                                    muted_note(ui, "No search");
                                     Output::default()
                                 }
                             }
                         }
                         SidebarTab::Outline => {
                             self.closed();
-                            Output::default()
+                            self.outline(ui, input)
                         }
                     }
                 })
@@ -339,6 +409,241 @@ impl SidebarView {
             );
         }
         clicked
+    }
+
+    /// The outline as a tree, kept on the current entry; returns the entry
+    /// clicked, if it goes somewhere.
+    fn outline(&mut self, ui: &mut egui::Ui, input: &mut Input) -> Output {
+        #[cfg(test)]
+        self.outline_rows.clear();
+        let Some(tree) = input.outline.as_deref_mut() else {
+            // Not known yet: nothing to say.
+            self.outline_shown = false;
+            return Output::default();
+        };
+        if tree.is_empty() {
+            muted_note(ui, "This document has no outline");
+            self.outline_shown = true;
+            return Output::default();
+        }
+        ui.spacing_mut().scroll.fade.strength = 0.0;
+        ui.spacing_mut().scroll.kinetic.rubber_band = false;
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let row_height = ui.fonts_mut(|fonts| fonts.row_height(&font)) + 2.0 * OUTLINE_PADDING;
+        let content_height = tree.rows().len() as f32 * row_height;
+        let outer = (ui.available_width(), ui.available_height());
+        // A solid bar, when the rows need one; their height doesn't depend
+        // on the width.
+        let solid = theme::solid_bar(ui).map(|bar| {
+            let bars = noido_core::scroll_bars(outer, bar, |(width, _)| (width, content_height));
+            (bars, bars.inner(outer, bar))
+        });
+        let (width, height) = solid.map_or(outer, |(_, room)| room);
+        // An overlay bar covers the rows' right end: keep clear of it when
+        // the list overflows.
+        let covered = match solid {
+            None if content_height > height => theme::floating_bar(ui).unwrap_or(0.0),
+            _ => 0.0,
+        };
+        let width = width - covered;
+        let resized = (width - self.outline_width).abs() > 0.5;
+        self.outline_width = width;
+        let marked = input.current_entry.and_then(|e| tree.marked_row(e));
+        // Scrolled to the marked row, the least distance, when the current
+        // entry changes, the tab shows or the width changes. Folding keeps
+        // the entry; the reader's own scrolling stands.
+        let target = (!self.outline_shown || resized || self.followed_entry != input.current_entry)
+            .then(|| {
+                self.followed_entry = input.current_entry;
+                marked.and_then(|row| reveal_row(row, row_height, self.outline_offset, height))
+            })
+            .flatten();
+        self.outline_shown = true;
+        let source = ScrollSource {
+            drag: DragScroll::Always,
+            ..Default::default()
+        };
+        let mut area = ScrollArea::vertical()
+            // Its own scroll position, not the thumbnails'.
+            .id_salt("outline")
+            .auto_shrink(false)
+            .scroll_source(source);
+        if let Some(target) = target {
+            area = area.vertical_scroll_offset(target);
+        }
+        if let Some((bars, _)) = solid {
+            area = theme::with_solid_bars(ui.ctx(), area, bars, self.outline_id);
+        }
+        let last = input.layout.page_count().saturating_sub(1);
+        let numbers = input.numbers;
+        // The rows' colours are the panel's, as the cards' are.
+        let panel = ui.style().clone();
+        let shown = theme::scope(ui, theme::Role::Scrollbar, |ui| {
+            if let Some((bars, _)) = solid {
+                theme::paint_grooves(ui, ui.available_rect_before_wrap(), bars);
+            }
+            let shown = area.show_viewport(ui, |ui, viewport| {
+                ui.set_style(panel);
+                let (area, _) = ui.allocate_exact_size(
+                    vec2(ui.available_width() - covered, content_height),
+                    Sense::hover(),
+                );
+                let rows = tree.rows();
+                let first = (viewport.min.y / row_height).floor().max(0.0) as usize;
+                let end = ((viewport.max.y / row_height).ceil().max(0.0) as usize).min(rows.len());
+                let visible: Vec<OutlineRow> = rows[first.min(end)..end].to_vec();
+                let mut clicked = None;
+                let mut toggled = None;
+                for (i, row) in (first..).zip(&visible) {
+                    let rect = Rect::from_min_size(
+                        area.min + vec2(0.0, i as f32 * row_height),
+                        vec2(area.width(), row_height),
+                    );
+                    let drawn = OutlineDraw {
+                        tree,
+                        numbers,
+                        last,
+                        font: &font,
+                        marked: marked == Some(i),
+                    };
+                    match self.outline_row(ui, rect, row, &drawn) {
+                        RowClick::Go => clicked = Some(row.entry),
+                        RowClick::Toggle => toggled = Some(row.entry),
+                        RowClick::None => {}
+                    }
+                }
+                (clicked, toggled)
+            });
+            if let Some((bars, _)) = solid {
+                theme::paint_thumbs(ui, &shown, bars);
+            }
+            shown
+        });
+        self.outline_id = Some(shown.id);
+        self.outline_offset = shown.state.clamped_offset().y;
+        let (clicked, toggled) = shown.inner;
+        if let Some(entry) = toggled {
+            tree.toggle(entry);
+        }
+        if let Some(entry) = clicked
+            && matches!(tree.target(entry), Some(LinkTarget::Internal(_)))
+        {
+            // Already in view: going there mustn't scroll the outline.
+            self.followed_entry = Some(entry);
+        }
+        Output {
+            outline_entry: clicked,
+            ..Output::default()
+        }
+    }
+
+    /// One row of the outline in `rect`: the chevron, the title and the page
+    /// number, filled if it is the marked one. Says what a click on it did.
+    fn outline_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        row: &OutlineRow,
+        drawn: &OutlineDraw,
+    ) -> RowClick {
+        let tree = drawn.tree;
+        let target = tree.target(row.entry);
+        // A row acts when a click on it goes somewhere or folds a branch.
+        let goes = match target {
+            Some(LinkTarget::Internal(_)) => true,
+            Some(LinkTarget::Web(uri)) => crate::links::opens(uri),
+            None => false,
+        };
+        let acts = goes || row.has_children;
+        let id = ui.scope_id().with(("outline", row.entry));
+        let response = ui.interact(rect, id, Sense::click());
+        let mut click = RowClick::None;
+        let indent = (row.depth as f32 * OUTLINE_INDENT).min(rect.width() * OUTLINE_MAX_INDENT);
+        let chevron = Rect::from_min_size(
+            egui::pos2(rect.min.x + OUTLINE_MARGIN + indent, rect.min.y),
+            vec2(rect.height(), rect.height()),
+        );
+        if row.has_children {
+            // Over the row: a press on it folds and doesn't jump.
+            let toggle = ui.interact(chevron, id.with("chevron"), Sense::click());
+            if toggle.clicked() {
+                click = RowClick::Toggle;
+            }
+            if toggle.hovered() {
+                ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
+        if click == RowClick::None && response.clicked() {
+            click = if goes {
+                RowClick::Go
+            } else if row.has_children {
+                RowClick::Toggle
+            } else {
+                RowClick::None
+            };
+        }
+        if acts && response.hovered() {
+            ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        let visuals = ui.visuals();
+        let (text, weak) = if drawn.marked {
+            (
+                visuals.selection.stroke.color,
+                visuals.selection.stroke.color,
+            )
+        } else {
+            (visuals.text_color(), visuals.weak_text_color())
+        };
+        if drawn.marked {
+            ui.painter()
+                .rect_filled(rect, 2.0, ui.visuals().selection.bg_fill);
+        }
+        let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        if row.has_children {
+            paint_chevron(&painter, chevron, row.open, text);
+        }
+        // The number: a third of the row at most, at the right.
+        let number = match target {
+            Some(LinkTarget::Internal(d)) => {
+                let number = drawn.numbers.short_number(d.page.min(drawn.last));
+                number_text(
+                    ui,
+                    &number,
+                    drawn.font,
+                    (rect.width() - 2.0 * OUTLINE_MARGIN) * OUTLINE_NUMBER_SHARE,
+                )
+            }
+            _ => String::new(),
+        };
+        let mut right = rect.max.x - OUTLINE_MARGIN;
+        if !number.is_empty() {
+            let galley = ui
+                .fonts_mut(|fonts| fonts.layout_no_wrap(number.clone(), drawn.font.clone(), weak));
+            right -= galley.size().x;
+            let at = egui::pos2(right, rect.center().y - galley.size().y / 2.0);
+            painter.galley(at, galley, weak);
+            right -= OUTLINE_GAP;
+        }
+        let left = chevron.max.x + 2.0;
+        let title = tree.title(row.entry);
+        let mut job = LayoutJob::simple_singleline(title.to_owned(), drawn.font.clone(), text);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((right - left).max(0.0));
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        if galley.elided {
+            response.on_hover_text(title);
+        }
+        let at = egui::pos2(left, rect.center().y - galley.size().y / 2.0);
+        painter.galley(at, galley, text);
+        #[cfg(test)]
+        self.outline_rows.push(OutlineRowRects {
+            entry: row.entry,
+            row: rect,
+            chevron: row.has_children.then_some(chevron),
+            title: title.to_owned(),
+            number,
+        });
+        click
     }
 
     /// The scrolling column, kept on the current page.
@@ -806,6 +1111,16 @@ impl SidebarView {
     }
 
     #[cfg(test)]
+    pub fn outline_rows(&self) -> &[OutlineRowRects] {
+        &self.outline_rows
+    }
+
+    #[cfg(test)]
+    pub fn outline_offset(&self) -> f32 {
+        self.outline_offset
+    }
+
+    #[cfg(test)]
     pub fn sharp_pages(&self) -> Vec<usize> {
         let mut pages: Vec<usize> = self.sharp.keys().copied().collect();
         pages.sort_unstable();
@@ -826,6 +1141,60 @@ impl SidebarView {
     pub fn thumb_width(&self) -> f32 {
         self.thumb_width
     }
+}
+
+/// What a click on an outline row did.
+#[derive(Clone, Copy, PartialEq)]
+enum RowClick {
+    None,
+    /// It went to the row's target.
+    Go,
+    /// It folded or unfolded the row.
+    Toggle,
+}
+
+/// What drawing an outline row needs besides the row.
+struct OutlineDraw<'a> {
+    tree: &'a OutlineTree,
+    numbers: &'a PageNumbers,
+    /// The document's last page, which a target past the end goes to.
+    last: usize,
+    font: &'a egui::FontId,
+    marked: bool,
+}
+
+/// `text` muted, wrapped inside a margin, so it never widens the sidebar.
+fn muted_note(ui: &mut egui::Ui, text: &str) {
+    let muted = ui.visuals().weak_text_color();
+    ui.add_space(RESULT_MARGIN);
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(RESULT_MARGIN as i8, 0))
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(text).color(muted)).wrap());
+        });
+}
+
+/// The fold chevron in `rect`, as two line segments: `>` when folded, `v`
+/// when `open`.
+fn paint_chevron(painter: &egui::Painter, rect: Rect, open: bool, colour: Color32) {
+    let c = rect.center();
+    let half = rect.height() * 0.14;
+    let stroke = Stroke::new(1.5, colour);
+    let points = if open {
+        [
+            egui::pos2(c.x - half, c.y - half * 0.6),
+            egui::pos2(c.x, c.y + half * 0.6),
+            egui::pos2(c.x + half, c.y - half * 0.6),
+        ]
+    } else {
+        [
+            egui::pos2(c.x - half * 0.6, c.y - half),
+            egui::pos2(c.x + half * 0.6, c.y),
+            egui::pos2(c.x - half * 0.6, c.y + half),
+        ]
+    };
+    painter.line_segment([points[0], points[1]], stroke);
+    painter.line_segment([points[1], points[2]], stroke);
 }
 
 /// `number` as text at most `max_width` wide: a label too long is elided,

@@ -74,14 +74,23 @@ impl PageNumbers {
         }
     }
 
-    /// One number, for the outline: the label if there is one.
-    pub fn short(&self, page: usize) -> String {
+    /// One number, for the outline, in parts: the label alone if there is
+    /// one, so it may be elided, else the file number.
+    pub fn short_number(&self, page: usize) -> PageNumber<'_> {
         match self.both(page) {
             PageNumber {
                 label: Some(label), ..
-            } => label.to_owned(),
-            number => number.text(),
+            } => PageNumber {
+                label: Some(label),
+                file: None,
+            },
+            number => number,
         }
+    }
+
+    /// One number, for the outline: the label if there is one.
+    pub fn short(&self, page: usize) -> String {
+        self.short_number(page).text()
     }
 
     /// The title bar's position: "61 (79 / 300)".
