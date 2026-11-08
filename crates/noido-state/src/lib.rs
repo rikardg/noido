@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use directories::ProjectDirs;
 use noido_core::{
     Caret, DocPoint, Highlight, HighlightColour, Highlights, History, SIDEBAR_DEFAULT_WIDTH,
-    SidebarState, ViewState, ZoomMode,
+    SidebarState, SidebarTab, ViewState, ZoomMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -414,6 +414,9 @@ struct Entry {
     sidebar_open: bool,
     #[serde(default = "default_sidebar_width")]
     sidebar_width: f32,
+    /// "outline" or "thumbnails"; absent or unknown means thumbnails.
+    #[serde(default)]
+    sidebar_tab: String,
     /// The name of the document's window file; absent from files written
     /// before entries named it, which use their own hash.
     #[serde(default)]
@@ -540,6 +543,11 @@ impl Entry {
             place: Place::new(&doc.view),
             sidebar_open: doc.sidebar.open,
             sidebar_width: doc.sidebar.width,
+            sidebar_tab: match doc.sidebar.last {
+                SidebarTab::Outline => "outline",
+                _ => "thumbnails",
+            }
+            .to_owned(),
             window: Some(window.to_owned()),
             back: places(doc.history.back_entries()),
             forward: places(doc.history.forward_entries()),
@@ -549,11 +557,17 @@ impl Entry {
 
     fn state(&self) -> DocState {
         let states = |points: &[Point]| points.iter().map(Point::state).collect();
+        let tab = match self.sidebar_tab.as_str() {
+            "outline" => SidebarTab::Outline,
+            _ => SidebarTab::Thumbnails,
+        };
         DocState {
             view: self.place.state(),
             sidebar: SidebarState {
                 open: self.sidebar_open,
                 width: self.sidebar_width,
+                tab,
+                last: tab,
             },
             history: History::from_parts(states(&self.back), states(&self.forward)),
             // Loading through `Highlights` drops the rows whose end is not

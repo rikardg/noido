@@ -1,5 +1,5 @@
-//! The left sidebar: a column of page thumbnails, as wide as the sidebar, or
-//! while searching, the list of matches. Visible thumbnails are rendered
+//! The left sidebar: tabs over a column of page thumbnails, as wide as the
+//! sidebar, or the list of matches of a search. Visible thumbnails are rendered
 //! sharp by a renderer of their own; the low-res thumbnails stand in until
 //! those arrive. The outline will appear here too.
 
@@ -11,7 +11,8 @@ use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
     Column, Eased, Highlight, Hits, Layout, MAX_RENDER_SIDE, Pace, PageNumber, PageNumbers,
-    PageTextState, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState, max_width, render_scale,
+    PageTextState, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState, SidebarTab, max_width,
+    render_scale,
 };
 use noido_render::{RenderRequest, Renderer};
 
@@ -44,6 +45,12 @@ const EXCERPT_ROWS: usize = 3;
 /// ahead: the next spread either way in dual mode.
 const MARGIN: usize = 2;
 
+/// Space above and below a tab's label, inside its fill.
+const TAB_PADDING: f32 = 4.0;
+/// Space between the strip of tabs and what is below.
+const TAB_GAP: f32 = 4.0;
+/// A tab's corner radius.
+const TAB_ROUNDING: f32 = 4.0;
 /// What the sidebar needs from the app each frame.
 pub struct Input<'a> {
     pub layout: &'a Layout,
@@ -128,6 +135,8 @@ pub struct SidebarView {
     results_offset: f32,
     /// The list's scroll area's id, once shown.
     results_id: Option<egui::Id>,
+    /// The tabs' screen rects last frame.
+    tabs: Vec<(SidebarTab, Rect)>,
 }
 
 impl SidebarView {
@@ -152,6 +161,7 @@ impl SidebarView {
             followed_hit: None,
             results_offset: 0.0,
             results_id: None,
+            tabs: Vec::new(),
         }
     }
 
@@ -237,30 +247,98 @@ impl SidebarView {
             theme::Surface::Sidebar,
             ui.style(),
         );
-        if input.results.is_some() {
-            // The thumbnails are out of sight: no sharp renders for them.
-            self.closed();
-        } else {
-            self.result_rows.clear();
-            self.followed_hit = None;
-        }
         let response = egui::Panel::left("sidebar")
             .resizable(true)
             .frame(frame)
             .default_size(state.clamped(window).width)
             .size_range(SIDEBAR_MIN_WIDTH..=max)
             .show(ui, |ui| {
-                theme::scope(ui, theme::Role::Sidebar, |ui| match &input.results {
-                    Some(results) => Output {
-                        hit: self.results(ui, results),
-                        ..Output::default()
-                    },
-                    None => self.scrolled(ui, input),
+                theme::scope(ui, theme::Role::Sidebar, |ui| {
+                    // The strip first: the areas below take what is left.
+                    if let Some(tab) = self.strip(ui, state.tab) {
+                        state.choose(tab);
+                    }
+                    if state.tab != SidebarTab::Results {
+                        self.result_rows.clear();
+                        self.followed_hit = None;
+                    }
+                    match state.tab {
+                        SidebarTab::Thumbnails => self.scrolled(ui, input),
+                        SidebarTab::Results => {
+                            // The thumbnails are out of sight: no sharp
+                            // renders for them.
+                            self.closed();
+                            match &input.results {
+                                Some(results) => Output {
+                                    hit: self.results(ui, results),
+                                    ..Output::default()
+                                },
+                                None => {
+                                    let muted = ui.visuals().weak_text_color();
+                                    ui.add_space(RESULT_MARGIN);
+                                    ui.label(egui::RichText::new("No search").color(muted));
+                                    Output::default()
+                                }
+                            }
+                        }
+                        SidebarTab::Outline => {
+                            self.closed();
+                            Output::default()
+                        }
+                    }
                 })
             });
         state.width = response.response.rect.width();
-        self.shown = true;
+        // Off the thumbnails tab the thumbnails count as not shown, so they
+        // follow the current page when they come back.
+        self.shown = state.tab == SidebarTab::Thumbnails;
         response.inner
+    }
+
+    /// The row of tabs; returns the one clicked.
+    fn strip(&mut self, ui: &mut egui::Ui, active: SidebarTab) -> Option<SidebarTab> {
+        const TABS: [(SidebarTab, &str); 3] = [
+            (SidebarTab::Thumbnails, "Pages"),
+            (SidebarTab::Outline, "Outline"),
+            (SidebarTab::Results, "Search"),
+        ];
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let height = font.size + 2.0 * TAB_PADDING;
+        let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+        ui.add_space(TAB_GAP);
+        let width = row.width() / TABS.len() as f32;
+        let selection = ui.visuals().selection;
+        let text = ui.visuals().text_color();
+        let mut clicked = None;
+        self.tabs.clear();
+        for (i, (tab, label)) in TABS.into_iter().enumerate() {
+            let rect =
+                Rect::from_min_size(row.min + vec2(i as f32 * width, 0.0), vec2(width, height));
+            self.tabs.push((tab, rect));
+            let response = ui.interact(rect, ui.scope_id().with(("tab", i)), Sense::click());
+            if response.clicked() {
+                clicked = Some(tab);
+            }
+            let colour = if tab == active {
+                ui.painter()
+                    .rect_filled(rect.shrink(1.0), TAB_ROUNDING, selection.bg_fill);
+                selection.stroke.color
+            } else {
+                text
+            };
+            if response.hovered() {
+                ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                font.clone(),
+                colour,
+            );
+        }
+        clicked
     }
 
     /// The scrolling column, kept on the current page.
@@ -699,6 +777,17 @@ impl SidebarView {
         self.tracker.forget_outside(kept.clone());
         self.sharp.retain(|page, _| kept.contains(page));
         self.kept = kept;
+    }
+
+    /// The tabs, with where they were drawn.
+    #[cfg(test)]
+    pub fn tab_rects(&self) -> &[(SidebarTab, Rect)] {
+        &self.tabs
+    }
+
+    #[cfg(test)]
+    pub fn kept_pages(&self) -> Range<usize> {
+        self.kept.clone()
     }
 
     #[cfg(test)]

@@ -501,6 +501,11 @@ impl NoidoApp {
             if left <= 0.0 {
                 let from = self.current_page().unwrap_or(0);
                 self.search_state.start(from, search::First::Jump);
+                if self.search_state.searched().is_some() {
+                    self.sidebar.search_started();
+                } else {
+                    self.sidebar.search_cleared();
+                }
             } else {
                 ctx.request_repaint_after(Duration::from_secs_f64(left));
             }
@@ -1146,6 +1151,7 @@ impl NoidoApp {
                 // The first Esc clears the search; the field keeps focus.
                 self.search.clear();
                 self.search_state.clear();
+                self.sidebar.search_cleared();
                 self.search_focus_requested = true;
             }
         }
@@ -4058,6 +4064,7 @@ pub(crate) mod tests {
             sidebar: SidebarState {
                 open: true,
                 width: 2000.0,
+                ..Default::default()
             },
             history: History::default(),
             highlights: Vec::new(),
@@ -4810,6 +4817,7 @@ pub(crate) mod tests {
         h.app.sidebar = SidebarState {
             open: true,
             width: 160.0,
+            ..Default::default()
         };
         h.frames(3, vec![]);
         assert!(h.app.bar.search.width() >= 160.0, "{:?}", h.app.bar.search);
@@ -7144,11 +7152,16 @@ pub(crate) mod tests {
     /// Rectangles painted in the selection colour last frame.
     fn selection_rects(h: &Harness) -> Vec<Rect> {
         let fill = h.ctx.global_style().visuals.selection.bg_fill;
+        let tabs = h.app.sidebar_view.tab_rects();
         h.shapes
             .iter()
             .filter_map(|clipped| match &clipped.shape {
-                // Not the title bar's buttons.
-                egui::Shape::Rect(r) if r.fill == fill && r.rect.min.y >= TITLE_BAR_HEIGHT => {
+                // Not the title bar's buttons, nor the sidebar's tabs.
+                egui::Shape::Rect(r)
+                    if r.fill == fill
+                        && r.rect.min.y >= TITLE_BAR_HEIGHT
+                        && !tabs.iter().any(|(_, t)| t.contains_rect(r.rect)) =>
+                {
                     Some(r.rect)
                 }
                 _ => None,
@@ -7905,6 +7918,170 @@ pub(crate) mod tests {
         assert_eq!(h.app.search_state.searched(), None);
         assert!(h.ctx.text_edit_focused());
         assert!(h.app.sidebar.open);
+    }
+
+    use noido_core::SidebarTab;
+
+    fn click_tab(h: &mut Harness, tab: SidebarTab) {
+        let (_, rect) = *h
+            .app
+            .sidebar_view
+            .tab_rects()
+            .iter()
+            .find(|(t, _)| *t == tab)
+            .unwrap_or_else(|| panic!("no tab {tab:?}"));
+        h.click(rect.center());
+        h.frames(2, vec![]);
+    }
+
+    #[test]
+    fn tabs_show_labels() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        let texts = h.texts();
+        for label in ["Pages", "Outline", "Search"] {
+            assert!(texts.iter().any(|t| t == label), "{label}: {texts:?}");
+        }
+        let rects = h.app.sidebar_view.tab_rects().to_vec();
+        assert_eq!(rects.len(), 3);
+        // Even at the narrowest sidebar the strip fits.
+        h.app.sidebar.width = 160.0;
+        h.frames(3, vec![]);
+        let width = h.app.sidebar.width;
+        let rects = h.app.sidebar_view.tab_rects();
+        assert!(rects.iter().all(|(_, r)| r.max.x <= width), "{rects:?}");
+        // The active tab is filled with the selection colour.
+        let fill = h.ctx.global_style().visuals.selection.bg_fill;
+        let (_, pages) = h.app.sidebar_view.tab_rects()[0];
+        assert!(h.shapes.iter().any(|c| {
+            matches!(&c.shape, egui::Shape::Rect(r) if r.fill == fill && pages.contains_rect(r.rect))
+        }));
+        let (_, outline) = h.app.sidebar_view.tab_rects()[1];
+        assert!(!h.shapes.iter().any(|c| {
+            matches!(&c.shape, egui::Shape::Rect(r) if r.fill == fill && outline.contains_rect(r.rect))
+        }));
+    }
+
+    #[test]
+    fn clicking_a_tab_switches() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        click_tab(&mut h, SidebarTab::Outline);
+        assert_eq!(h.app.sidebar.tab, SidebarTab::Outline);
+        assert_eq!(h.app.sidebar.last, SidebarTab::Outline);
+        assert!(h.app.sidebar_view.drawn().is_empty());
+        click_tab(&mut h, SidebarTab::Thumbnails);
+        assert_eq!(h.app.sidebar.tab, SidebarTab::Thumbnails);
+        assert!(!h.app.sidebar_view.drawn().is_empty());
+    }
+
+    #[test]
+    fn search_goes_to_results_and_clearing_returns() {
+        let mut h = searching(&more_cats());
+        h.press(egui::Key::F9, Modifiers::NONE);
+        click_tab(&mut h, SidebarTab::Outline);
+        search_for(&mut h, "cat");
+        h.frames(2, vec![]);
+        assert_eq!(h.app.sidebar.tab, SidebarTab::Results);
+        assert!(!h.app.sidebar_view.result_rows().is_empty());
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.sidebar.tab, SidebarTab::Outline);
+        assert!(h.app.sidebar_view.result_rows().is_empty());
+    }
+
+    #[test]
+    fn new_query_from_another_tab_goes_to_results() {
+        let mut h = searching(&more_cats());
+        h.press(egui::Key::F9, Modifiers::NONE);
+        search_for(&mut h, "cat");
+        click_tab(&mut h, SidebarTab::Thumbnails);
+        assert_eq!(h.app.sidebar.tab, SidebarTab::Thumbnails);
+        h.app.search = "dog".into();
+        h.until(|h| h.app.search_state.searched() == Some("dog") && h.app.search_state.finished());
+        h.frames(2, vec![]);
+        assert_eq!(h.app.sidebar.tab, SidebarTab::Results);
+    }
+
+    #[test]
+    fn stepping_hits_from_another_tab_stays() {
+        let mut h = searching(&more_cats());
+        h.press(egui::Key::F9, Modifiers::NONE);
+        search_for(&mut h, "cat");
+        click_tab(&mut h, SidebarTab::Thumbnails);
+        let before = current(&h);
+        h.press(egui::Key::F3, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_ne!(current(&h), before);
+        assert_eq!(h.app.sidebar.tab, SidebarTab::Thumbnails);
+    }
+
+    #[test]
+    fn search_stays_while_on_another_tab() {
+        let mut h = searching(&more_cats());
+        h.press(egui::Key::F9, Modifiers::NONE);
+        search_for(&mut h, "cat");
+        let hits = h.app.search_state.hits.len();
+        click_tab(&mut h, SidebarTab::Outline);
+        h.frames(3, vec![]);
+        assert_eq!(h.app.search_state.searched(), Some("cat"));
+        assert_eq!(h.app.search_state.hits.len(), hits);
+        assert!(hits > 0);
+        click_tab(&mut h, SidebarTab::Results);
+        assert!(!h.app.sidebar_view.result_rows().is_empty());
+    }
+
+    #[test]
+    fn reload_rerunning_the_search_does_not_switch() {
+        let mut h = searching(&more_cats());
+        h.press(egui::Key::F9, Modifiers::NONE);
+        search_for(&mut h, "cat");
+        click_tab(&mut h, SidebarTab::Thumbnails);
+        h.reload(Arc::new(more_cats()), recompiled_key());
+        h.until(|h| h.app.search_state.finished() && !h.app.search_state.hits.is_empty());
+        h.frames(2, vec![]);
+        assert_eq!(h.app.sidebar.tab, SidebarTab::Thumbnails);
+    }
+
+    #[test]
+    fn results_tab_without_a_search_says_so() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        click_tab(&mut h, SidebarTab::Results);
+        assert_eq!(h.app.sidebar.tab, SidebarTab::Results);
+        assert!(h.texts().iter().any(|t| t == "No search"));
+        assert_eq!(h.app.sidebar.last, SidebarTab::Thumbnails);
+    }
+
+    #[test]
+    fn no_sharp_renders_off_the_thumbnails_tab() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        click_tab(&mut h, SidebarTab::Thumbnails);
+        assert!(!h.app.sidebar_view.drawn().is_empty());
+        click_tab(&mut h, SidebarTab::Outline);
+        h.frames(3, vec![]);
+        assert!(h.app.sidebar_view.sharp_pages().is_empty());
+        assert!(h.app.sidebar_view.drawn().is_empty());
+        assert_eq!(h.app.sidebar_view.kept_pages(), 0..0);
+        click_tab(&mut h, SidebarTab::Thumbnails);
+        assert!(!h.app.sidebar_view.drawn().is_empty());
+    }
+
+    #[test]
+    fn search_with_closed_sidebar_then_esc_twice() {
+        let mut h = searching(&more_cats());
+        h.app.sidebar.choose(SidebarTab::Outline);
+        assert!(!h.app.sidebar.open);
+        search_for(&mut h, "cat");
+        h.frames(2, vec![]);
+        assert!(h.app.sidebar.open);
+        assert_eq!(h.app.sidebar.tab, SidebarTab::Results);
+        assert!(!h.app.sidebar_view.result_rows().is_empty());
+        // Results are not what is saved.
+        assert_eq!(h.app.doc_state().unwrap().sidebar.last, SidebarTab::Outline);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(!h.app.sidebar.open);
+        assert_eq!(h.app.sidebar.tab, SidebarTab::Outline);
+        assert_eq!(h.app.doc_state().unwrap().sidebar.last, SidebarTab::Outline);
     }
 
     #[test]

@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use noido_core::{
-    Caret, DocPoint, Highlight, HighlightColour, History, SidebarState, ViewState, ZoomMode,
+    Caret, DocPoint, Highlight, HighlightColour, History, SidebarState, SidebarTab, ViewState,
+    ZoomMode,
 };
 use noido_state::{DocKey, DocState, Frame, Slot, Store};
 use tempfile::TempDir;
@@ -244,11 +245,53 @@ fn sidebar_round_trips() {
         sidebar: SidebarState {
             open: true,
             width: 312.5,
+            ..Default::default()
         },
         ..state(3)
     };
     store.save(&slot(&store, &key), &saved).unwrap();
     assert_eq!(loaded(&store, &key), Some(saved));
+}
+
+#[test]
+fn sidebar_tab_round_trips() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    // Results are never saved: the tab before them is.
+    let saved = DocState {
+        sidebar: SidebarState {
+            tab: SidebarTab::Results,
+            last: SidebarTab::Outline,
+            ..Default::default()
+        },
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    let sidebar = loaded(&store, &key).unwrap().sidebar;
+    assert_eq!(sidebar.tab, SidebarTab::Outline);
+    assert_eq!(sidebar.last, SidebarTab::Outline);
+}
+
+#[test]
+fn old_files_and_unknown_tabs_give_thumbnails() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    fs::create_dir_all(docs(&dir)).unwrap();
+    let file = docs(&dir).join(format!("{}.toml", key.hex()));
+    let head = "version = 1\npath = \"/papers/a.pdf\"\nsaved = 0\nzoom = \"custom\"\n\
+         scale = 1.5\ncontinuous = false\ndual = true\npage = 3\nx = 10.0\ny = 20.5\n";
+    for extra in [
+        "",
+        "sidebar_tab = \"bookmarks\"\n",
+        "sidebar_tab = \"results\"\n",
+    ] {
+        fs::write(&file, format!("{head}{extra}")).unwrap();
+        let sidebar = loaded(&store, &key).unwrap().sidebar;
+        assert_eq!(sidebar.tab, SidebarTab::Thumbnails, "{extra:?}");
+        assert_eq!(sidebar.last, SidebarTab::Thumbnails, "{extra:?}");
+    }
 }
 
 #[test]
@@ -397,6 +440,7 @@ fn an_old_history_entry_loads_as_its_point() {
         sidebar: SidebarState {
             open: true,
             width: 300.0,
+            ..Default::default()
         },
         history: History::from_parts(
             vec![DocPoint {
@@ -429,6 +473,7 @@ fn a_file_without_history_loads() {
         sidebar: SidebarState {
             open: true,
             width: 300.0,
+            ..Default::default()
         },
         ..state(3)
     };
