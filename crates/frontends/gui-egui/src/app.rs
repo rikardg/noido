@@ -1495,6 +1495,16 @@ impl NoidoApp {
                 self.texts.want(page, |page| search.request_text(page));
             }
         }
+        // An end of the selection waiting for its page's text: a drag let go
+        // past the pages' edge can leave it on a page out of view.
+        if let Some(selection) = self.select.selection {
+            let search = &self.search_state;
+            for spot in [selection.anchor, selection.focus] {
+                if let noido_core::Spot::Waiting(p) = spot {
+                    self.texts.want(p.page, |page| search.request_text(page));
+                }
+            }
+        }
         // A press that took a handle is not a click on a link under it.
         let on_handle = self
             .select
@@ -1507,20 +1517,15 @@ impl NoidoApp {
                 .doc_point(drag.origin.x - content.min.x, drag.origin.y - content.min.y)
                 .is_some_and(|p| self.links.at(p.page, p.x, p.y).is_some())
         });
-        self.select.update(
-            &self.texts,
-            layout,
-            ui,
-            content,
-            &mut self.highlights,
-            on_link,
-        );
-        self.select.place(
-            &self.texts,
+        let shown = select::Pages {
+            texts: &self.texts,
             layout,
             content,
-            viewport.translate(content.min.to_vec2()),
-        );
+            viewport: viewport.translate(content.min.to_vec2()),
+        };
+        self.select
+            .update(&shown, ui, &mut self.highlights, on_link);
+        self.select.place(&shown);
         let visible_pages = visible.clone();
         // Not over a scroll bar, the sidebar or a popup: the response
         // isn't hovered there.
@@ -1790,7 +1795,7 @@ impl NoidoApp {
         }
     }
 
-    /// The small bar by the selection's end, once the drag is over.
+    /// The small bar by where the mouse let go, once the drag is over.
     fn selection_bar(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
         self.select.bar_rect = None;
         self.select.swatches = [None; select::SWATCH_COUNT];
@@ -1801,16 +1806,16 @@ impl NoidoApp {
         let Some(last) = self.last_scroll else {
             return;
         };
-        // A clicked highlight hangs its bar from the click; a fresh
-        // selection hangs it from its end's caret.
-        let (top, bottom) = match (self.select.editing, self.select.bar_at) {
-            (Some(_), Some(at)) => {
+        // The bar hangs from where the mouse let go, or failing that from
+        // the selection's end.
+        let (top, bottom) = match self.select.bar_at {
+            Some(at) => {
                 if !last.inner.contains(at) {
                     return;
                 }
                 (at, at)
             }
-            _ => {
+            None => {
                 let Some((top, bottom)) = self.select.caret_lines[1] else {
                     return;
                 };
@@ -10163,20 +10168,170 @@ pub(crate) mod tests {
             (bar.center().x - into.x).abs() <= 3.0,
             "the bar {bar:?} is not over the click at {into:?}"
         );
+    }
 
-        // A Shift+click that extends the highlight drops the click
-        // anchor: the bar goes back to the focus caret.
-        assert!(h.app.select.bar_at.is_some(), "the click anchors the bar");
-        past_double_click(&mut h);
-        h.modifiers = Modifiers::SHIFT;
-        h.click(screen_pos(&h, 0, 105.0, 95.0));
+    /// The bar is drawn hanging from `at`: the gap above it and centred on
+    /// it, or as near the window's left edge as a bar this wide can get.
+    fn assert_bar_hangs_from(h: &Harness, at: egui::Pos2) {
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        assert!(
+            (bar.bottom() - (at.y - SELECTION_BAR_GAP)).abs() <= 1.0,
+            "the bar {bar:?} does not hang from {at:?}"
+        );
+        assert!(
+            (bar.center().x - at.x).abs() <= 3.0 || bar.left() <= 1.0,
+            "the bar {bar:?} is not over {at:?}"
+        );
+    }
+
+    #[test]
+    fn bar_comes_up_at_the_release_of_an_upward_drag() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (130.0, 115.0), (127.0, 95.0), Modifiers::SHIFT);
         h.frames(1, vec![]);
-        h.modifiers = Modifiers::NONE;
-        assert_eq!(h.app.select.bar_at, None);
+        assert_bar_hangs_from(&h, screen_pos(&h, 0, 127.0, 95.0));
+    }
 
-        // A drag's own selection keeps the caret as the bar's anchor.
-        drag_text(&mut h, 0, (73.0, 95.0), (112.0, 95.0), Modifiers::SHIFT);
-        assert_eq!(h.app.select.bar_at, None);
+    #[test]
+    fn bar_stays_by_the_mouse_when_a_drag_overshoots_the_line() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 95.0), (200.0, 95.0), Modifiers::SHIFT);
+        h.frames(1, vec![]);
+        assert_bar_hangs_from(&h, screen_pos(&h, 0, 200.0, 95.0));
+    }
+
+    #[test]
+    fn bar_comes_up_at_the_release_of_a_selections_start_handle() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 95.0), (130.0, 95.0), Modifiers::SHIFT);
+        h.frames(1, vec![]);
+        let knob = h.app.select.handles[0].expect("the start's handle shows");
+        let by = vec2(screen_pos(&h, 0, 114.0, 95.0).x - knob.x, 0.0);
+        h.drag(knob, by);
+        h.frames(2, vec![]);
+        assert_bar_hangs_from(&h, knob + by);
+    }
+
+    #[test]
+    fn bar_comes_up_at_the_release_of_a_highlights_start_handle() {
+        let (mut h, _) = selecting();
+        let caret = |char| Caret { page: 0, char };
+        h.app.highlights.add(Highlight {
+            start: caret(0),
+            end: caret(11),
+            colour: HighlightColour::Yellow,
+        });
+        h.click(screen_pos(&h, 0, 127.0, 95.0));
+        h.frames(1, vec![]);
+        let knob = h.app.select.handles[0].expect("the start's handle shows");
+        let by = vec2(screen_pos(&h, 0, 114.0, 95.0).x - knob.x, 0.0);
+        h.drag(knob, by);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_bar_hangs_from(&h, knob + by);
+    }
+
+    #[test]
+    fn a_handle_pressed_and_let_go_leaves_the_bar_where_it_is() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (130.0, 115.0), (127.0, 95.0), Modifiers::SHIFT);
+        h.frames(1, vec![]);
+        let before = h.app.select.bar_rect.expect("the bar is drawn");
+        let knob = h.app.select.handles[1].expect("the end's handle shows");
+        h.click(knob);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.select.bar_rect, Some(before));
+    }
+
+    #[test]
+    fn bar_comes_up_at_a_double_click() {
+        let (mut h, _) = selecting();
+        click_times(&mut h, (127.0, 95.0), 2, Modifiers::SHIFT);
+        assert_eq!(selected_on(&h, 0), Some(8..11));
+        h.frames(1, vec![]);
+        assert_bar_hangs_from(&h, screen_pos(&h, 0, 127.0, 95.0));
+    }
+
+    #[test]
+    fn bar_comes_up_at_a_triple_click() {
+        let (mut h, _) = selecting();
+        click_times(&mut h, (127.0, 95.0), 3, Modifiers::SHIFT);
+        assert_eq!(selected_on(&h, 0).map(|r| r.start), Some(0));
+        h.frames(1, vec![]);
+        assert_bar_hangs_from(&h, screen_pos(&h, 0, 127.0, 95.0));
+    }
+
+    #[test]
+    fn bar_comes_up_at_a_shift_click() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 95.0), (100.0, 95.0), Modifiers::SHIFT);
+        past_double_click(&mut h);
+        // On the line below: the bar hangs over the line above.
+        let at = screen_pos(&h, 0, 127.0, 115.0);
+        h.modifiers = Modifiers::SHIFT;
+        h.click(at);
+        h.frames(2, vec![]);
+        h.modifiers = Modifiers::NONE;
+        assert_bar_hangs_from(&h, at);
+    }
+
+    #[test]
+    fn no_bar_after_a_double_click_on_a_page_without_text() {
+        let engine = TextEngine::new(&[&[]]);
+        let mut h = searching(&engine);
+        h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
+        click_times(&mut h, (300.0, 400.0), 2, Modifiers::SHIFT);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.select.selection, None);
+        assert_eq!(h.app.select.bar_rect, None);
+    }
+
+    #[test]
+    fn bar_stays_in_view_when_a_drag_is_released_past_the_windows_edge() {
+        let (mut h, _) = selecting();
+        let inner = h.app.last_scroll.unwrap().inner;
+        let from = screen_pos(&h, 0, 73.0, 95.0);
+        h.modifiers = Modifiers::SHIFT;
+        h.drag(from, pos2(from.x + 200.0, inner.bottom() + 200.0) - from);
+        h.modifiers = Modifiers::NONE;
+        // The drag ran onto the next page; the bar waits for its text.
+        h.until(|h| h.app.select.selection.is_some_and(|s| s.carets().is_some()));
+        h.frames(2, vec![]);
+        let bar = h.app.select.bar_rect.expect("the bar is drawn");
+        assert!(
+            inner.contains_rect(bar),
+            "the bar {bar:?} is not within the view {inner:?}"
+        );
+    }
+
+    #[test]
+    fn panning_leaves_the_bar_on_its_page_point() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (73.0, 115.0), (127.0, 115.0), Modifiers::SHIFT);
+        h.frames(1, vec![]);
+        let offset = h.app.view.offset();
+        drag_text(&mut h, 0, (300.0, 400.0), (300.0, 370.0), Modifiers::NONE);
+        h.frames(1, vec![]);
+        assert_ne!(h.app.view.offset(), offset, "the drag did not pan");
+        let bar_at = h.app.select.bar_at.expect("the bar has its point");
+        let point = screen_pos(&h, 0, 127.0, 115.0);
+        assert!(
+            (bar_at - point).length() <= 1.0,
+            "the bar hangs from {bar_at:?}, not its page point at {point:?}"
+        );
+    }
+
+    #[test]
+    fn making_a_highlight_leaves_the_bar_where_it_is() {
+        let (mut h, _) = selecting();
+        drag_text(&mut h, 0, (130.0, 115.0), (127.0, 95.0), Modifiers::SHIFT);
+        h.frames(1, vec![]);
+        let before = h.app.select.bar_rect.expect("the bar is drawn");
+        let swatch = h.app.select.swatches[0].expect("the bar offers the colours");
+        h.click(swatch.center());
+        h.frames(2, vec![]);
+        assert_eq!(h.app.select.editing, Some(0));
+        assert_eq!(h.app.select.bar_rect, Some(before));
     }
 
     #[test]
