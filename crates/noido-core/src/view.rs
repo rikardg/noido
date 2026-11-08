@@ -191,6 +191,41 @@ impl View {
         )
     }
 
+    /// The point the outline's current entry is measured from. One page per
+    /// row: [`View::place`]. In two-page mode the whole spread counts, so
+    /// it is the centre's height on the spread's last page. A `chosen`
+    /// page (a jump's target) on another spread gives that page's top
+    /// instead, clamped to the document; on the same spread it changes
+    /// nothing. `None` with zero pages.
+    pub fn reading_point(&self, chosen: Option<usize>) -> Option<DocPoint> {
+        let place = self.place()?;
+        let layout = &self.layout;
+        let spread = layout.spread_of(place.page);
+        if let Some(page) = chosen.map(|c| c.min(layout.page_count() - 1))
+            && layout.spread_of(page) != spread
+        {
+            return Some(DocPoint {
+                page,
+                x: 0.0,
+                y: 0.0,
+            });
+        }
+        let Some(last) = layout.spread_pages(spread).end.checked_sub(1) else {
+            return Some(place);
+        };
+        if last <= place.page {
+            return Some(place);
+        }
+        let (x, y) = layout.content_point(place)?;
+        let rect = layout.page_rect(last)?;
+        let scale = layout.scale();
+        Some(DocPoint {
+            page: last,
+            x: (x - rect.x) / scale,
+            y: (y - rect.y) / scale,
+        })
+    }
+
     /// A snapshot to restore in a later run; `None` with zero pages.
     pub fn state(&self) -> Option<ViewState> {
         let centre = self.place()?;
@@ -2153,5 +2188,141 @@ mod tests {
         let before = (view.offset(), view.scale(), view.mode());
         view.apply(Action::ShowDocumentInfo);
         assert_eq!((view.offset(), view.scale(), view.mode()), before);
+    }
+}
+
+#[cfg(test)]
+mod reading_point_tests {
+    use super::*;
+    use crate::PAGE_GAP;
+
+    /// `pages` pages of 300x400 at scale 1, centred on page `page` at
+    /// y 200, in a 700-wide viewport of `height` (tall, so the centre stays put).
+    fn view_at(
+        pages: usize,
+        continuous: bool,
+        dual: bool,
+        odd_left: bool,
+        gapless: bool,
+        page: usize,
+        height: f32,
+    ) -> View {
+        let mut view = View::new(vec![
+            Size {
+                width: 300.0,
+                height: 400.0
+            };
+            pages
+        ]);
+        view.set_viewport_size(700.0, height);
+        view.restore(&ViewState {
+            zoom: ZoomMode::Custom,
+            scale: 1.0,
+            continuous,
+            dual,
+            odd_left,
+            gapless,
+            centre: DocPoint {
+                page,
+                x: 150.0,
+                y: 200.0,
+            },
+        });
+        view
+    }
+
+    fn top(page: usize) -> DocPoint {
+        DocPoint {
+            page,
+            x: 0.0,
+            y: 0.0,
+        }
+    }
+
+    #[test]
+    fn reading_point_single_is_place() {
+        let view = view_at(20, true, false, true, false, 5, 900.0);
+        assert_eq!(view.reading_point(None), view.place());
+        assert_eq!(view.place().unwrap().page, 5);
+    }
+
+    #[test]
+    fn reading_point_dual_is_last_page_of_spread() {
+        // Pages 2|3 (the spread "3|4"), centre in the gutter.
+        let view = view_at(20, true, true, true, false, 2, 900.0);
+        let place = view.place().unwrap();
+        assert_eq!(place.page, 2);
+        let point = view.reading_point(None).unwrap();
+        assert_eq!(point.page, 3);
+        assert!((point.y - place.y).abs() < 0.01, "{point:?} {place:?}");
+        assert!((point.x - (place.x - 300.0 - PAGE_GAP)).abs() < 0.01);
+    }
+
+    #[test]
+    fn reading_point_gapless_dual() {
+        let view = view_at(20, true, true, true, true, 2, 900.0);
+        let place = view.place().unwrap();
+        let point = view.reading_point(None).unwrap();
+        // Rounding may give the centre to either page; the answer is the same.
+        assert_eq!(point.page, 3);
+        assert!((point.y - place.y).abs() < 0.01, "{point:?} {place:?}");
+        let x = if place.page == 3 {
+            place.x
+        } else {
+            place.x - 300.0
+        };
+        assert!((point.x - x).abs() < 0.01);
+    }
+
+    #[test]
+    fn reading_point_paged_dual() {
+        let view = view_at(20, false, true, true, false, 2, 900.0);
+        let place = view.place().unwrap();
+        let point = view.reading_point(None).unwrap();
+        assert_eq!(point.page, 3);
+        assert!((point.y - place.y).abs() < 0.01, "{point:?} {place:?}");
+    }
+
+    #[test]
+    fn reading_point_odd_left_lone_first_page() {
+        let view = view_at(20, true, true, false, false, 0, 600.0);
+        assert_eq!(view.layout().spread_pages(0), 0..1);
+        assert_eq!(view.reading_point(None), view.place());
+        assert_eq!(view.place().unwrap().page, 0);
+    }
+
+    #[test]
+    fn reading_point_last_lone_page() {
+        // Five pages: the last spread is page 4 alone.
+        let view = view_at(5, true, true, true, false, 4, 600.0);
+        assert_eq!(view.layout().spread_pages(2), 4..5);
+        assert_eq!(view.place().unwrap().page, 4);
+        assert_eq!(view.reading_point(None), view.place());
+    }
+
+    #[test]
+    fn reading_point_chosen_same_spread_is_unchanged() {
+        let view = view_at(20, true, true, true, false, 2, 900.0);
+        let plain = view.reading_point(None);
+        assert_eq!(view.reading_point(Some(2)), plain);
+        assert_eq!(view.reading_point(Some(3)), plain);
+    }
+
+    #[test]
+    fn reading_point_chosen_other_spread_is_its_top() {
+        let view = view_at(20, true, true, true, false, 2, 900.0);
+        assert_eq!(view.reading_point(Some(7)), Some(top(7)));
+        let single = view_at(20, true, false, true, false, 2, 900.0);
+        assert_eq!(single.reading_point(Some(9)), Some(top(9)));
+        // Past the end clamps to the last page.
+        assert_eq!(view.reading_point(Some(99)), Some(top(19)));
+    }
+
+    #[test]
+    fn reading_point_no_pages_is_none() {
+        let mut view = View::new(vec![]);
+        view.set_viewport_size(700.0, 900.0);
+        assert_eq!(view.reading_point(None), None);
+        assert_eq!(view.reading_point(Some(3)), None);
     }
 }
