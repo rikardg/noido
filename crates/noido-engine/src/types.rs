@@ -116,6 +116,18 @@ pub struct Link {
     pub target: LinkTarget,
 }
 
+/// One entry of the document's outline.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutlineEntry {
+    /// Never empty.
+    pub title: String,
+    /// Where it goes; `None` when the document gives none we can use.
+    pub target: Option<LinkTarget>,
+    /// Whether the document has it unfolded.
+    pub open: bool,
+    pub children: Vec<OutlineEntry>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum LinkTarget {
     /// A place in this document.

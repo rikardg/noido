@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use noido_engine::{Destination, Document, Link, PdfBytes, PdfEngine, Rect};
+use noido_engine::{Destination, Document, Link, OutlineEntry, PdfBytes, PdfEngine, Rect};
 use noido_text::PageText;
 
 /// The height, in points, of the bar flashed where a target has no line.
@@ -29,6 +29,8 @@ pub enum LinkReply {
     },
     /// Each page's label; empty if there are none or they couldn't be read.
     Labels(Vec<Option<String>>),
+    /// The document's outline; empty if there is none or it couldn't be read.
+    Outline(Vec<OutlineEntry>),
 }
 
 enum Command {
@@ -36,6 +38,7 @@ enum Command {
     Flash(Destination),
     Named(String),
     Labels,
+    Outline,
 }
 
 /// Handle to the links thread. Dropping it stops the thread.
@@ -86,6 +89,11 @@ impl Linker {
         let _ = self.commands.send(Command::Labels);
     }
 
+    /// Asks for the document's outline.
+    pub fn request_outline(&self) {
+        let _ = self.commands.send(Command::Outline);
+    }
+
     pub fn try_recv(&self) -> Option<LinkReply> {
         self.replies.try_recv().ok()
     }
@@ -116,6 +124,9 @@ fn run(
             },
             Command::Labels => LinkReply::Labels(
                 crate::caught_none(|| Some(document.page_labels())).unwrap_or_default(),
+            ),
+            Command::Outline => LinkReply::Outline(
+                crate::caught_none(|| Some(document.outline())).unwrap_or_default(),
             ),
         };
         if replies.send(reply).is_err() {

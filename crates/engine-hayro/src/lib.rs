@@ -2,6 +2,7 @@
 
 mod labels;
 mod links;
+mod outline;
 mod pdf_string;
 mod properties;
 mod text;
@@ -17,8 +18,8 @@ use hayro::{RenderCache, RenderSettings};
 use std::cell::OnceCell;
 
 use noido_engine::{
-    Destination, Document, EngineError, Glyph, Link, PdfBytes, PdfEngine, PixelRect, Properties,
-    Rgba8Image, Size,
+    Destination, Document, EngineError, Glyph, Link, OutlineEntry, PdfBytes, PdfEngine, PixelRect,
+    Properties, Rgba8Image, Size,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -147,6 +148,11 @@ impl Document for HayroDocument {
     fn named_destination(&self, name: &str) -> Option<Destination> {
         let index = self.pages.get_or_init(|| links::page_index(&self.pdf));
         links::named_destination(&self.pdf, index, name.as_bytes())
+    }
+
+    fn outline(&self) -> Vec<OutlineEntry> {
+        let index = self.pages.get_or_init(|| links::page_index(&self.pdf));
+        outline::outline(&self.pdf, index)
     }
 
     fn page_labels(&self) -> Vec<Option<String>> {

@@ -114,6 +114,8 @@ impl Links {
                     }
                 }
                 LinkReply::Labels(labels) => self.numbers = PageNumbers::new(labels),
+                // Not asked for yet.
+                LinkReply::Outline(_) => {}
             }
         }
         answer

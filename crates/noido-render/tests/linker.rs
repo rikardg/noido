@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use noido_engine::{
-    Destination, Document, EngineError, Glyph, Link, LinkTarget, PdfBytes, PdfEngine, PixelRect,
-    Point, Quad, Rect, Rgba8Image, Size,
+    Destination, Document, EngineError, Glyph, Link, LinkTarget, OutlineEntry, PdfBytes, PdfEngine,
+    PixelRect, Point, Quad, Rect, Rgba8Image, Size,
 };
 use noido_render::{FLASH_BAR_HEIGHT, LinkReply, Linker};
 
@@ -311,6 +311,8 @@ fn answers_a_named_place() {
 struct WholeDocument {
     labels: Vec<Option<String>>,
     panicking_labels: bool,
+    outline: Vec<OutlineEntry>,
+    panicking_outline: bool,
 }
 
 impl PdfEngine for WholeDocument {
@@ -338,6 +340,11 @@ impl Document for WholeDocument {
     fn page_labels(&self) -> Vec<Option<String>> {
         assert!(!self.panicking_labels, "the labels that cannot be read");
         self.labels.clone()
+    }
+
+    fn outline(&self) -> Vec<OutlineEntry> {
+        assert!(!self.panicking_outline, "the outline that cannot be read");
+        self.outline.clone()
     }
 }
 
@@ -368,6 +375,38 @@ fn panicking_labels_give_none() {
     linker.request_labels();
     match recv(&linker) {
         LinkReply::Labels(got) => assert!(got.is_empty()),
+        other => panic!("unexpected reply: {other:?}"),
+    }
+}
+
+#[test]
+fn outline_reply_comes_back() {
+    let outline = vec![OutlineEntry {
+        title: "One".to_owned(),
+        target: None,
+        open: true,
+        children: Vec::new(),
+    }];
+    let linker = whole_document(WholeDocument {
+        outline: outline.clone(),
+        ..WholeDocument::default()
+    });
+    linker.request_outline();
+    match recv(&linker) {
+        LinkReply::Outline(got) => assert_eq!(got, outline),
+        other => panic!("unexpected reply: {other:?}"),
+    }
+}
+
+#[test]
+fn panicking_outline_gives_none() {
+    let linker = whole_document(WholeDocument {
+        panicking_outline: true,
+        ..WholeDocument::default()
+    });
+    linker.request_outline();
+    match recv(&linker) {
+        LinkReply::Outline(got) => assert!(got.is_empty()),
         other => panic!("unexpected reply: {other:?}"),
     }
 }

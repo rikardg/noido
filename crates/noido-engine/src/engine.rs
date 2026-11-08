@@ -4,7 +4,7 @@ use std::sync::Arc;
 /// thread and engine.
 pub type PdfBytes = Arc<Vec<u8>>;
 
-use crate::{Destination, Glyph, Link, PixelRect, Properties, Rgba8Image, Size};
+use crate::{Destination, Glyph, Link, OutlineEntry, PixelRect, Properties, Rgba8Image, Size};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -73,6 +73,12 @@ pub trait Document {
     fn named_destination(&self, name: &str) -> Option<Destination> {
         let _ = name;
         None
+    }
+
+    /// The document's outline (bookmarks) as a tree; empty when it has none
+    /// or for engines that can't read it.
+    fn outline(&self) -> Vec<OutlineEntry> {
+        Vec::new()
     }
 
     /// The label each page declares for itself, usually the number printed
