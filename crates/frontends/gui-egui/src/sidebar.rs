@@ -10,8 +10,8 @@ use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
-    Column, Eased, Highlight, Hits, Layout, MAX_RENDER_SIDE, Pace, PageTextState, RenderTracker,
-    SIDEBAR_MIN_WIDTH, SidebarState, max_width, render_scale,
+    Column, Eased, Highlight, Hits, Layout, MAX_RENDER_SIDE, Pace, PageNumber, PageNumbers,
+    PageTextState, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState, max_width, render_scale,
 };
 use noido_render::{RenderRequest, Renderer};
 
@@ -35,6 +35,9 @@ const CARD_PADDING: f32 = 4.0;
 const CARD_HEADER_GAP: f32 = 2.0;
 /// Space between cards.
 const CARD_GAP: f32 = 2.0;
+/// Space kept between a card's page and its count of matches, and for the
+/// word "Page".
+const CARD_HEADER_ROOM: f32 = 48.0;
 /// Lines of text around a match in its card.
 const EXCERPT_ROWS: usize = 3;
 /// How many thumbnails each side of the visible ones are rendered sharp
@@ -63,6 +66,8 @@ pub struct Input<'a> {
     pub texts: &'a mut Texts,
     /// How to ask the text thread for a page's text.
     pub request_text: &'a dyn Fn(usize),
+    /// How pages are numbered.
+    pub numbers: &'a PageNumbers,
 }
 
 /// The matches of a search, for the sidebar.
@@ -72,6 +77,8 @@ pub struct Results<'a> {
     pub generation: u64,
     /// A line above them: progress, or "No matches".
     pub status: String,
+    /// How pages are numbered.
+    pub numbers: &'a PageNumbers,
 }
 
 /// What the reader did in the sidebar.
@@ -448,7 +455,9 @@ impl SidebarView {
             } else {
                 text
             };
-            let galley = painter.layout_no_wrap((page + 1).to_string(), font.clone(), colour);
+            let shown = number_text(ui, &input.numbers.both(page), &font, label.width);
+            let painter = ui.painter();
+            let galley = painter.layout_no_wrap(shown, font.clone(), colour);
             let number = Rect::from_center_size(centre, galley.size());
             if current {
                 let pill = number.expand2(PILL_PADDING);
@@ -543,7 +552,7 @@ impl SidebarView {
                     if ui.interact(row, id, Sense::click()).clicked() {
                         clicked = Some(index);
                     }
-                    self.result_card(ui, row, hits, index, current == Some(index));
+                    self.result_card(ui, row, results, index, current == Some(index));
                     self.result_rows.push((index, row));
                 }
                 clicked
@@ -560,7 +569,15 @@ impl SidebarView {
 
     /// One match as a card: a header with its page and its number on the
     /// page, then the lines of its context around it, the match marked.
-    fn result_card(&self, ui: &egui::Ui, row: Rect, hits: &Hits, index: usize, current: bool) {
+    fn result_card(
+        &self,
+        ui: &egui::Ui,
+        row: Rect,
+        results: &Results,
+        index: usize,
+        current: bool,
+    ) {
+        let hits = results.hits;
         let Some(hit) = hits.get(index) else {
             return;
         };
@@ -588,8 +605,12 @@ impl SidebarView {
         let header =
             |text: String| ui.fonts_mut(|fonts| fonts.layout_no_wrap(text, small.clone(), weak));
         let top = inner.min.y + CARD_PADDING;
-        let page = header(format!("Page {}", hit.page + 1));
         let number = header(hits_text(index - first + 1, count));
+        let room = width - number.size().x - CARD_HEADER_ROOM;
+        let page = header(format!(
+            "Page {}",
+            number_text(ui, &results.numbers.both(hit.page), &small, room)
+        ));
         ui.painter()
             .galley(egui::pos2(left, top), page.clone(), weak);
         ui.painter().galley(
@@ -716,6 +737,50 @@ impl SidebarView {
     pub fn thumb_width(&self) -> f32 {
         self.thumb_width
     }
+}
+
+/// `number` as text at most `max_width` wide: a label too long is elided,
+/// and the file number beside it stays.
+pub fn number_text(
+    ui: &egui::Ui,
+    number: &PageNumber,
+    font: &egui::FontId,
+    max_width: f32,
+) -> String {
+    let full = number.text();
+    let Some(label) = number.label else {
+        return full;
+    };
+    let width = |text: String| {
+        ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(text, font.clone(), Color32::PLACEHOLDER)
+                .size()
+                .x
+        })
+    };
+    if width(full.clone()) <= max_width {
+        return full;
+    }
+    let with_kept = |kept: usize| {
+        let cut: String = label.chars().take(kept).collect();
+        PageNumber {
+            label: Some(&format!("{}…", cut.trim_end())),
+            file: number.file.clone(),
+        }
+        .text()
+    };
+    // The most of the label that fits; none at all when nothing does.
+    let (mut fits, mut over) = (0, label.chars().count());
+    while over - fits > 1 {
+        let middle = (fits + over) / 2;
+        if width(with_kept(middle)) <= max_width {
+            fits = middle;
+        } else {
+            over = middle;
+        }
+    }
+    with_kept(fits)
 }
 
 /// The thumbnail rectangle a highlight's `area`, in page points, falls on:
