@@ -1,6 +1,7 @@
 //! The links on the pages, as the links thread reads them: asked for once
 //! per page when it shows, kept for the whole document (they are small).
 
+use noido_core::PageNumbers;
 use noido_engine::{Destination, Link, Rect};
 use noido_render::{LinkReply, Linker};
 
@@ -29,6 +30,8 @@ pub struct Links {
     flash: Option<(usize, Rect, f64)>,
     /// The named place whose answer is wanted.
     named: Option<String>,
+    /// The pages' labels, once known; kept until a new version's arrive.
+    pub numbers: PageNumbers,
 }
 
 impl Links {
@@ -39,13 +42,17 @@ impl Links {
             pending: None,
             flash: None,
             named: None,
+            numbers: PageNumbers::default(),
         }
     }
 
     /// Reads links with `linker` from now on, forgetting those known: a
     /// new version of the document has its own.
     pub fn set_linker(&mut self, linker: Linker, page_count: usize) {
+        let numbers = std::mem::take(&mut self.numbers);
         *self = Links::new(page_count);
+        self.numbers = numbers;
+        linker.request_labels();
         self.linker = Some(linker);
     }
 
@@ -106,8 +113,7 @@ impl Links {
                         });
                     }
                 }
-                // Not asked for yet.
-                LinkReply::Labels(_) => {}
+                LinkReply::Labels(labels) => self.numbers = PageNumbers::new(labels),
             }
         }
         answer

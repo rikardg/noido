@@ -9,7 +9,9 @@ use eframe::egui::{
     self, Align, Align2, Color32, Layout, Painter, Rect, Response, RichText, Sense, Stroke,
     TextStyle, TextWrapMode, ViewportCommand, WidgetText, pos2, vec2,
 };
-use noido_core::{Action, Check, Keymap, Platform, SidebarState, menu, shortcut_label};
+use noido_core::{
+    Action, Check, Keymap, PageNumbers, Platform, SidebarState, menu, shortcut_label,
+};
 
 use crate::theme;
 
@@ -90,9 +92,11 @@ pub struct Output {
     pub rects: Rects,
 }
 
-/// "3 / 10 · 106 %" for `page` (from 0) of `count` at `scale`.
-pub fn status_text(page: usize, count: usize, scale: f32) -> String {
-    format!("{} / {count} · {} %", page + 1, (scale * 100.0).round())
+/// "3 / 10 · 106 %" for `page` (from 0) of `count` at `scale`, with the page's
+/// label if it has one: "61 (79 / 300) · 106 %".
+pub fn status_text(numbers: &PageNumbers, page: usize, count: usize, scale: f32) -> String {
+    let position = numbers.title_bar(page, count);
+    format!("{position} · {} %", (scale * 100.0).round())
 }
 
 /// Draws the bar's contents into `ui`, the title bar panel. `focus` puts the

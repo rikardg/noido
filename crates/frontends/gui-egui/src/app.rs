@@ -1105,7 +1105,7 @@ impl NoidoApp {
         let status = match self.view.centre_page() {
             Some(page) => {
                 let count = self.view.layout().page_count();
-                titlebar::status_text(page, count, self.view.scale())
+                titlebar::status_text(&self.links.numbers, page, count, self.view.scale())
             }
             None => String::new(),
         };
@@ -2085,6 +2085,7 @@ impl NoidoApp {
                     hits: &self.search_state.hits,
                     generation: self.search_state.generation(),
                     status: self.search_state.status(self.view.layout().page_count()),
+                    numbers: &self.links.numbers,
                 }),
                 // Within a quarter second: wheel steps and a flick's last
                 // frames come further apart than every frame.
@@ -2094,6 +2095,7 @@ impl NoidoApp {
                 highlights: self.highlights.items(),
                 texts: &mut self.texts,
                 request_text: &|page| self.search_state.request_text(page),
+                numbers: &self.links.numbers,
             };
             let output = self.sidebar_view.show(ui, &mut self.sidebar, &mut input);
             if let Some(page) = output.clicked {
@@ -2839,6 +2841,22 @@ pub(crate) mod tests {
                 }
             }
             self.shapes.iter().find_map(|c| find(&c.shape, text))
+        }
+
+        /// Every piece of text the last frame painted.
+        fn texts(&self) -> Vec<String> {
+            fn collect(shape: &egui::Shape, into: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(t) => into.push(t.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, into)),
+                    _ => {}
+                }
+            }
+            let mut texts = Vec::new();
+            self.shapes
+                .iter()
+                .for_each(|c| collect(&c.shape, &mut texts));
+            texts
         }
 
         /// Clicks the middle of `text`.
@@ -4856,7 +4874,10 @@ pub(crate) mod tests {
 
     #[test]
     fn status_text_counts_from_one() {
-        assert_eq!(crate::titlebar::status_text(2, 10, 1.06), "3 / 10 · 106 %");
+        assert_eq!(
+            crate::titlebar::status_text(&noido_core::PageNumbers::default(), 2, 10, 1.06),
+            "3 / 10 · 106 %"
+        );
     }
 
     /// A point on the title bar with no control under it.
@@ -6260,6 +6281,7 @@ pub(crate) mod tests {
         h.frames(1, vec![]);
         let palette = h.theme().palette(egui::Theme::Dark);
         let status = titlebar::status_text(
+            &h.app.links.numbers,
             h.app.current_page().unwrap_or(0),
             h.app.view.layout().page_count(),
             h.app.view.scale(),
@@ -7566,6 +7588,8 @@ pub(crate) mod tests {
         link_gate: Option<Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>>,
         /// The named places.
         named: Arc<Vec<(String, noido_engine::Destination)>>,
+        /// Each page's label.
+        labels: Arc<Vec<Option<String>>>,
     }
 
     impl TextEngine {
@@ -7583,7 +7607,13 @@ pub(crate) mod tests {
                 links: Arc::new(vec![Vec::new(); pages.len()]),
                 link_gate: None,
                 named: Arc::default(),
+                labels: Arc::default(),
             }
+        }
+
+        fn with_labels(mut self, labels: &[Option<&str>]) -> TextEngine {
+            self.labels = Arc::new(labels.iter().map(|l| l.map(str::to_owned)).collect());
+            self
         }
 
         fn with_named(mut self, name: &str, page: usize) -> TextEngine {
@@ -7710,6 +7740,15 @@ pub(crate) mod tests {
                 }
             }
             self.named.iter().find(|(n, _)| n == name).map(|(_, t)| *t)
+        }
+        fn page_labels(&self) -> Vec<Option<String>> {
+            if let Some(gate) = &self.link_gate {
+                let mut open = gate.0.lock().unwrap();
+                while !*open {
+                    open = gate.1.wait(open).unwrap();
+                }
+            }
+            self.labels.to_vec()
         }
     }
 
@@ -8890,6 +8929,115 @@ pub(crate) mod tests {
         h.frames(1, vec![event(true)]);
         h.frames(1, vec![event(false)]);
         h.frames(1, vec![]);
+    }
+
+    /// Four pages, labelled i, ii, none and 4.
+    fn labelled() -> TextEngine {
+        TextEngine::new(&[&["one"], &["two"], &["three"], &["four"]]).with_labels(&[
+            Some("i"),
+            Some("ii"),
+            None,
+            Some("4"),
+        ])
+    }
+
+    fn numbers_known(h: &Harness) -> bool {
+        h.app.links.numbers != noido_core::PageNumbers::default()
+    }
+
+    fn shows_status(h: &Harness, start: &str) -> bool {
+        h.texts().iter().any(|t| t.starts_with(start))
+    }
+
+    #[test]
+    fn title_bar_shows_the_printed_number() {
+        let mut h = linking(&labelled());
+        h.until(numbers_known);
+        h.frames(1, vec![]);
+        assert!(shows_status(&h, "i (1 / 4) · "), "{:?}", h.texts());
+    }
+
+    #[test]
+    fn title_bar_shows_file_numbers_before_the_reply() {
+        let engine = labelled().gated_links();
+        let mut h = linking(&engine);
+        h.frames(3, vec![]);
+        assert!(shows_status(&h, "1 / 4 · "), "{:?}", h.texts());
+        engine.open_link_gate();
+    }
+
+    #[test]
+    fn thumbnail_label_shows_both_numbers() {
+        let mut h = linking(&labelled());
+        h.app.sidebar.open = true;
+        h.until(numbers_known);
+        h.frames(2, vec![]);
+        assert!(h.text_color("i (1)").is_some(), "{:?}", h.texts());
+    }
+
+    #[test]
+    fn search_card_shows_both_numbers() {
+        let engine = TextEngine::cats().with_labels(&[None, None, Some("iii")]);
+        let (linker, searcher) = (engine.clone(), engine.clone());
+        let mut h = Harness::build_with(Arc::new(engine), move |app| {
+            app.with_linker(noido_render::Linker::start(
+                Arc::new(linker),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+            .with_searcher(TextSearcher::start(
+                Arc::new(searcher),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+        });
+        h.until(numbers_known);
+        search_for(&mut h, "cat");
+        h.frames(2, vec![]);
+        assert!(h.text_color("Page iii (3)").is_some(), "{:?}", h.texts());
+    }
+
+    #[test]
+    fn no_labels_look_as_before() {
+        let engine = TextEngine::new(&[&["one"], &["two"]]);
+        let mut h = linking(&engine);
+        h.app.sidebar.open = true;
+        h.frames(5, vec![]);
+        assert!(shows_status(&h, "1 / 2 · "), "{:?}", h.texts());
+        assert!(h.text_color("1").is_some(), "{:?}", h.texts());
+    }
+
+    #[test]
+    fn reload_keeps_labels_until_the_reply() {
+        let mut h = linking(&labelled());
+        h.until(numbers_known);
+        let new = TextEngine::new(&[&["one"]])
+            .with_labels(&[Some("x")])
+            .gated_links();
+        h.reload(Arc::new(new.clone()), recompiled_key());
+        h.frames(2, vec![]);
+        assert!(shows_status(&h, "i (1 / 1) · "), "{:?}", h.texts());
+        new.open_link_gate();
+        h.until(|h| shows_status(h, "x (1 / 1) · "));
+        assert!(shows_status(&h, "x (1 / 1) · "), "{:?}", h.texts());
+    }
+
+    #[test]
+    fn long_label_keeps_the_file_number_at_narrow_width() {
+        let label = "A label far too long to fit under any thumbnail at all";
+        let engine = TextEngine::new(&[&["one"]]).with_labels(&[Some(label)]);
+        let mut h = linking(&engine);
+        h.app.sidebar.open = true;
+        h.app.sidebar.width = noido_core::SIDEBAR_MIN_WIDTH;
+        h.until(numbers_known);
+        h.frames(2, vec![]);
+        let shown = h
+            .texts()
+            .into_iter()
+            .find(|t| t.ends_with("… (1)"))
+            .unwrap_or_else(|| panic!("no elided number: {:?}", h.texts()));
+        assert!(shown.starts_with("A label"), "{shown}");
+        assert!(shown.len() < label.len(), "{shown}");
     }
 
     #[test]
