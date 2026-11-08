@@ -40,7 +40,14 @@ jobs:
         steps:
             - uses: actions/checkout@v7
             # setup-rust-toolchain caches via Swatinem/rust-cache by default.
+            # Only main saves, so branch copies don't push out main's entries:
+            # other branches restore from it, and the cache holds only the
+            # dependencies. A failed run saves nothing, as an incomplete cache
+            # would stay until the key changes.
             - uses: actions-rust-lang/setup-rust-toolchain@v1
+              with:
+                  cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+                  cache-on-failure: false
             - uses: taiki-e/install-action@v2
               with:
                   tool: just
