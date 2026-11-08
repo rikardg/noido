@@ -31,11 +31,12 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                # Both are pinned by name: 22.04 is the image the snapshot
+                # All are pinned by name: 22.04 is the image the snapshot
                 # releases are built on, so what is checked here is what
                 # ships, and its glibc is the oldest the binary can need.
-                # macos-26 is pinned so the leg stays Apple Silicon.
-                os: [ubuntu-22.04, macos-26]
+                # macos-26 is pinned so the leg stays Apple Silicon, and
+                # macos-26-intel is the Intel image of the same OS.
+                os: [ubuntu-22.04, macos-26, macos-26-intel]
         steps:
             - uses: actions/checkout@v7
             # setup-rust-toolchain caches via Swatinem/rust-cache by default.
