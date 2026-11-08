@@ -106,6 +106,8 @@ impl Links {
                         });
                     }
                 }
+                // Not asked for yet.
+                LinkReply::Labels(_) => {}
             }
         }
         answer

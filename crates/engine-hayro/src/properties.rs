@@ -8,6 +8,8 @@ use hayro::hayro_syntax::page::Resources;
 use hayro::hayro_syntax::{Pdf, PdfVersion};
 use noido_engine::{Date, Font, Properties};
 
+use crate::pdf_string::decode_text;
+
 const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 const DC: &str = "http://purl.org/dc/elements/1.1/";
 const XMP: &str = "http://ns.adobe.com/xap/1.0/";
@@ -82,37 +84,6 @@ fn info_date(d: DateTime) -> Date {
         minute: d.minute,
         second: d.second,
         utc_offset: (offset != 0).then_some(offset),
-    }
-}
-
-/// A PDF text string: UTF-16BE or UTF-8 with a byte-order mark, else
-/// PDFDocEncoding.
-fn decode_text(bytes: &[u8]) -> String {
-    let text = if let Some(utf16) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        let units: Vec<u16> = utf16
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&pair| u16::from_be_bytes(pair))
-            .collect();
-        String::from_utf16_lossy(&units)
-    } else if let Some(utf8) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
-        String::from_utf8_lossy(utf8).into_owned()
-    } else {
-        bytes.iter().map(|&b| pdf_doc_char(b)).collect()
-    };
-    text.trim().to_owned()
-}
-
-/// PDFDocEncoding: Latin-1 but for 0x80–0xA0.
-fn pdf_doc_char(byte: u8) -> char {
-    const HIGH: [char; 33] = [
-        '•', '†', '‡', '…', '—', '–', 'ƒ', '⁄', '‹', '›', '−', '‰', '„', '“', '”', '‘', '’', '‚',
-        '™', 'ﬁ', 'ﬂ', 'Ł', 'Œ', 'Š', 'Ÿ', 'Ž', 'ı', 'ł', 'œ', 'š', 'ž', '\u{FFFD}', '€',
-    ];
-    match byte {
-        0x80..=0xA0 => HIGH[usize::from(byte - 0x80)],
-        _ => char::from(byte),
     }
 }
 

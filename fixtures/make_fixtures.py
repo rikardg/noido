@@ -73,6 +73,13 @@ shared-names.pdf:
   page 0: 612x792 pt with one link, GoTo (nowhere); the /Names /Dests tree
           is 40 nodes without /Limits, each with the next twice as /Kids:
           2^39 paths through 40 objects
+
+page-labels.pdf: 12 blank pages; /PageLabels is a number tree with /Kids:
+  first kid: 1 lower roman, 3 prefix "A " (its space kept) decimal from 5, 5 prefix "Cover"
+             alone, 7 an empty range
+  second kid: 8 upper roman from 4, 9 lower letters from 27, 10 upper letters
+              with /St 0, 11 decimal; and /Kids back to the root, a cycle
+  page 0 comes before the first range
 """
 
 from pathlib import Path
@@ -290,8 +297,28 @@ def shared_names() -> bytes:
     )
 
 
+def page_labels() -> bytes:
+    pages = range(12)
+    kids = b" ".join(b"%d 0 R" % (3 + page) for page in pages)
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R /PageLabels 15 0 R >>",
+            b"<< /Type /Pages /Kids [%s] /Count 12 >>" % kids,
+        ]
+        + [b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>" for _ in pages]
+        + [
+            b"<< /Kids [16 0 R 17 0 R] >>",
+            b"<< /Limits [1 7] /Nums [1 << /S /r >> 3 << /P (A ) /S /D /St 5 >>"
+            b" 5 << /P (Cover) >> 7 << >>] >>",
+            b"<< /Limits [8 11] /Nums [8 << /S /R /St 4 >> 9 << /S /a /St 27 >>"
+            b" 10 << /S /A /St 0 >> 11 << /S /D >>] /Kids [15 0 R] >>",
+        ]
+    )
+
+
 if __name__ == "__main__":
     here = Path(__file__).resolve().parent
+    (here / "page-labels.pdf").write_bytes(page_labels())
     (here / "two-pages.pdf").write_bytes(two_pages())
     (here / "text.pdf").write_bytes(text())
     (here / "links.pdf").write_bytes(links())

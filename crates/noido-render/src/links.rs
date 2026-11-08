@@ -27,12 +27,15 @@ pub enum LinkReply {
         name: String,
         target: Option<Destination>,
     },
+    /// Each page's label; empty if there are none or they couldn't be read.
+    Labels(Vec<Option<String>>),
 }
 
 enum Command {
     Links(usize),
     Flash(Destination),
     Named(String),
+    Labels,
 }
 
 /// Handle to the links thread. Dropping it stops the thread.
@@ -78,6 +81,11 @@ impl Linker {
         let _ = self.commands.send(Command::Named(name));
     }
 
+    /// Asks for the pages' labels.
+    pub fn request_labels(&self) {
+        let _ = self.commands.send(Command::Labels);
+    }
+
     pub fn try_recv(&self) -> Option<LinkReply> {
         self.replies.try_recv().ok()
     }
@@ -106,6 +114,9 @@ fn run(
                 target: crate::caught_none(|| document.named_destination(&name)),
                 name,
             },
+            Command::Labels => LinkReply::Labels(
+                crate::caught_none(|| Some(document.page_labels())).unwrap_or_default(),
+            ),
         };
         if replies.send(reply).is_err() {
             return;
