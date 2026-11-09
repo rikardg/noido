@@ -71,6 +71,8 @@ const PAGELET_HEIGHT_SHARE: f32 = 0.6;
 const PAGELET_MIN: Vec2 = vec2(160.0, 200.0);
 /// Side of the pagelet's close chip, in points.
 const PAGELET_CLOSE: f32 = 20.0;
+/// How long the pagelet takes to fade to half, in seconds.
+const PAGELET_FADE: f32 = 0.12;
 
 /// The pagelet: a pinned page floating over the pages.
 struct PinPreview {
@@ -2186,6 +2188,24 @@ impl NoidoApp {
         let rect = preview.rect;
         let paper = self.paper_tint(ctx);
         let now = ctx.input(|i| i.time);
+        // Half-opaque while the pointer is away, so the page behind shows
+        // through; opaque under the pointer.
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
+        let target = if pointer.is_some_and(|at| rect.contains(at)) {
+            1.0
+        } else {
+            0.5
+        };
+        let reduce = crate::theme::Theme::current(ctx).reduce_motion();
+        let dt = ctx.input(|i| i.stable_dt).min(0.1);
+        let opacity = if reduce {
+            target
+        } else {
+            ease_towards(preview.opacity, target, dt / PAGELET_FADE)
+        };
+        if (opacity - target).abs() > 0.001 {
+            ctx.request_repaint();
+        }
         let sharp = self.textures.get(&page);
         let stand_in = self.thumbnail(page);
         let fade = self.fades.alpha(page, now);
@@ -2231,7 +2251,7 @@ impl NoidoApp {
                     sharp,
                     stand_in,
                     fade,
-                    paper.gamma_multiply(preview.opacity),
+                    paper.gamma_multiply(opacity),
                 );
                 let chip = Rect::from_min_size(
                     pos2(inner.max.x - PAGELET_CLOSE, inner.min.y),
@@ -2243,7 +2263,7 @@ impl NoidoApp {
                 if response.hovered() {
                     ui.set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                paint_close(ui, chip, response.hovered());
+                paint_close(ui, chip, response.hovered(), opacity);
             });
         let drawn = window.map_or(rect, |shown| shown.response.rect);
         if close {
@@ -2254,6 +2274,7 @@ impl NoidoApp {
             }
             preview.rect = drawn;
             preview.page_rect = fitted;
+            preview.opacity = opacity;
         }
     }
 
@@ -2279,17 +2300,27 @@ fn clamp_into(rect: Rect, area: Rect) -> Rect {
     Rect::from_min_size(min, vec2(width, height))
 }
 
+/// `from` moved `step` towards `to`, not past it.
+fn ease_towards(from: f32, to: f32, step: f32) -> f32 {
+    if (to - from).abs() <= step {
+        to
+    } else {
+        from + step * (to - from).signum()
+    }
+}
+
 /// The pagelet's close chip: a cross on a chip, as a pin's chip is drawn.
-fn paint_close(ui: &egui::Ui, rect: Rect, hovered: bool) {
+fn paint_close(ui: &egui::Ui, rect: Rect, hovered: bool, opacity: f32) {
     let visuals = ui.visuals();
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     let fill = visuals
         .panel_fill
-        .gamma_multiply(if hovered { 0.95 } else { 0.85 });
+        .gamma_multiply(if hovered { 0.95 } else { 0.85 })
+        .gamma_multiply(opacity);
     painter.rect_filled(rect, PAGELET_CLOSE / 4.0, fill);
     let centre = rect.center();
     let arm = 4.0;
-    let stroke = Stroke::new(1.5, visuals.weak_text_color());
+    let stroke = Stroke::new(1.5, visuals.weak_text_color().gamma_multiply(opacity));
     painter.line_segment([centre + vec2(-arm, -arm), centre + vec2(arm, arm)], stroke);
     painter.line_segment([centre + vec2(-arm, arm), centre + vec2(arm, -arm)], stroke);
 }
@@ -7872,6 +7903,53 @@ pub(crate) mod tests {
         let display = h.app.view.scale() * h.ctx.pixels_per_point();
         let wanted = panel.max(display);
         assert!((last - wanted).abs() < 0.1 * wanted, "{last} vs {wanted}");
+    }
+
+    /// The alpha of the image mesh drawn over `rect` in the last frame.
+    fn image_alpha(h: &Harness, rect: Rect) -> Option<u8> {
+        fn find(shape: &egui::Shape, rect: Rect) -> Option<u8> {
+            match shape {
+                egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                    let points: Vec<egui::Pos2> =
+                        mesh.vertices.iter().map(|vertex| vertex.pos).collect();
+                    let drawn = egui::Rect::from_points(&points);
+                    let same = (drawn.min - rect.min).length() < 1.5
+                        && (drawn.max - rect.max).length() < 1.5;
+                    same.then(|| mesh.vertices[0].color.a())
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| find(s, rect)),
+                _ => None,
+            }
+        }
+        h.shapes.iter().find_map(|c| find(&c.shape, rect))
+    }
+
+    #[test]
+    fn the_pagelet_fades_to_half_off_the_pointer() {
+        let mut h = pinned_on(&[0]);
+        h.click(thumb_rect(&h, 0).center());
+        wait_for_pagelet(&mut h, 0);
+        h.until(|h| h.app.textures.contains_key(&0));
+        let page = h.app.pagelet_page_rect().unwrap();
+        // The pointer rests on the card it clicked, not on the pagelet.
+        h.frames(20, vec![]);
+        assert_eq!(image_alpha(&h, page), Some(128), "off the pointer");
+        // On the panel: opaque.
+        let at = h.app.pin_preview.as_ref().unwrap().rect.center();
+        h.frames(1, vec![Event::PointerMoved(at)]);
+        h.frames(20, vec![]);
+        assert_eq!(image_alpha(&h, page), Some(255), "on the pointer");
+    }
+
+    #[test]
+    fn reduced_motion_swaps_the_fade_at_once() {
+        let mut h = pinned_on(&[0]).reduced_motion();
+        h.click(thumb_rect(&h, 0).center());
+        wait_for_pagelet(&mut h, 0);
+        h.until(|h| h.app.textures.contains_key(&0));
+        h.frames(20, vec![]);
+        let page = h.app.pagelet_page_rect().unwrap();
+        assert_eq!(image_alpha(&h, page), Some(128));
     }
 
     #[test]
