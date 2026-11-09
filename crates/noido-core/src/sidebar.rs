@@ -19,6 +19,7 @@ pub fn max_width(window_width: f32) -> f32 {
 pub enum SidebarTab {
     #[default]
     Thumbnails,
+    Pins,
     Outline,
     Results,
 }
@@ -170,5 +171,16 @@ mod tests {
         state.search_started();
         let clamped = state.clamped(900.0);
         assert_eq!((clamped.tab, clamped.last), (state.tab, state.last));
+    }
+
+    #[test]
+    fn pins_is_a_tab_that_search_returns_to() {
+        let mut state = on(SidebarTab::Pins);
+        assert_eq!(state.last, SidebarTab::Pins);
+        state.search_started();
+        state.search_cleared();
+        assert_eq!(state.tab, SidebarTab::Pins);
+        state.choose(SidebarTab::Results);
+        assert_eq!(state.last, SidebarTab::Pins);
     }
 }

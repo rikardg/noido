@@ -360,6 +360,9 @@ impl SidebarView {
                             self.left();
                             self.outline(ui, input)
                         }
+                        // Until the Pins tab is built (its own task), a
+                        // restored state that names it shows nothing.
+                        SidebarTab::Pins => Output::default(),
                     }
                 })
             });
