@@ -2159,6 +2159,7 @@ impl NoidoApp {
                 numbers: &self.links.numbers,
                 outline: self.links.outline.as_mut(),
                 current_entry,
+                pins: &self.pins,
             };
             let output = self.sidebar_view.show(ui, &mut self.sidebar, &mut input);
             if let Some(page) = output.clicked {
@@ -2182,6 +2183,9 @@ impl NoidoApp {
             }
             if output.browsing.is_some() {
                 self.browse = output.browsing;
+            }
+            if let Some(page) = output.toggle_pin {
+                self.pins.toggle(page);
             }
             if let Some(index) = output.hit {
                 self.go_to_hit(index);
@@ -7211,6 +7215,115 @@ pub(crate) mod tests {
             .unwrap_or_else(|| panic!("page {page} not in view: {:?}", drawn_pages(h)));
         h.click(rect.center());
         h.frames(2, vec![]);
+    }
+
+    /// Page `page`'s thumbnail rect, which must be in view.
+    fn thumb_rect(h: &Harness, page: usize) -> Rect {
+        h.app
+            .sidebar_view
+            .drawn()
+            .iter()
+            .find(|(p, _)| *p == page)
+            .map(|(_, rect)| *rect)
+            .unwrap_or_else(|| panic!("page {page} not drawn: {:?}", drawn_pages(h)))
+    }
+
+    /// Page `page`'s pin chip rect, which must be in view.
+    fn pin_rect(h: &Harness, page: usize) -> Rect {
+        h.app
+            .sidebar_view
+            .pin_icons()
+            .iter()
+            .find(|(p, _, _)| *p == page)
+            .map(|(_, rect, _)| *rect)
+            .unwrap_or_else(|| panic!("page {page}'s pin not drawn"))
+    }
+
+    #[test]
+    fn every_visible_thumbnail_has_a_pin_in_its_corner() {
+        let h = sidebar_on(Arc::new(BlankEngine));
+        let drawn = drawn_pages(&h);
+        assert!(!drawn.is_empty());
+        for page in drawn {
+            let (thumb, pin) = (thumb_rect(&h, page), pin_rect(&h, page));
+            assert!(thumb.contains_rect(pin), "{page}: {pin:?} in {thumb:?}");
+            assert!(
+                pin.center().x > thumb.center().x,
+                "{page}: not at the right"
+            );
+            assert!(pin.center().y < thumb.center().y, "{page}: not at the top");
+        }
+    }
+
+    #[test]
+    fn clicking_a_pin_pins_without_navigating() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        h.click(pin_rect(&h, 2).center());
+        h.frames(2, vec![]);
+        assert!(h.app.pins.contains(2));
+        assert_eq!(h.app.chosen, None, "it navigated");
+        assert_eq!(h.app.current_page(), Some(0));
+        // Again unpins.
+        h.click(pin_rect(&h, 2).center());
+        h.frames(2, vec![]);
+        assert!(!h.app.pins.contains(2));
+    }
+
+    #[test]
+    fn a_pinned_pins_ink_is_the_accent() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        let ink = |h: &Harness, page: usize| {
+            h.app
+                .sidebar_view
+                .pin_inks()
+                .iter()
+                .find(|(p, _)| *p == page)
+                .map(|(_, colour)| *colour)
+                .unwrap_or_else(|| panic!("page {page}'s ink not recorded"))
+        };
+        let accent = h.ctx.global_style().visuals.selection.stroke.color;
+        h.click(pin_rect(&h, 2).center());
+        h.frames(2, vec![]);
+        assert_eq!(ink(&h, 2), accent, "a pinned page's pin");
+        assert_ne!(ink(&h, 1), accent, "an unpinned page's pin");
+    }
+
+    #[test]
+    fn a_card_click_pins_nothing() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        // The middle of the card, clear of the pin.
+        h.click(thumb_rect(&h, 2).center());
+        h.frames(2, vec![]);
+        assert!(h.app.pins.pages().is_empty(), "the card click pinned");
+        assert_eq!(h.app.current_page(), Some(2));
+    }
+
+    #[test]
+    fn pins_survive_a_saved_state() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let restored = DocState {
+            view: ViewState {
+                zoom: noido_core::ZoomMode::FitWidth,
+                scale: 1.0,
+                continuous: true,
+                dual: false,
+                odd_left: true,
+                gapless: false,
+                centre: noido_core::DocPoint {
+                    page: 6,
+                    x: 306.0,
+                    y: 400.0,
+                },
+            },
+            sidebar: SidebarState::default(),
+            history: History::default(),
+            highlights: Vec::new(),
+            pins: Pins::from_sorted([2, 7]),
+        };
+        let h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
+        });
+        assert_eq!(h.app.pins.pages(), [2, 7]);
     }
 
     /// Zooms out until pages are much shorter than the window.
