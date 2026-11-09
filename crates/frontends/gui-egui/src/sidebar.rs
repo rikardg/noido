@@ -132,6 +132,8 @@ pub struct Output {
     pub outline_entry: Option<usize>,
     /// A thumbnail's pin was clicked: the page to pin or unpin.
     pub toggle_pin: Option<usize>,
+    /// A pin card was clicked: its page.
+    pub pin_clicked: Option<usize>,
 }
 
 /// A visible outline row, for the tests.
@@ -1053,9 +1055,10 @@ impl SidebarView {
         });
         self.pins_id = Some(shown.id);
         self.pins_offset = shown.state.clamped_offset().y;
-        // A click on a pin card previews from the pagelet's task on;
-        // until then it does nothing.
-        Output::default()
+        Output {
+            pin_clicked: shown.inner.clicked,
+            ..Output::default()
+        }
     }
 
     /// The list of matches, kept on the current one; returns the match
