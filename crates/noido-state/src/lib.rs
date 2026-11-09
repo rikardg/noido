@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
 use noido_core::{
-    Caret, DocPoint, Highlight, HighlightColour, Highlights, History, SIDEBAR_DEFAULT_WIDTH,
+    Caret, DocPoint, Highlight, HighlightColour, Highlights, History, Pins, SIDEBAR_DEFAULT_WIDTH,
     SidebarState, SidebarTab, ViewState, ZoomMode,
 };
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,7 @@ pub struct DocState {
     pub sidebar: SidebarState,
     pub history: History,
     pub highlights: Vec<Highlight>,
+    pub pins: Pins,
 }
 
 /// `noido` under the `XDG_STATE_HOME` value if it is an absolute path;
@@ -414,7 +415,8 @@ struct Entry {
     sidebar_open: bool,
     #[serde(default = "default_sidebar_width")]
     sidebar_width: f32,
-    /// "outline" or "thumbnails"; absent or unknown means thumbnails.
+    /// "outline", "pins" or "thumbnails"; absent or unknown means
+    /// thumbnails.
     #[serde(default)]
     sidebar_tab: String,
     /// The name of the document's window file; absent from files written
@@ -430,6 +432,9 @@ struct Entry {
     // Absent from files written before highlights existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     highlights: Vec<StoredHighlight>,
+    // Absent from files written before pins existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pins: Vec<usize>,
 }
 
 /// The TOML form of the document's own [`ViewState`].
@@ -545,6 +550,7 @@ impl Entry {
             sidebar_width: doc.sidebar.width,
             sidebar_tab: match doc.sidebar.last {
                 SidebarTab::Outline => "outline",
+                SidebarTab::Pins => "pins",
                 _ => "thumbnails",
             }
             .to_owned(),
@@ -552,6 +558,7 @@ impl Entry {
             back: places(doc.history.back_entries()),
             forward: places(doc.history.forward_entries()),
             highlights: doc.highlights.iter().map(StoredHighlight::new).collect(),
+            pins: doc.pins.pages().to_vec(),
         }
     }
 
@@ -559,6 +566,7 @@ impl Entry {
         let states = |points: &[Point]| points.iter().map(Point::state).collect();
         let tab = match self.sidebar_tab.as_str() {
             "outline" => SidebarTab::Outline,
+            "pins" => SidebarTab::Pins,
             _ => SidebarTab::Thumbnails,
         };
         DocState {
@@ -580,6 +588,7 @@ impl Entry {
             )
             .items()
             .to_vec(),
+            pins: Pins::from_sorted(self.pins.iter().copied()),
         }
     }
 }

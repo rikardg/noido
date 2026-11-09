@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use noido_core::{
-    Caret, DocPoint, Highlight, HighlightColour, History, SidebarState, SidebarTab, ViewState,
-    ZoomMode,
+    Caret, DocPoint, Highlight, HighlightColour, History, Pins, SidebarState, SidebarTab,
+    ViewState, ZoomMode,
 };
 use noido_state::{DocKey, DocState, Frame, Slot, Store};
 use tempfile::TempDir;
@@ -27,6 +27,7 @@ fn state(page: usize) -> DocState {
         sidebar: SidebarState::default(),
         history: History::default(),
         highlights: Vec::new(),
+        pins: Pins::default(),
     }
 }
 
@@ -292,6 +293,60 @@ fn old_files_and_unknown_tabs_give_thumbnails() {
         assert_eq!(sidebar.tab, SidebarTab::Thumbnails, "{extra:?}");
         assert_eq!(sidebar.last, SidebarTab::Thumbnails, "{extra:?}");
     }
+}
+
+#[test]
+fn pins_round_trip_and_stay_sorted() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        pins: Pins::from_sorted([9, 2, 5]),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    assert_eq!(loaded(&store, &key).unwrap().pins.pages(), [2, 5, 9]);
+}
+
+#[test]
+fn no_pins_write_no_key() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(3)).unwrap();
+    let text = fs::read_to_string(docs(&dir).join(format!("{}.toml", key.hex()))).unwrap();
+    assert!(!text.contains("pins"), "{text}");
+}
+
+#[test]
+fn duplicate_pins_are_dropped_on_load() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let state = state(3);
+    store.save(&slot(&store, &key), &state).unwrap();
+    let file = docs(&dir).join(format!("{}.toml", key.hex()));
+    fs::write(
+        &file,
+        format!("{}\npins = [7, 2, 7]\n", fs::read_to_string(&file).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(loaded(&store, &key).unwrap().pins.pages(), [2, 7]);
+}
+
+#[test]
+fn the_pins_tab_is_saved_and_restored() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let mut state = state(3);
+    state.sidebar.choose(SidebarTab::Pins);
+    store.save(&slot(&store, &key), &state).unwrap();
+    let sidebar = loaded(&store, &key).unwrap().sidebar;
+    assert_eq!(
+        (sidebar.tab, sidebar.last),
+        (SidebarTab::Pins, SidebarTab::Pins)
+    );
 }
 
 #[test]
