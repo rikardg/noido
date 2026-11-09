@@ -1520,6 +1520,21 @@ impl NoidoApp {
                 }
             }
         }
+        // The pagelet's page is kept sharp even when it is far from the
+        // reader, at the scale the panel draws it.
+        let preview = self.pin_preview.as_ref().map(|preview| {
+            let size = layout.page_size(preview.page).expect("page in range");
+            (
+                preview.page,
+                preview.page_rect.width() / size.width * ui.ctx().pixels_per_point(),
+            )
+        });
+        if let Some((page, _)) = preview
+            && !visible.contains(&page)
+            && !ahead.contains(&page)
+        {
+            ahead.push(page);
+        }
         let mut extra: Vec<usize> = ahead
             .iter()
             .copied()
@@ -1536,11 +1551,21 @@ impl NoidoApp {
             }
         }
 
-        // Visible pages first, then the neighbouring hits' (stepping to one
-        // is likely while searching), then the window around the current
-        // spread, nearest first and mostly ahead.
+        // Visible pages first, then the pagelet's page, then the
+        // neighbouring hits' (stepping to one is likely while searching),
+        // then the window around the current spread, nearest first and
+        // mostly ahead.
         let mut order: Vec<usize> = visible.clone().collect();
-        order.extend(&ahead);
+        if let Some((page, _)) = preview
+            && !visible.contains(&page)
+        {
+            order.push(page);
+        }
+        for page in &ahead {
+            if !order.contains(page) {
+                order.push(*page);
+            }
+        }
         for spread in window_order(spread_count, focus, self.direction, PREFETCH_BUDGET) {
             order.extend(
                 layout
@@ -1559,9 +1584,21 @@ impl NoidoApp {
         let display_scale = self.view.scale() * ui.ctx().pixels_per_point();
         if display_scale > 0.0 {
             for page in order {
+                // A page both on screen and in the pagelet is rendered once,
+                // at whichever scale needs more pixels.
+                let scale = match preview {
+                    Some((previewed, panel_scale)) if previewed == page => {
+                        panel_scale.max(if visible.contains(&page) {
+                            display_scale
+                        } else {
+                            0.0
+                        })
+                    }
+                    _ => display_scale,
+                };
                 let wanted = self.tracker.wanted(page..page + 1, |page| {
                     let size = layout.page_size(page).expect("page in range");
-                    render_scale(size, display_scale, MAX_RENDER_SIDE)
+                    render_scale(size, scale, MAX_RENDER_SIDE)
                 });
                 for (page, scale) in wanted {
                     self.renderer.request(RenderRequest { page, scale });
@@ -7741,6 +7778,100 @@ pub(crate) mod tests {
         });
         assert!(h.app.sidebar_view.sharp_pages().contains(&0));
         assert!(faded.get(), "the pinned page popped in without a fade");
+    }
+
+    #[test]
+    fn the_pagelet_asks_for_its_page_at_the_panels_scale() {
+        let engine = RecordingEngine::default();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.app.pins = Pins::from_sorted([5]);
+        click_tab(&mut h, SidebarTab::Pins);
+        h.click(thumb_rect(&h, 5).center());
+        wait_for_pagelet(&mut h, 5);
+        let ppp = h.ctx.pixels_per_point();
+        // The panel's page rect settles after its first frame; wait for a
+        // render at the scale the settled rect calls for.
+        h.until(|h| {
+            let Some(rect) = h.app.pagelet_page_rect() else {
+                return false;
+            };
+            let page = h.app.view.layout().page_size(5).unwrap();
+            let wanted = rect.width() / page.width * h.ctx.pixels_per_point();
+            engine
+                .recorded()
+                .iter()
+                .any(|(page, scale)| *page == 5 && (*scale - wanted).abs() < 0.05 * wanted)
+        });
+        let page = h.app.view.layout().page_size(5).unwrap();
+        let rect = h.app.pagelet_page_rect().unwrap();
+        let wanted = rect.width() / page.width * ppp;
+        let recorded = engine.recorded();
+        let scales: Vec<f32> = recorded
+            .iter()
+            .filter(|(p, _)| *p == 5)
+            .map(|(_, s)| *s)
+            .collect();
+        assert!(!scales.is_empty(), "page 5 never rendered");
+        assert!(
+            scales.iter().any(|s| (s - wanted).abs() < 0.05 * wanted),
+            "{scales:?} vs {wanted}"
+        );
+    }
+
+    #[test]
+    fn the_pagelet_keeps_its_page_far_from_the_view() {
+        let engine = RecordingEngine::default();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.app.pins = Pins::from_sorted([9]);
+        click_tab(&mut h, SidebarTab::Pins);
+        h.click(thumb_rect(&h, 9).center());
+        wait_for_pagelet(&mut h, 9);
+        h.until(|h| h.app.textures.contains_key(&9));
+        // The main view stays on page 0: the pagelet's page stays sharp.
+        h.frames(10, vec![]);
+        assert!(
+            h.app.textures.contains_key(&9),
+            "the pagelet's page was dropped"
+        );
+        // Closed, it is let go like any page off the keep.
+        let rect = h.app.pin_preview.as_ref().unwrap().rect;
+        let chip = egui::pos2(
+            rect.max.x - PAGELET_PADDING - PAGELET_CLOSE / 2.0,
+            rect.min.y + PAGELET_PADDING + PAGELET_CLOSE / 2.0,
+        );
+        h.click(chip);
+        h.frames(5, vec![]);
+        h.until(|h| !h.app.textures.contains_key(&9));
+        assert!(!h.app.textures.contains_key(&9));
+    }
+
+    #[test]
+    fn a_page_both_visible_and_previewed_settles_on_one_scale() {
+        let engine = RecordingEngine::default();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.app.pins = Pins::from_sorted([0]);
+        click_tab(&mut h, SidebarTab::Pins);
+        h.click(thumb_rect(&h, 0).center());
+        wait_for_pagelet(&mut h, 0);
+        zoomed_out(&mut h);
+        h.frames(30, vec![]);
+        // Settled: no further renders of it.
+        let settled = engine.recorded().len();
+        h.frames(30, vec![]);
+        assert_eq!(engine.recorded().len(), settled, "still re-rendering");
+        let last = engine
+            .recorded()
+            .into_iter()
+            .rev()
+            .find_map(|(page, scale)| (page == 0).then_some(scale))
+            .expect("page 0 rendered");
+        let panel = h.app.pagelet_page_rect().unwrap().width() / 612.0 * h.ctx.pixels_per_point();
+        let display = h.app.view.scale() * h.ctx.pixels_per_point();
+        let wanted = panel.max(display);
+        assert!((last - wanted).abs() < 0.1 * wanted, "{last} vs {wanted}");
     }
 
     #[test]
