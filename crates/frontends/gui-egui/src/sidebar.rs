@@ -11,7 +11,7 @@ use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
     Column, Eased, Highlight, Hits, Layout, MAX_RENDER_SIDE, OutlineRow, OutlineTree, Pace,
-    PageNumber, PageNumbers, PageTextState, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState,
+    PageNumber, PageNumbers, PageTextState, Pins, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState,
     SidebarTab, max_width, render_scale, reveal_row,
 };
 use noido_engine::LinkTarget;
@@ -65,6 +65,14 @@ const OUTLINE_MAX_INDENT: f32 = 0.25;
 const OUTLINE_NUMBER_SHARE: f32 = 1.0 / 3.0;
 /// Space between an outline row's title and its page number.
 const OUTLINE_GAP: f32 = 6.0;
+/// Side of a thumbnail's pin chip, in points.
+const PIN_SIZE: f32 = 18.0;
+/// Space between a pin chip and its thumbnail's corner, in points.
+const PIN_INSET: f32 = 4.0;
+/// A pin chip's corner radius.
+const PIN_ROUNDING: f32 = 4.0;
+/// The pin glyph's head radius.
+const PIN_GLYPH: f32 = 4.0;
 /// What the sidebar needs from the app each frame.
 pub struct Input<'a> {
     pub layout: &'a Layout,
@@ -93,6 +101,8 @@ pub struct Input<'a> {
     pub outline: Option<&'a mut OutlineTree>,
     /// The outline entry the reader is in.
     pub current_entry: Option<usize>,
+    /// The pages the reader pinned.
+    pub pins: &'a Pins,
 }
 
 /// The matches of a search, for the sidebar.
@@ -117,6 +127,8 @@ pub struct Output {
     pub hit: Option<usize>,
     /// An outline entry with a target was clicked: its index.
     pub outline_entry: Option<usize>,
+    /// A thumbnail's pin was clicked: the page to pin or unpin.
+    pub toggle_pin: Option<usize>,
 }
 
 /// A visible outline row, for the tests.
@@ -185,6 +197,13 @@ pub struct SidebarView {
     outline_id: Option<egui::Id>,
     /// Whether the outline was drawn last frame.
     outline_shown: bool,
+    /// Each visible thumbnail's pin last frame: its page, chip and whether
+    /// it was pinned.
+    #[cfg(test)]
+    pin_icons: Vec<(usize, Rect, bool)>,
+    /// Each visible pin's ink last frame.
+    #[cfg(test)]
+    pin_inks: Vec<(usize, Color32)>,
 }
 
 impl SidebarView {
@@ -217,6 +236,10 @@ impl SidebarView {
             outline_width: 0.0,
             outline_id: None,
             outline_shown: false,
+            #[cfg(test)]
+            pin_icons: Vec::new(),
+            #[cfg(test)]
+            pin_inks: Vec::new(),
         }
     }
 
@@ -752,10 +775,7 @@ impl SidebarView {
         let offset = shown.state.clamped_offset().y;
         let scrolled = target.is_none() && !resized && (offset - self.offset).abs() > 0.5;
         self.offset = offset;
-        let mut output = Output {
-            clicked: shown.inner,
-            ..Output::default()
-        };
+        let mut output = shown.inner;
         if scrolled {
             output.browsing = column.page_at(offset + height / 2.0);
         }
@@ -766,17 +786,21 @@ impl SidebarView {
         output
     }
 
-    /// The thumbnails in the scroll area's `viewport` (content coordinates);
-    /// returns the page clicked, if any.
+    /// The thumbnails in the scroll area's `viewport` (content coordinates).
     fn column(
         &mut self,
         ui: &mut egui::Ui,
         viewport: Rect,
         column: &Column,
         input: &mut Input,
-    ) -> Option<usize> {
+    ) -> Output {
         self.thumb_width = column.thumb_width();
         self.highlighted = input.highlighted.clone();
+        #[cfg(test)]
+        {
+            self.pin_icons.clear();
+            self.pin_inks.clear();
+        }
         let (content, _) = ui.allocate_exact_size(
             vec2(ui.available_width(), column.content_height()),
             Sense::hover(),
@@ -793,6 +817,7 @@ impl SidebarView {
         let dark = ui.visuals().dark_mode;
         let font = egui::TextStyle::Body.resolve(ui.style());
         let mut clicked = None;
+        let mut toggled = None;
         let now = ui.input(|i| i.time);
         let mut fading = false;
         self.drawn.clear();
@@ -806,7 +831,8 @@ impl SidebarView {
             );
             let with_label = rect.with_max_y(rect.max.y + label.height);
             let id = ui.scope_id().with(("thumbnail", page));
-            if ui.interact(with_label, id, Sense::click()).clicked() {
+            let thumb = ui.interact(with_label, id, Sense::click());
+            if thumb.clicked() {
                 clicked = Some(page);
             }
             let current = input.highlighted.contains(&page);
@@ -863,12 +889,39 @@ impl SidebarView {
                 painter.rect_filled(pill, pill.height() / 2.0, selection.bg_fill);
             }
             painter.galley(number.min, galley, colour);
+            // The pin, over the page's corner: a press on it pins and does
+            // not navigate.
+            let pin = pin_rect(rect);
+            let pinned = input.pins.contains(page);
+            let response = ui.interact(pin, id.with("pin"), Sense::click());
+            if response.clicked() {
+                toggled = Some(page);
+            }
+            if response.hovered() {
+                ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            #[cfg(test)]
+            {
+                let ink = paint_pin(ui, pin, pinned);
+                self.pin_icons.push((page, pin, pinned));
+                self.pin_inks.push((page, ink));
+            }
+            #[cfg(not(test))]
+            paint_pin(ui, pin, pinned);
             self.drawn.push((page, rect));
+        }
+        if toggled.is_some() {
+            // The pin sits over the card: its press is not a card click.
+            clicked = None;
         }
         if fading {
             ui.ctx().request_repaint();
         }
-        clicked
+        Output {
+            clicked,
+            toggle_pin: toggled,
+            ..Output::default()
+        }
     }
 
     /// The list of matches, kept on the current one; returns the match
@@ -1135,6 +1188,16 @@ impl SidebarView {
     }
 
     #[cfg(test)]
+    pub fn pin_icons(&self) -> &[(usize, Rect, bool)] {
+        &self.pin_icons
+    }
+
+    #[cfg(test)]
+    pub fn pin_inks(&self) -> &[(usize, Color32)] {
+        &self.pin_inks
+    }
+
+    #[cfg(test)]
     pub fn outline_offset(&self) -> f32 {
         self.outline_offset
     }
@@ -1202,6 +1265,49 @@ fn muted_note(ui: &mut egui::Ui, text: &str) {
         .show(ui, |ui| {
             ui.add(egui::Label::new(egui::RichText::new(text).color(muted)).wrap());
         });
+}
+
+/// The chip's rect in `thumb`'s upper-right corner.
+fn pin_rect(thumb: Rect) -> Rect {
+    let side = vec2(PIN_SIZE, PIN_SIZE);
+    let min = egui::pos2(thumb.max.x - PIN_INSET - PIN_SIZE, thumb.min.y + PIN_INSET);
+    Rect::from_min_size(min, side)
+}
+
+/// Draws `rect`'s pin chip and glyph; returns the ink it used.
+fn paint_pin(ui: &egui::Ui, rect: Rect, pinned: bool) -> Color32 {
+    let visuals = ui.visuals();
+    let ink = if pinned {
+        visuals.selection.stroke.color
+    } else {
+        visuals.weak_text_color()
+    };
+    let clip = rect.expand(PIN_ROUNDING).intersect(ui.clip_rect());
+    let painter = ui.painter().with_clip_rect(clip);
+    // A chip under it, so the pin reads on a white page or a dark scan.
+    painter.rect_filled(rect, PIN_ROUNDING, visuals.panel_fill.gamma_multiply(0.85));
+    let centre = rect.center();
+    // The pin: a head, a needle and its shoulder.
+    painter.circle_filled(
+        egui::pos2(centre.x, centre.y - PIN_GLYPH * 0.4),
+        PIN_GLYPH,
+        ink,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(centre.x, centre.y),
+            egui::pos2(centre.x, rect.max.y - 3.0),
+        ],
+        Stroke::new(1.5, ink),
+    );
+    painter.line_segment(
+        [
+            egui::pos2(centre.x - 3.5, centre.y + 2.0),
+            egui::pos2(centre.x + 3.5, centre.y + 2.0),
+        ],
+        Stroke::new(1.5, ink),
+    );
+    ink
 }
 
 /// The fold chevron in `rect`, as two line segments: `>` when folded, `v`
