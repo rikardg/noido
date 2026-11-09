@@ -90,8 +90,8 @@ impl RenderTracker {
 }
 
 /// The pages whose renders are kept: a window of pages around the reader,
-/// and a few more beyond it, such as the pages of the next and previous
-/// search hits.
+/// a few more beyond it, such as the next and previous search hits, and the
+/// band each of the nearest history targets would restore to.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Keep {
     pub window: Range<usize>,

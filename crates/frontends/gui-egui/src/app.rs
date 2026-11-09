@@ -516,6 +516,23 @@ impl NoidoApp {
         }
     }
 
+    /// The nearest places Back and Forward would go to, as many each way as
+    /// [`HISTORY_KEEP`] keeps.
+    fn nearest_history_targets(&self) -> impl Iterator<Item = &noido_core::DocPoint> + '_ {
+        self.history
+            .back_entries()
+            .iter()
+            .rev()
+            .take(HISTORY_KEEP)
+            .chain(
+                self.history
+                    .forward_entries()
+                    .iter()
+                    .rev()
+                    .take(HISTORY_KEEP),
+            )
+    }
+
     /// Searches the field's text once it has rested, and takes in hits.
     fn update_search(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
@@ -1442,20 +1459,7 @@ impl NoidoApp {
         // is never a thumbnail. The stacks change only on a jump, so
         // recomputing them each frame refreshes the targets then and leaves
         // them be while reading on.
-        for point in self
-            .history
-            .back_entries()
-            .iter()
-            .rev()
-            .take(HISTORY_KEEP)
-            .chain(
-                self.history
-                    .forward_entries()
-                    .iter()
-                    .rev()
-                    .take(HISTORY_KEEP),
-            )
-        {
+        for point in self.nearest_history_targets() {
             // A saved history entry may be past the end of a shorter version.
             // Layout clamping already keeps out-of-range pages out; this also
             // skips a stale entry whose spread would otherwise keep an
@@ -1469,11 +1473,21 @@ impl NoidoApp {
                 }
             }
         }
-        let extra: Vec<usize> = ahead
+        let mut extra: Vec<usize> = ahead
             .iter()
             .copied()
             .filter(|page| !window.contains(page))
             .collect();
+        // The pages on screen at the nearest Back and Forward targets: kept so
+        // a return is sharp, but not requested, so a jump renders nothing it
+        // does not show.
+        for point in self.nearest_history_targets() {
+            for page in self.view.band_around(point) {
+                if !window.contains(&page) && !extra.contains(&page) {
+                    extra.push(page);
+                }
+            }
+        }
 
         // Visible pages first, then the neighbouring hits' (stepping to one
         // is likely while searching), then the window around the current
@@ -5723,6 +5737,44 @@ pub(crate) mod tests {
         }
     }
 
+    /// 200 wide, short pages, so several fill the viewport at fit width;
+    /// records every page rendered.
+    #[derive(Clone, Default)]
+    struct WideEngine(Arc<std::sync::Mutex<Vec<usize>>>);
+
+    impl WideEngine {
+        fn rendered(&self) -> Vec<usize> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl PdfEngine for WideEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(self.clone()))
+        }
+    }
+
+    impl Document for WideEngine {
+        fn page_count(&self) -> usize {
+            200
+        }
+        fn page_size(&self, _page: usize) -> Result<Size, EngineError> {
+            Ok(Size {
+                width: 1000.0,
+                height: 300.0,
+            })
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            scale: f32,
+            tile: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            self.0.lock().unwrap().push(page);
+            BlankDocument.render_tile(page, scale, tile)
+        }
+    }
+
     fn recompiled_key() -> DocKey {
         DocKey::new(
             b"test document, recompiled",
@@ -9001,6 +9053,70 @@ pub(crate) mod tests {
             "{spread:?} dropped: {:?}",
             h.app.textures.keys().collect::<Vec<_>>()
         );
+    }
+
+    /// The pages the page view shows now.
+    fn pages_shown(h: &Harness) -> std::ops::Range<usize> {
+        let (_, top) = h.app.view.offset();
+        let (_, height) = h.app.view.viewport_size();
+        h.app.view.layout().visible_pages(top, top + height)
+    }
+
+    #[test]
+    fn a_far_jump_keeps_the_pages_visible_beside_the_history_target() {
+        let engine = WideEngine::default();
+        let mut h = Harness::build_with(Arc::new(engine), |app| app);
+        let band = pages_shown(&h);
+        assert!(band.len() >= 3, "only {band:?} shown");
+        h.until(|h| band.clone().all(|page| h.app.textures.contains_key(&page)));
+        // A page jump, as an open or a wanted page asks for: leave, then go.
+        h.app.arrival = Some((Target::Page(150), true));
+        h.frames(3, vec![]);
+        assert!(h.app.view.centre_page().is_some_and(|page| page >= 150));
+        let kept: Vec<usize> = band
+            .clone()
+            .filter(|page| h.app.textures.contains_key(page))
+            .collect();
+        assert_eq!(
+            kept,
+            band.clone().collect::<Vec<_>>(),
+            "dropped after the jump: {:?}",
+            h.app.textures.keys().collect::<Vec<_>>()
+        );
+        // Back is sharp at once: nothing was dropped, so nothing re-renders.
+        h.press(egui::Key::ArrowLeft, Modifiers::ALT);
+        assert!(
+            band.clone().all(|page| h.app.textures.contains_key(&page)),
+            "dropped on the way back: {:?}",
+            h.app.textures.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_history_targets_band_is_kept_but_not_rendered_ahead() {
+        let engine = WideEngine::default();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app);
+        let band = pages_shown(&h);
+        assert!(band.len() >= 3, "only {band:?} shown");
+        h.until(|h| band.clone().all(|page| h.app.textures.contains_key(&page)));
+        h.app.arrival = Some((Target::Page(150), true));
+        h.frames(3, vec![]);
+        // Zooming asks for every page the view keeps at the new scale. The
+        // band stays kept, but the pages of it beyond the target's own spread
+        // (which is prefetched) are never in the order asked for.
+        let before = engine.rendered().len();
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, None, Action::ZoomIn);
+        h.frames(3, vec![]);
+        let target = h.app.history.back_entries().last().expect("a Back target");
+        let layout = h.app.view.layout();
+        let requested = layout.spread_pages(layout.spread_of(target.page));
+        let ahead: Vec<usize> = engine.rendered()[before..]
+            .iter()
+            .copied()
+            .filter(|page| band.contains(page) && !requested.contains(page))
+            .collect();
+        assert!(ahead.is_empty(), "band rendered ahead: {ahead:?}");
     }
 
     #[test]
