@@ -198,6 +198,11 @@ impl Renderer {
         *self.keep.lock().unwrap() = keep.into();
     }
 
+    /// The pages kept, as last set.
+    pub fn keep(&self) -> Keep {
+        self.keep.lock().unwrap().clone()
+    }
+
     /// The pages the reader needs most, most urgent first. Queued requests
     /// for these pages are rendered in this order, before any others, which
     /// follow in the order they were requested.

@@ -6284,6 +6284,200 @@ pub(crate) mod tests {
         assert!(h.app.sidebar_view.drawn().is_empty());
     }
 
+    /// Waits until every page of the sidebar's kept range is sharp, and the
+    /// renders have gone quiet; returns the sharp pages.
+    fn sharp_settled(h: &mut Harness) -> Vec<usize> {
+        let done = |h: &Harness| {
+            let kept = h.app.sidebar_view.kept_pages();
+            !kept.is_empty() && h.app.sidebar_view.sharp_pages() == kept.collect::<Vec<_>>()
+        };
+        h.until(done);
+        assert!(done(h), "{:?}", h.app.sidebar_view.sharp_pages());
+        h.frames(3, vec![]);
+        h.app.sidebar_view.sharp_pages()
+    }
+
+    #[test]
+    fn sharp_thumbnails_survive_other_tabs() {
+        for away in [SidebarTab::Outline, SidebarTab::Results] {
+            let engine = RecordingEngine::default();
+            let mut h = with_sidebar(engine.clone());
+            let sharp = sharp_settled(&mut h);
+            let renders = engine.recorded().len();
+            click_tab(&mut h, away);
+            h.frames(5, vec![]);
+            assert_eq!(h.app.sidebar_view.sharp_pages(), sharp, "{away:?}");
+            click_tab(&mut h, SidebarTab::Thumbnails);
+            // At once: sharp, and not asked for again.
+            assert_eq!(h.app.sidebar_view.sharp_pages(), sharp, "{away:?}");
+            assert!(!h.app.sidebar_view.drawn().is_empty());
+            h.frames(5, vec![]);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            h.frames(2, vec![]);
+            assert_eq!(engine.recorded().len(), renders, "{away:?}: rendered again");
+        }
+    }
+
+    #[test]
+    fn no_new_sharp_renders_off_the_thumbnails_tab() {
+        let engine = RecordingEngine::default();
+        let mut h = with_sidebar(engine.clone());
+        let sharp = sharp_settled(&mut h);
+        let renders = engine.recorded().len();
+        click_tab(&mut h, SidebarTab::Outline);
+        go_to(&mut h, 9);
+        h.frames(10, vec![]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        h.frames(2, vec![]);
+        assert_eq!(engine.recorded().len(), renders, "asked for new renders");
+        assert_eq!(h.app.sidebar_view.sharp_pages(), sharp);
+    }
+
+    /// The thumbnails follow the page again on coming back, shedding the
+    /// images out of range.
+    #[test]
+    fn thumbnails_follow_and_shed_on_coming_back_from_far() {
+        let engine = RecordingEngine::default();
+        let mut h = with_sidebar(engine.clone());
+        let sharp = sharp_settled(&mut h);
+        assert!(sharp.contains(&0), "{sharp:?}");
+        click_tab(&mut h, SidebarTab::Outline);
+        go_to(&mut h, 9);
+        h.frames(3, vec![]);
+        // Still there off the tab, so shedding them is something.
+        assert!(h.app.sidebar_view.sharp_pages().contains(&0));
+        click_tab(&mut h, SidebarTab::Thumbnails);
+        let drawn = drawn_pages(&h);
+        assert!(drawn.contains(&9), "{drawn:?}");
+        let kept = drawn_with_margin(&h);
+        let now = h.app.sidebar_view.sharp_pages();
+        assert!(!now.contains(&0), "{now:?}");
+        assert!(now.iter().all(|page| kept.contains(page)), "{now:?}");
+        h.until(|h| h.app.sidebar_view.sharp_pages().contains(&9));
+        assert!(h.app.sidebar_view.sharp_pages().contains(&9));
+    }
+
+    /// Closing the sidebar from another tab frees the sharp images and the
+    /// renderer's keep range, though the thumbnails count as not shown.
+    #[test]
+    fn closing_from_other_tabs_frees_sharp_images() {
+        for away in [SidebarTab::Outline, SidebarTab::Results] {
+            let mut h = with_sidebar(RecordingEngine::default());
+            sharp_settled(&mut h);
+            click_tab(&mut h, away);
+            h.frames(3, vec![]);
+            assert!(!h.app.sidebar_view.sharp_pages().is_empty(), "{away:?}");
+            h.press(egui::Key::F9, Modifiers::NONE);
+            h.frames(5, vec![]);
+            assert!(!h.app.sidebar.open);
+            assert!(h.app.sidebar_view.sharp_pages().is_empty(), "{away:?}");
+            assert_eq!(h.app.sidebar_view.kept_pages(), 0..0, "{away:?}");
+            assert_eq!(h.app.sidebar_view.renderer_keep(), 0..0, "{away:?}");
+            // Opened again, and back on the thumbnails, they are asked
+            // for afresh.
+            h.press(egui::Key::F9, Modifiers::NONE);
+            click_tab(&mut h, SidebarTab::Thumbnails);
+            h.until(|h| !h.app.sidebar_view.sharp_pages().is_empty());
+            assert!(!h.app.sidebar_view.sharp_pages().is_empty(), "{away:?}");
+        }
+    }
+
+    /// A sidebar over low-res thumbnails whose sharp renders wait for the
+    /// returned gate to drop.
+    fn gated_over_lowres() -> (std::sync::mpsc::Sender<()>, Harness) {
+        let (gate, waiting) = std::sync::mpsc::channel::<()>();
+        let engine = Arc::new(GatedEngine(Arc::new(std::sync::Mutex::new(waiting))));
+        let mut h = Harness::build(|app| {
+            let thumbnailer = Thumbnailer::start(
+                Arc::new(UnopenableEngine),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            );
+            let sidebar = Renderer::start_background(engine, Arc::new(Vec::new()), Box::new(|| {}));
+            app.with_thumbnails(thumbnailer)
+                .with_sidebar_renderer(sidebar)
+        });
+        let lowres = blank_texture(&h.ctx, "lowres");
+        let textures = &mut h.app.thumbnails.as_mut().unwrap().textures;
+        for page in 0..10 {
+            textures.insert(page, lowres.clone());
+        }
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        (gate, h)
+    }
+
+    /// Renders landing while another tab shows are simply there on coming
+    /// back: no fade from the low-res thumbnail, which is not drawn.
+    #[test]
+    fn renders_landing_off_the_tab_show_without_a_fade() {
+        let (gate, mut h) = gated_over_lowres();
+        let kept: Vec<usize> = h.app.sidebar_view.kept_pages().collect();
+        assert!(!kept.is_empty());
+        assert!(h.app.sidebar_view.sharp_pages().is_empty());
+        click_tab(&mut h, SidebarTab::Outline);
+        drop(gate);
+        // A fade is short: looked for on every frame they land in.
+        let faded = std::cell::Cell::new(false);
+        h.until(|h| {
+            let fading = kept.iter().any(|&page| h.app.sidebar_view.fading(page));
+            faded.set(faded.get() || fading);
+            h.app.sidebar_view.sharp_pages() == kept
+        });
+        assert_eq!(h.app.sidebar_view.sharp_pages(), kept);
+        assert!(!faded.get(), "faded in off the tab");
+        click_tab(&mut h, SidebarTab::Thumbnails);
+        assert!(kept.iter().all(|&page| !h.app.sidebar_view.fading(page)));
+        let (_, first) = h.app.sidebar_view.drawn()[0];
+        let drawn = drawn_textures(&h, Some(first));
+        assert_eq!(drawn.len(), 1, "{drawn:?}");
+    }
+
+    /// Closed from another tab before any render landed, the sidebar still
+    /// lets go of the pages asked for: none lands while it is closed.
+    #[test]
+    fn closing_with_renders_in_flight_lets_them_go() {
+        let (gate, mut h) = gated_over_lowres();
+        click_tab(&mut h, SidebarTab::Results);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(3, vec![]);
+        assert_eq!(h.app.sidebar_view.kept_pages(), 0..0);
+        assert_eq!(h.app.sidebar_view.renderer_keep(), 0..0);
+        drop(gate);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        h.frames(3, vec![]);
+        assert!(h.app.sidebar_view.sharp_pages().is_empty());
+    }
+
+    /// Scrolled away by the reader, the thumbnails follow the current page
+    /// again on coming back from another tab.
+    #[test]
+    fn thumbnails_follow_on_coming_back_after_scrolling_away() {
+        let mut h = with_sidebar(RecordingEngine::default());
+        sharp_settled(&mut h);
+        wheel_sidebar(&mut h, -10_000.0);
+        assert!(!drawn_pages(&h).contains(&0));
+        click_tab(&mut h, SidebarTab::Outline);
+        click_tab(&mut h, SidebarTab::Thumbnails);
+        let drawn = drawn_pages(&h);
+        assert!(drawn.contains(&0), "{drawn:?}");
+    }
+
+    /// The same on closing and reopening the sidebar.
+    #[test]
+    fn thumbnails_follow_on_reopening_after_scrolling_away() {
+        let mut h = with_sidebar(RecordingEngine::default());
+        sharp_settled(&mut h);
+        wheel_sidebar(&mut h, -10_000.0);
+        assert!(!drawn_pages(&h).contains(&0));
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        let drawn = drawn_pages(&h);
+        assert!(drawn.contains(&0), "{drawn:?}");
+    }
+
     fn sepia() -> Color32 {
         let [r, g, b] = noido_core::Paper::Sepia.rgb();
         Color32::from_rgb(r, g, b)
@@ -8119,15 +8313,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn no_sharp_renders_off_the_thumbnails_tab() {
+    fn thumbnails_not_drawn_off_the_tab() {
         let mut h = sidebar_on(Arc::new(BlankEngine));
         click_tab(&mut h, SidebarTab::Thumbnails);
         assert!(!h.app.sidebar_view.drawn().is_empty());
         click_tab(&mut h, SidebarTab::Outline);
         h.frames(3, vec![]);
-        assert!(h.app.sidebar_view.sharp_pages().is_empty());
         assert!(h.app.sidebar_view.drawn().is_empty());
-        assert_eq!(h.app.sidebar_view.kept_pages(), 0..0);
         click_tab(&mut h, SidebarTab::Thumbnails);
         assert!(!h.app.sidebar_view.drawn().is_empty());
     }
