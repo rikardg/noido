@@ -40,11 +40,12 @@ following a link inside it moves the document underneath.
 - Links on the previewed page are live: an internal link moves the main
   view and flashes the target (the preview stays on its page); a web or
   mail link opens the browser, as elsewhere.
-- One preview at a time. Each pin's pagelet remembers its own place and
-  size: closing one and opening it again puts it back, and another pin's
-  pagelet opens at its own place.
-- A pin's first pagelet has its top at that pin's thumbnail and its left
-  edge at the left of the page view, next to the sidebar.
+- One pagelet for the document: the preview pagelet. It keeps its place
+  and size when another pin swaps its page, and when it is closed and
+  opened again.
+- Its first place is the upper-left corner of the page view, flush
+  against the sidebar. Its place and size are saved with the document and
+  restored on the next start.
 - Resizing keeps the page's aspect: the panel is dragged by a grip in its
   bottom-right corner, and the page inside it stays the page's shape.
 - Unpinning the page the preview shows closes the preview.
@@ -220,16 +221,17 @@ struct PinPreview {
 }
 ```
 
-`Option<PinPreview>` is `None` while closed, and `NoidoApp` also keeps a
-map from page to that pin's rect and page size: within a session, closing a pagelet and opening it again puts it back,
-and each pin's pagelet has its own place (nothing is saved to disk). The
-app is the source of truth for the rect, not egui's window memory: each
-frame it hands the window `current_pos(rect.min)` and reads the resulting
-rect back. A pin seen for the first time gets a page fitted into a share
-of the page view, its top at the pin's thumbnail and its left at the page
-view's left edge, next to the sidebar (clamped inside the view). Unpinning
-the page the preview shows closes the preview: the panel is the pin's
-page, so it goes with the pin.
+`Option<PinPreview>` is `None` while closed, and `NoidoApp` also keeps the
+pagelet's last place and page width (a `Pagelet` in the document's state),
+so closing it and opening it again puts it back, and a page swapped in
+keeps that place. It is saved with the document and restored on the next
+start; its height always follows the displayed page's aspect. The app is
+the source of truth for the rect, not egui's window memory: each frame it
+hands the window `current_pos(rect.min)` and reads the resulting rect
+back. Its first place is the page view's upper-left corner, flush against
+the sidebar (clamped inside the view), sized to a share of the view.
+Unpinning the page the preview shows closes the preview: the panel is the
+pin's page, so it goes with the pin.
 
 **Fit.** A pure helper in `noido-core/src/preview.rs` fits a page's size
 into a rect with the page centred and its aspect kept, and maps a screen
@@ -262,11 +264,12 @@ full. Under reduced motion the two values are swapped at once.
 **Links.** While the preview is open, the app asks
 `Links::want(preview.page)`; when the page's links arrive it hit-tests the
 pointer's page point with `Links::at`, shows the pointing hand over a link,
-and on click follows it with the existing `follow_target`. An internal
-target moves the main view, marks the page chosen, records history and
-flashes there, and the preview stays on its own page; a web link opens the
-browser. Following a link inside the preview must not re-enter the main
-view's own link handling.
+and on click follows it with the existing `follow_target`, at the start of
+the next frame, as a page link does: following within the frame would let
+egui's scroll offset undo the jump. An internal target scrolls and marks
+the main view, records history and flashes there, and the preview stays on
+its own page; a web link opens the browser. Following a link inside the
+preview must not re-enter the main view's own link handling.
 
 **Rendering.** The previewed page joins the main renderer's priority order
 and its `extra` keep, so it is rendered and kept even far from the current
