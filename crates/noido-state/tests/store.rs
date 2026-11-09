@@ -6,7 +6,7 @@ use noido_core::{
     Caret, DocPoint, Highlight, HighlightColour, History, Pins, SidebarState, SidebarTab,
     ViewState, ZoomMode,
 };
-use noido_state::{DocKey, DocState, Frame, Slot, Store};
+use noido_state::{DocKey, DocState, Frame, Pagelet, Slot, Store};
 use tempfile::TempDir;
 
 fn state(page: usize) -> DocState {
@@ -28,6 +28,7 @@ fn state(page: usize) -> DocState {
         history: History::default(),
         highlights: Vec::new(),
         pins: Pins::default(),
+        pagelet: None,
     }
 }
 
@@ -332,6 +333,40 @@ fn duplicate_pins_are_dropped_on_load() {
     )
     .unwrap();
     assert_eq!(loaded(&store, &key).unwrap().pins.pages(), [2, 7]);
+}
+
+#[test]
+fn the_pagelets_place_round_trips() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        pagelet: Some(Pagelet {
+            x: 12.0,
+            y: 34.0,
+            width: 400.0,
+        }),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    assert_eq!(
+        loaded(&store, &key).unwrap().pagelet,
+        Some(Pagelet {
+            x: 12.0,
+            y: 34.0,
+            width: 400.0
+        })
+    );
+}
+
+#[test]
+fn no_pagelet_writes_no_key() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(3)).unwrap();
+    let text = fs::read_to_string(docs(&dir).join(format!("{}.toml", key.hex()))).unwrap();
+    assert!(!text.contains("pagelet"), "{text}");
 }
 
 #[test]

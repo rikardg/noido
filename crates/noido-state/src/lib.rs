@@ -97,6 +97,15 @@ impl Frame {
     }
 }
 
+/// Where the preview pagelet was, and how wide its page was. Its height
+/// follows the page's aspect.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pagelet {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+}
+
 /// What is remembered about a document.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DocState {
@@ -105,6 +114,7 @@ pub struct DocState {
     pub history: History,
     pub highlights: Vec<Highlight>,
     pub pins: Pins,
+    pub pagelet: Option<Pagelet>,
 }
 
 /// `noido` under the `XDG_STATE_HOME` value if it is an absolute path;
@@ -435,6 +445,17 @@ struct Entry {
     // Absent from files written before pins existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pins: Vec<usize>,
+    // Absent from files written before the pagelet was remembered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pagelet: Option<StoredPagelet>,
+}
+
+/// The TOML form of the pagelet's place.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+struct StoredPagelet {
+    x: f32,
+    y: f32,
+    width: f32,
 }
 
 /// The TOML form of the document's own [`ViewState`].
@@ -559,6 +580,11 @@ impl Entry {
             forward: places(doc.history.forward_entries()),
             highlights: doc.highlights.iter().map(StoredHighlight::new).collect(),
             pins: doc.pins.pages().to_vec(),
+            pagelet: doc.pagelet.map(|pagelet| StoredPagelet {
+                x: pagelet.x,
+                y: pagelet.y,
+                width: pagelet.width,
+            }),
         }
     }
 
@@ -589,6 +615,11 @@ impl Entry {
             .items()
             .to_vec(),
             pins: Pins::from_sorted(self.pins.iter().copied()),
+            pagelet: self.pagelet.map(|pagelet| Pagelet {
+                x: pagelet.x,
+                y: pagelet.y,
+                width: pagelet.width,
+            }),
         }
     }
 }

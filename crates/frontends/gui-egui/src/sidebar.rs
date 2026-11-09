@@ -1348,11 +1348,6 @@ impl SidebarView {
         &self.drawn
     }
 
-    /// The cards drawn last frame: their pages and rects.
-    pub fn cards(&self) -> &[(usize, Rect)] {
-        &self.drawn
-    }
-
     #[cfg(test)]
     pub fn offset(&self) -> f32 {
         self.offset
