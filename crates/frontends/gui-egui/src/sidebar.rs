@@ -160,8 +160,11 @@ pub struct SidebarView {
     fades: Fades,
     /// The pages visible last frame; empty while closed or on another tab.
     visible: Range<usize>,
-    /// The visible pages and the margin around them, whose sharp renders
-    /// are asked for and kept.
+    /// The pinned pages drawn on the Pins tab last frame.
+    visible_pins: Vec<usize>,
+    /// The Pages tab's window of pages and the margin around them,
+    /// whose sharp renders are asked for and kept; the pinned pages are
+    /// kept as extras beside it.
     kept: Range<usize>,
     /// Visible thumbnails' screen rects last frame.
     drawn: Vec<(usize, Rect)>,
@@ -231,6 +234,7 @@ impl SidebarView {
             sharp: HashMap::new(),
             fades: Fades::default(),
             visible: 0..0,
+            visible_pins: Vec::new(),
             kept: 0..0,
             drawn: Vec::new(),
             thumb_width: 0.0,
@@ -318,8 +322,9 @@ impl SidebarView {
                     let name = format!("sidebar-{}", rendered.page);
                     let image = PageImage::load(ctx, name, &image);
                     // A margin page's render is there before it shows.
-                    let stand_in = self.visible.contains(&rendered.page)
-                        && lowres.is_some_and(|l| l.contains_key(&rendered.page));
+                    let drawn = self.visible.contains(&rendered.page)
+                        || self.visible_pins.contains(&rendered.page);
+                    let stand_in = drawn && lowres.is_some_and(|l| l.contains_key(&rendered.page));
                     if self.sharp.insert(rendered.page, image).is_none() && stand_in {
                         self.fades.start(rendered.page, now);
                     }
@@ -351,6 +356,7 @@ impl SidebarView {
         self.shown = false;
         self.thumb = Eased::default();
         self.visible = 0..0;
+        self.visible_pins.clear();
         self.drawn.clear();
     }
 
@@ -853,6 +859,10 @@ impl SidebarView {
             self.visible = visible.clone();
         } else {
             self.visible = 0..0;
+            self.visible_pins = visible
+                .clone()
+                .filter_map(|index| page_of(pages, index))
+                .collect();
         }
 
         let outline = ui.visuals().widgets.noninteractive.bg_stroke.color;
@@ -1291,8 +1301,10 @@ impl SidebarView {
                     .collect();
             }
         }
+        // The Pages window may be from the previous version of the
+        // document; the renderer is only ever told about this one's pages.
         let keep = Keep {
-            window: self.kept.clone(),
+            window: self.kept.start..self.kept.end.min(layout.page_count()),
             extra: self.pinned_kept.clone(),
         };
         renderer.set_keep(keep.clone());

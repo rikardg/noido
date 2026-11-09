@@ -7624,14 +7624,19 @@ pub(crate) mod tests {
 
     #[test]
     fn four_tabs_fit_their_shares_at_the_narrowest_sidebar() {
-        let mut h = sidebar_on(Arc::new(BlankEngine));
-        // At the default width all four labels are whole.
-        let texts = h.texts();
-        for label in ["Pages", "Pins", "Outline", "Search"] {
-            assert!(texts.iter().any(|t| t == label), "{label}: {texts:?}");
-        }
-        h.app.sidebar.width = noido_core::SIDEBAR_MIN_WIDTH;
+        // The width must be set before the panel's first show: afterwards
+        // its own persisted width wins.
+        let mut h = Harness::build_with(Arc::new(BlankEngine), |mut app| {
+            app.sidebar.open = true;
+            app.sidebar.width = noido_core::SIDEBAR_MIN_WIDTH;
+            app
+        });
         h.frames(3, vec![]);
+        assert_eq!(
+            h.app.sidebar.width,
+            noido_core::SIDEBAR_MIN_WIDTH,
+            "the panel took another width"
+        );
         let tabs = h.app.sidebar_view.tab_rects().to_vec();
         assert_eq!(tabs.len(), 4);
         for (tab, rect) in tabs {
@@ -7701,6 +7706,54 @@ pub(crate) mod tests {
         click_tab(&mut h, SidebarTab::Thumbnails);
         h.frames(5, vec![]);
         assert_eq!(engine.recorded().len(), renders, "asked for Pages again");
+    }
+
+    #[test]
+    fn the_pins_tab_fades_a_sharp_render_in() {
+        let (gate, waiting) = std::sync::mpsc::channel::<()>();
+        let engine = Arc::new(GatedEngine(Arc::new(std::sync::Mutex::new(waiting))));
+        let mut h = Harness::build(|app| {
+            let thumbnailer = Thumbnailer::start(
+                Arc::new(UnopenableEngine),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            );
+            let sidebar = Renderer::start_background(engine, Arc::new(Vec::new()), Box::new(|| {}));
+            app.with_thumbnails(thumbnailer)
+                .with_sidebar_renderer(sidebar)
+        });
+        let lowres = blank_texture(&h.ctx, "lowres");
+        let textures = &mut h.app.thumbnails.as_mut().unwrap().textures;
+        for page in 0..10 {
+            textures.insert(page, lowres.clone());
+        }
+        h.app.pins = Pins::from_sorted([0]);
+        h.app.sidebar.open = true;
+        h.frames(2, vec![]);
+        click_tab(&mut h, SidebarTab::Pins);
+        h.frames(2, vec![]);
+        assert!(h.app.sidebar_view.sharp_pages().is_empty());
+        drop(gate);
+        let faded = std::cell::Cell::new(false);
+        h.until(|h| {
+            faded.set(faded.get() || h.app.sidebar_view.fading(0));
+            h.app.sidebar_view.sharp_pages().contains(&0)
+        });
+        assert!(h.app.sidebar_view.sharp_pages().contains(&0));
+        assert!(faded.get(), "the pinned page popped in without a fade");
+    }
+
+    #[test]
+    fn the_pins_keep_does_not_outlive_a_shorter_reload() {
+        let engine = RecordingEngine::default();
+        let mut h = with_sidebar(engine);
+        h.app.pins = Pins::from_sorted([9]);
+        click_tab(&mut h, SidebarTab::Pins);
+        h.frames(3, vec![]);
+        h.reload(Arc::new(SizedEngine::letter(3)), recompiled_key());
+        h.frames(3, vec![]);
+        let keep = h.app.sidebar_view.renderer_keep();
+        assert!(keep.end <= 3, "{keep:?}");
     }
 
     #[test]
@@ -8927,19 +8980,15 @@ pub(crate) mod tests {
 
     #[test]
     fn tabs_show_labels() {
-        let mut h = sidebar_on(Arc::new(BlankEngine));
+        let h = sidebar_on(Arc::new(BlankEngine));
         let texts = h.texts();
         for label in ["Pages", "Pins", "Outline", "Search"] {
             assert!(texts.iter().any(|t| t == label), "{label}: {texts:?}");
         }
         let rects = h.app.sidebar_view.tab_rects().to_vec();
         assert_eq!(rects.len(), 4);
-        // Even at the narrowest sidebar the strip fits.
-        h.app.sidebar.width = 160.0;
-        h.frames(3, vec![]);
-        let width = h.app.sidebar.width;
-        let rects = h.app.sidebar_view.tab_rects();
-        assert!(rects.iter().all(|(_, r)| r.max.x <= width), "{rects:?}");
+        // The narrowest width is checked in
+        // `four_tabs_fit_their_shares_at_the_narrowest_sidebar`.
         // The active tab is filled with the selection colour.
         let fill = h.ctx.global_style().visuals.selection.bg_fill;
         let (_, pages) = h.app.sidebar_view.tab_rects()[0];
