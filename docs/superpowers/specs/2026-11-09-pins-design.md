@@ -32,12 +32,13 @@ following a link inside it moves the document underneath.
   double-click window has passed with no second click. The main view does
   not move; the current page, zoom and scroll stay as they were.
 - Double-clicking a pin navigates the main view to that page, as clicking a
-  thumbnail in Pages does, and closes the preview. The first click of the
-  double click does not open the preview.
+  thumbnail in Pages does. An open preview stays open, on its own page. The
+  first click of the double click does not open the preview.
 - The preview is a floating panel over the pages: the whole page fitted
   inside it, resizable, movable, with a close `×` in its upper-right
-  corner. The pointer leaving the panel fades it to half opacity; entering
-  it makes it opaque again.
+  corner. The pointer leaving the panel fades it to half opacity, except
+  while the pointer is in the sidebar, where the pins are read: there the
+  panel stays opaque.
 - Links on the previewed page are live: an internal link moves the main
   view and flashes the target (the preview stays on its page); a web or
   mail link opens the browser, as elsewhere.
@@ -259,9 +260,9 @@ placed it, that pin's size and place stand.
 with its own hit area that closes the preview. It is registered after the
 window's own content, as the pin is after the thumbnail.
 
-**Fade.** While the pointer is inside the panel's rect it draws at full
-opacity; when it leaves, the panel eases to 0.5 (and back in on entry),
-repainting while it does. The panel's surface, the page's tint and the
+**Fade.** While the pointer is inside the panel's rect, or in the sidebar,
+it draws at full opacity; when the pointer is elsewhere on the pages, the
+panel eases to 0.5 (and back in on entry), repainting while it does. The panel's surface, the page's tint and the
 chrome's colours all carry the opacity, so the document under it shows
 through. A pagelet opened with the pointer away starts at half, not at
 full. Under reduced motion the two values are swapped at once.
@@ -292,8 +293,8 @@ preview only when egui's double-click window (`max_double_click_delay`,
 at that moment. A second click on the same card inside the window is
 egui's `double_clicked`: it cancels the pending preview and navigates the
 main view to the page — the same path a Pages thumbnail click takes, with
-history and the current page — closing any preview. So the first click of
-a double click never opens the panel. A click on another card replaces the
+history and the current page. An open pagelet is left as it is, on its own
+page. So the first click of a double click never opens the panel. A click on another card replaces the
 pending one, as the reader changed their mind; two different cards are not
 a double click, as egui keeps the double click per widget. The cost is
 that a single click shows the preview about a third of a second late,
@@ -338,8 +339,9 @@ In the GUI harness (`app.rs`), at least:
   is not open in the frames before that; a second pin swaps the page and
   keeps the panel's rect; closing and reopening within the session opens
   in the same rect;
-- a double click on a pin card navigates the main view and closes the
-  preview, and the preview is never open, not even for a frame;
+- a double click on a pin card navigates the main view, leaves an open
+  pagelet as it was, and the preview is never opened, not even for a
+  frame;
 - the `×` closes the preview;
 - the preview draws the page image fitted; the page is requested from the
   renderer at the panel's scale and kept while open, even when the main

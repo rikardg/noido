@@ -2232,7 +2232,16 @@ impl NoidoApp {
         // Half-opaque while the pointer is away, so the page behind shows
         // through; opaque under the pointer.
         let pointer = ctx.input(|i| i.pointer.hover_pos());
-        let target = if pointer.is_some_and(|at| rect.contains(at)) {
+        // Opaque under the pointer and while the pointer is in the sidebar,
+        // where the pins are read; half over the rest of the pages.
+        let in_sidebar = self.sidebar.open
+            && pointer.is_some_and(|at| {
+                let view = self
+                    .last_scroll
+                    .map_or_else(|| ctx.content_rect(), |last| last.inner);
+                at.x < view.min.x && at.y >= view.min.y
+            });
+        let target = if pointer.is_some_and(|at| rect.contains(at)) || in_sidebar {
             1.0
         } else {
             0.5
@@ -2644,7 +2653,6 @@ impl NoidoApp {
                     .is_some_and(|(pending, at)| pending == page && now - at < delay);
                 if double {
                     self.pending_pin = None;
-                    self.close_pagelet();
                     self.leave_here();
                     self.view.go_to_page(page);
                     self.choose_page(page);
@@ -8125,23 +8133,10 @@ pub(crate) mod tests {
         wait_for_pagelet(&mut h, 0);
         h.until(|h| h.app.textures.contains_key(&0));
         let page = h.app.pagelet_page_rect().unwrap();
-        // The pointer rests on the card it clicked, not on the pagelet.
+        // Away from the panel and the sidebar.
+        let away = h.app.last_scroll.unwrap().inner.max - vec2(30.0, 30.0);
+        h.frames(1, vec![Event::PointerMoved(away)]);
         h.frames(20, vec![]);
-        fn meshes(shape: &egui::Shape, out: &mut Vec<(Rect, u8)>) {
-            match shape {
-                egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
-                    let points: Vec<egui::Pos2> = mesh.vertices.iter().map(|v| v.pos).collect();
-                    out.push((egui::Rect::from_points(&points), mesh.vertices[0].color.a()));
-                }
-                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| meshes(s, out)),
-                _ => {}
-            }
-        }
-        let mut out = Vec::new();
-        for c in &h.shapes {
-            meshes(&c.shape, &mut out);
-        }
-        eprintln!("page={page:?} meshes={out:?}");
         assert_eq!(image_alpha(&h, page), Some(128), "off the pointer");
         let panel = h.app.pin_preview.as_ref().unwrap().rect;
         assert_eq!(
@@ -8158,6 +8153,54 @@ pub(crate) mod tests {
             surface_alpha(&h, panel),
             Some(255),
             "the surface stayed faded"
+        );
+    }
+
+    #[test]
+    fn the_pagelet_stays_opaque_over_the_sidebar() {
+        let mut h = pinned_on(&[0]);
+        h.click(thumb_rect(&h, 0).center());
+        wait_for_pagelet(&mut h, 0);
+        h.until(|h| h.app.textures.contains_key(&0));
+        let page = h.app.pagelet_page_rect().unwrap();
+        // The pointer rests on the card it clicked: in the sidebar.
+        h.frames(20, vec![]);
+        assert_eq!(image_alpha(&h, page), Some(255), "faded over the sidebar");
+        let view = h.app.last_scroll.unwrap().inner;
+        let sidebar = egui::pos2(view.min.x - 30.0, view.min.y + 40.0);
+        h.frames(1, vec![Event::PointerMoved(sidebar)]);
+        h.frames(20, vec![]);
+        assert_eq!(image_alpha(&h, page), Some(255), "faded over the sidebar");
+        // Away from both, it fades.
+        let away = view.max - vec2(30.0, 30.0);
+        h.frames(1, vec![Event::PointerMoved(away)]);
+        h.frames(20, vec![]);
+        assert_eq!(image_alpha(&h, page), Some(128), "stayed opaque off it");
+    }
+
+    #[test]
+    fn a_double_click_leaves_an_open_pagelet() {
+        let mut h = pinned_on(&[2, 5]);
+        h.click(thumb_rect(&h, 2).center());
+        wait_for_pagelet(&mut h, 2);
+        let at = thumb_rect(&h, 5).center();
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frames(1, vec![Event::PointerMoved(at)]);
+        for _ in 0..2 {
+            h.frames(1, vec![button(true)]);
+            h.frames(1, vec![button(false)]);
+        }
+        h.frames(40, vec![]);
+        assert_eq!(h.app.current_page(), Some(5), "it did not navigate");
+        assert!(
+            pagelet_on(&h, 2),
+            "the pagelet closed or changed page: {:?}",
+            h.app.pin_preview.as_ref().map(|p| p.page)
         );
     }
 
@@ -8199,10 +8242,11 @@ pub(crate) mod tests {
             Duration::ZERO,
             "the pagelet's fade asked for no repaint"
         );
-        // And the page ends up sharp, at the panel's half opacity.
+        // And the page ends up sharp: the pointer is in the sidebar, so the
+        // panel is opaque.
         h.frames(15, vec![]);
         let page = h.app.pagelet_page_rect().unwrap();
-        assert_eq!(image_alpha(&h, page), Some(128));
+        assert_eq!(image_alpha(&h, page), Some(255));
     }
 
     #[test]
@@ -8211,7 +8255,12 @@ pub(crate) mod tests {
         h.click(thumb_rect(&h, 0).center());
         wait_for_pagelet(&mut h, 0);
         h.until(|h| h.app.textures.contains_key(&0));
+        // Past the page's own fade-in, then away from the panel and the
+        // sidebar: with reduced motion the panel is half at once.
         h.frames(20, vec![]);
+        let away = h.app.last_scroll.unwrap().inner.max - vec2(30.0, 30.0);
+        h.frames(1, vec![Event::PointerMoved(away)]);
+        h.frames(1, vec![]);
         let page = h.app.pagelet_page_rect().unwrap();
         assert_eq!(image_alpha(&h, page), Some(128));
     }
