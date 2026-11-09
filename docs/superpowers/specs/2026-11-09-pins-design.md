@@ -265,9 +265,10 @@ placed it, that pin's size and place stand.
 with its own hit area that closes the preview. It is registered after the
 window's own content, as the pin is after the thumbnail.
 
-**Fade.** While the pointer is inside the panel's rect, or in the sidebar,
-it draws at full opacity; when the pointer is elsewhere on the pages, the
-panel eases to 0.5 (and back in on entry), repainting while it does. The panel's surface, the page's tint and the
+**Fade.** While the pointer is inside the panel's rect, in the sidebar, or
+dragging one of the panel's resize handles, it draws at full opacity; when
+the pointer is elsewhere on the pages, the panel eases to 0.5 (and back in
+on entry), repainting while it does. The panel's surface, the page's tint and the
 chrome's colours all carry the opacity, so the document under it shows
 through. A pagelet opened with the pointer away starts at half, not at
 full. Under reduced motion the two values are swapped at once.
