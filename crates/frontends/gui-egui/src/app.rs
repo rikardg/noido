@@ -6919,6 +6919,41 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn paper_squares_show_every_paper_in_listed_order() {
+        let mut h = Harness::new();
+        open_settings(&mut h);
+        h.frames(30, vec![]);
+        // Every coloured square in the dialog, left to right as painted.
+        let mut row: Vec<_> = noido_core::Paper::ALL
+            .into_iter()
+            .flat_map(|paper| {
+                filled_with(&h, paper_colour(paper))
+                    .into_iter()
+                    .filter(|rect| rect.width() == 20.0 && rect.height() == 20.0)
+                    .map(move |rect| (paper, rect.center()))
+            })
+            .collect();
+        row.sort_by(|a, b| a.1.x.total_cmp(&b.1.x));
+        // Written out, not read from `Paper::ALL`: the row is what the user
+        // asked for, so a reordering should fail here rather than agree.
+        let expected = [
+            noido_core::Paper::White,
+            noido_core::Paper::Sepia,
+            noido_core::Paper::Bisque,
+            noido_core::Paper::Sand,
+            noido_core::Paper::Grey,
+            noido_core::Paper::DarkGrey,
+            noido_core::Paper::DarkerGrey,
+        ];
+        let order: Vec<_> = row.iter().map(|&(paper, _)| paper).collect();
+        assert_eq!(order, expected, "squares in the wrong order");
+        assert!(
+            row.windows(2).all(|pair| pair[0].1.y == pair[1].1.y),
+            "not one row: {row:?}"
+        );
+    }
+
+    #[test]
     fn between_paper_squares_previews_one_of_them() {
         let mut h = Harness::new();
         open_settings(&mut h);
