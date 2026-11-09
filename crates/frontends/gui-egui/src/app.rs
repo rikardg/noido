@@ -7559,6 +7559,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn hovering_a_pin_brightens_its_chip() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        let pin = pin_rect(&h, 2);
+        let chip_fill = |h: &Harness| {
+            h.shapes.iter().find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(r) if r.rect == pin => Some(r.fill),
+                _ => None,
+            })
+        };
+        let resting = chip_fill(&h).expect("a chip");
+        h.frames(1, vec![Event::PointerMoved(pin.center())]);
+        h.frames(1, vec![]);
+        let hovered = chip_fill(&h).expect("a chip");
+        assert_ne!(hovered, resting, "the chip did not brighten");
+        assert_eq!(h.cursor, egui::CursorIcon::PointingHand);
+    }
+
+    #[test]
     fn a_card_click_pins_nothing() {
         let mut h = sidebar_on(Arc::new(BlankEngine));
         // The middle of the card, clear of the pin.

@@ -952,12 +952,12 @@ impl SidebarView {
                 }
                 #[cfg(test)]
                 {
-                    let ink = paint_pin(ui, pin, pinned);
+                    let ink = paint_pin(ui, pin, pinned, response.hovered());
                     self.pin_icons.push((page, pin, pinned));
                     self.pin_inks.push((page, ink));
                 }
                 #[cfg(not(test))]
-                paint_pin(ui, pin, pinned);
+                paint_pin(ui, pin, pinned, response.hovered());
             }
             self.drawn.push((page, rect));
         }
@@ -1439,7 +1439,7 @@ fn pin_rect(thumb: Rect) -> Rect {
 }
 
 /// Draws `rect`'s pin chip and glyph; returns the ink it used.
-fn paint_pin(ui: &egui::Ui, rect: Rect, pinned: bool) -> Color32 {
+fn paint_pin(ui: &egui::Ui, rect: Rect, pinned: bool, hovered: bool) -> Color32 {
     let visuals = ui.visuals();
     let ink = if pinned {
         visuals.selection.stroke.color
@@ -1449,7 +1449,8 @@ fn paint_pin(ui: &egui::Ui, rect: Rect, pinned: bool) -> Color32 {
     let clip = rect.expand(PIN_ROUNDING).intersect(ui.clip_rect());
     let painter = ui.painter().with_clip_rect(clip);
     // A chip under it, so the pin reads on a white page or a dark scan.
-    painter.rect_filled(rect, PIN_ROUNDING, visuals.panel_fill.gamma_multiply(0.85));
+    let chip = if hovered { 1.0 } else { 0.85 };
+    painter.rect_filled(rect, PIN_ROUNDING, visuals.panel_fill.gamma_multiply(chip));
     let centre = rect.center();
     // The pin: a head, a needle and its shoulder.
     painter.circle_filled(
