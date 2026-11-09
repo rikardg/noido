@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use noido_engine::{Destination, Size};
 
 use crate::layout::FIT_NOISE;
@@ -224,6 +226,45 @@ impl View {
             x: (x - rect.x) / scale,
             y: (y - rect.y) / scale,
         })
+    }
+
+    /// The pages a view restored to `point` would show: the band a history
+    /// target's renders are kept for. In a paged layout the point's page has
+    /// no place unless its spread is the one shown, and its spread is all a
+    /// restore there shows.
+    pub fn band_around(&self, point: &DocPoint) -> Range<usize> {
+        let Some(point) = self.clamped_point(point) else {
+            return 0..0;
+        };
+        // A continuous fit-page layout re-fits to the target's own page when
+        // it restores, so measure on one that has.
+        if self.continuous()
+            && self.mode == ZoomMode::FitPage
+            && self.viewport.0 > 0.0
+            && self.viewport.1 > 0.0
+        {
+            let mut layout = self.layout.clone();
+            let scale = self.fit_scale_for(self.mode, layout.spread_of(point.page));
+            layout.arrange(scale, self.viewport.0, self.viewport.1);
+            return self.band_in(&layout, point);
+        }
+        self.band_in(&self.layout, point)
+    }
+
+    /// The band around `point` in `layout`: the pages a viewport centred
+    /// there and clamped to the document shows, with the point's spread.
+    fn band_in(&self, layout: &Layout, point: DocPoint) -> Range<usize> {
+        let spread = layout.spread_pages(layout.spread_of(point.page));
+        let Some((_, y)) = layout.content_point(point) else {
+            return spread;
+        };
+        // The restore centres the point and clamps the offset to the
+        // document; the band is what that leaves on screen.
+        let half = self.viewport.1 / 2.0;
+        let max = (layout.content_height() - self.viewport.1).max(0.0);
+        let top = (y - half).clamp(0.0, max);
+        let band = layout.visible_pages(top, top + self.viewport.1);
+        band.start.min(spread.start)..band.end.max(spread.end)
     }
 
     /// A snapshot to restore in a later run; `None` with zero pages.
@@ -2087,6 +2128,118 @@ mod tests {
         view.set_viewport_size(636.0, 800.0);
         assert!(view.place().is_none());
         assert_eq!(view.offset(), (0.0, 0.0));
+    }
+
+    /// A view zoomed out until three pages fill its viewport.
+    fn wide_view() -> View {
+        let mut view = letter_view();
+        for _ in 0..4 {
+            view.apply(Action::ZoomOut);
+        }
+        view
+    }
+
+    #[test]
+    fn band_around_a_point_is_what_the_view_shows_there() {
+        let mut view = wide_view();
+        view.go_to_page(4);
+        let point = view.place().unwrap();
+        let (_, top) = view.offset();
+        let (_, height) = view.viewport_size();
+        assert_eq!(
+            view.band_around(&point),
+            view.layout().visible_pages(top, top + height)
+        );
+        assert!(view.band_around(&point).len() >= 3, "one page only");
+    }
+
+    #[test]
+    fn band_around_a_point_in_a_gap_is_where_the_restore_lands() {
+        let mut view = wide_view();
+        // Past the bottom of page 2: the gap below it, which a restore clamps
+        // to the page.
+        let point = DocPoint {
+            page: 2,
+            x: 10.0,
+            y: 800.0,
+        };
+        let band = view.band_around(&point);
+        view.restore_place(&point);
+        let (_, top) = view.offset();
+        let (_, height) = view.viewport_size();
+        assert_eq!(band, view.layout().visible_pages(top, top + height));
+    }
+
+    #[test]
+    fn band_around_near_the_top_is_what_the_clamped_restore_shows() {
+        let mut view = wide_view();
+        // Above the viewport centre, so the restore clamps its offset up.
+        let point = DocPoint {
+            page: 0,
+            x: 10.0,
+            y: 10.0,
+        };
+        let band = view.band_around(&point);
+        view.restore_place(&point);
+        let (_, top) = view.offset();
+        let (_, height) = view.viewport_size();
+        assert_eq!(band, view.layout().visible_pages(top, top + height));
+    }
+
+    #[test]
+    fn band_around_a_continuous_fit_page_target_uses_the_targets_fit() {
+        // Mixed sizes: restoring to the large page re-fits the view, so the
+        // band is what the viewport shows at that page's fit, not this one's.
+        let mut view = View::new(vec![
+            size(306.0, 396.0),
+            size(306.0, 396.0),
+            size(1224.0, 1584.0),
+            size(306.0, 396.0),
+            size(306.0, 396.0),
+        ]);
+        view.set_viewport_size(636.0, 800.0);
+        view.apply(Action::FitPage);
+        let point = DocPoint {
+            page: 2,
+            x: 10.0,
+            y: 10.0,
+        };
+        let band = view.band_around(&point);
+        view.restore_place(&point);
+        let (_, top) = view.offset();
+        let (_, height) = view.viewport_size();
+        assert_eq!(band, view.layout().visible_pages(top, top + height));
+    }
+
+    #[test]
+    fn band_around_a_paged_target_is_its_spread() {
+        let mut view = letter_view();
+        view.apply(Action::ToggleContinuous);
+        view.apply(Action::ToggleDual);
+        let point = DocPoint {
+            page: 7,
+            x: 10.0,
+            y: 20.0,
+        };
+        let layout = view.layout();
+        assert_eq!(
+            view.band_around(&point),
+            layout.spread_pages(layout.spread_of(7))
+        );
+        assert_eq!(view.band_around(&point).len(), 2);
+    }
+
+    #[test]
+    fn band_around_with_no_pages_is_empty() {
+        let view = View::new(vec![]);
+        assert_eq!(
+            view.band_around(&DocPoint {
+                page: 0,
+                x: 0.0,
+                y: 0.0
+            }),
+            0..0
+        );
     }
 
     fn defaults_view(defaults: Defaults) -> View {
