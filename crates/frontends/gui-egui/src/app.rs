@@ -8,8 +8,8 @@ use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, Vec2, pos2, v
 use noido_core::{
     Action, Defaults, Direction, DragKind, Highlight, HighlightColour, Highlights, History, Keep,
     Key, KeyPress, Keymap, MAX_RENDER_SIDE, PageRect, PageTextState, Pins, RenderTracker,
-    SidebarState, THUMBNAIL_BUDGET, Target, View, ViewState, drag_kind, fit_page, render_scale,
-    window_keep, window_order,
+    SidebarState, THUMBNAIL_BUDGET, Target, View, ViewState, drag_kind, fit_page, page_point,
+    render_scale, window_keep, window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
 use noido_settings::{Settings, SettingsFile};
@@ -2186,6 +2186,9 @@ impl NoidoApp {
             return;
         };
         let rect = preview.rect;
+        // The pagelet's links are live: they take the main view.
+        self.links.want(page);
+        let links = &self.links;
         let paper = self.paper_tint(ctx);
         let now = ctx.input(|i| i.time);
         // Half-opaque while the pointer is away, so the page behind shows
@@ -2219,6 +2222,7 @@ impl NoidoApp {
             .inner_margin(PAGELET_PADDING);
         let mut close = false;
         let mut fitted = preview.page_rect;
+        let mut follow = None;
         let window = egui::Window::new("pagelet")
             .title_bar(false)
             .resizable(true)
@@ -2264,6 +2268,29 @@ impl NoidoApp {
                     ui.set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 paint_close(ui, chip, response.hovered(), opacity);
+                // A link under the pointer: the hand, and a click follows
+                // it in the main view.
+                let pointer = ui.ctx().input(|i| i.pointer.hover_pos());
+                let link = pointer.and_then(|at| {
+                    let (x, y) = page_point(
+                        size,
+                        PageRect {
+                            x: fit.x,
+                            y: fit.y,
+                            width: fit.width,
+                            height: fit.height,
+                        },
+                        at.x,
+                        at.y,
+                    )?;
+                    links.at(page, x, y).cloned()
+                });
+                if let Some(link) = link {
+                    ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+                    if ui.input(|i| i.pointer.primary_clicked()) {
+                        follow = Some(link.target);
+                    }
+                }
             });
         let drawn = window.map_or(rect, |shown| shown.response.rect);
         if close {
@@ -2275,6 +2302,9 @@ impl NoidoApp {
             preview.rect = drawn;
             preview.page_rect = fitted;
             preview.opacity = opacity;
+        }
+        if let Some(target) = follow {
+            self.follow_target(ctx, target);
         }
     }
 
@@ -7950,6 +7980,74 @@ pub(crate) mod tests {
         h.frames(20, vec![]);
         let page = h.app.pagelet_page_rect().unwrap();
         assert_eq!(image_alpha(&h, page), Some(128));
+    }
+
+    /// A harness with a link engine, the sidebar open on the Pins tab with
+    /// `pins`, and the pagelet on `page` once its links are in.
+    fn pagelet_linking(pins: &[usize], page: usize) -> Harness {
+        let engine = link_engine();
+        let linker = engine.clone();
+        let mut h = Harness::build_with(Arc::new(engine), move |mut app| {
+            app.sidebar.open = true;
+            app.with_linker(noido_render::Linker::start(
+                Arc::new(linker),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+        });
+        h.app.pins = Pins::from_sorted(pins.iter().copied());
+        click_tab(&mut h, SidebarTab::Pins);
+        h.click(thumb_rect(&h, page).center());
+        wait_for_pagelet(&mut h, page);
+        h.until(|h| h.app.links.at(page, 100.0, 96.0).is_some());
+        h
+    }
+
+    /// Where page point (`x`, `y`) of the pagelet's page is on screen.
+    fn pagelet_pos(h: &Harness, x: f32, y: f32) -> egui::Pos2 {
+        let page = h
+            .app
+            .view
+            .layout()
+            .page_size(h.app.pin_preview.as_ref().unwrap().page)
+            .unwrap();
+        let fitted = h.app.pagelet_page_rect().unwrap();
+        let scale = fitted.width() / page.width;
+        fitted.min + vec2(x * scale, y * scale)
+    }
+
+    #[test]
+    fn a_link_in_the_pagelet_moves_the_main_view() {
+        let mut h = pagelet_linking(&[0], 0);
+        let at = pagelet_pos(&h, 100.0, 96.0);
+        hover_link(&mut h, at);
+        h.click(at);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.chosen, Some(5));
+        assert_eq!(h.app.history.back_entries().len(), 1);
+        assert!(h.app.pin_preview.is_some(), "the pagelet closed");
+        assert_eq!(h.app.pin_preview.as_ref().unwrap().page, 0);
+    }
+
+    #[test]
+    fn a_web_link_in_the_pagelet_opens_it() {
+        let mut h = pagelet_linking(&[0], 0);
+        let at = pagelet_pos(&h, 100.0, 206.0);
+        h.click(at);
+        h.frames(2, vec![]);
+        assert_eq!(h.opened, vec!["https://example.org/".to_owned()]);
+    }
+
+    #[test]
+    fn a_click_in_the_pagelet_outside_its_links_does_nothing() {
+        let mut h = pagelet_linking(&[0], 0);
+        // A point on the pagelet's page that is not one of its links: in a
+        // bare part of the page, over the page drawn beneath the panel.
+        let at = pagelet_pos(&h, 300.0, 700.0);
+        h.click(at);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.chosen, None, "reached the view beneath");
+        assert!(h.app.history.back_entries().is_empty());
     }
 
     #[test]
