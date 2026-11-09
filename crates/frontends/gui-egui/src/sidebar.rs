@@ -10,7 +10,7 @@ use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
-    Column, Eased, Highlight, Hits, Layout, MAX_RENDER_SIDE, OutlineRow, OutlineTree, Pace,
+    Column, Eased, Highlight, Hits, Keep, Layout, MAX_RENDER_SIDE, OutlineRow, OutlineTree, Pace,
     PageNumber, PageNumbers, PageTextState, Pins, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState,
     SidebarTab, max_width, render_scale, reveal_row,
 };
@@ -52,6 +52,9 @@ const TAB_PADDING: f32 = 4.0;
 const TAB_GAP: f32 = 4.0;
 /// A tab's corner radius.
 const TAB_ROUNDING: f32 = 4.0;
+/// Space left and right of a tab's label, so a long one truncates inside
+/// its tab.
+const TAB_MARGIN: f32 = 3.0;
 /// Space left and right of an outline row's contents.
 const OUTLINE_MARGIN: f32 = 4.0;
 /// Space above and below an outline row's text.
@@ -197,6 +200,18 @@ pub struct SidebarView {
     outline_id: Option<egui::Id>,
     /// Whether the outline was drawn last frame.
     outline_shown: bool,
+    /// The pinned pages the sidebar's renderer keeps last frame.
+    pinned_kept: Vec<usize>,
+    /// Whether the Pins tab was drawn last frame.
+    pins_shown: bool,
+    /// The pin the tab last scrolled to (or that was clicked).
+    followed_pin: Option<usize>,
+    /// The Pins tab's scroll offset at the end of last frame.
+    pins_offset: f32,
+    /// The Pins tab's width last frame.
+    pins_width: f32,
+    /// The Pins tab's scroll area's id, once shown.
+    pins_id: Option<egui::Id>,
     /// Each visible thumbnail's pin last frame: its page, chip and whether
     /// it was pinned.
     #[cfg(test)]
@@ -236,6 +251,12 @@ impl SidebarView {
             outline_width: 0.0,
             outline_id: None,
             outline_shown: false,
+            pinned_kept: Vec::new(),
+            pins_shown: false,
+            followed_pin: None,
+            pins_offset: 0.0,
+            pins_width: 0.0,
+            pins_id: None,
             #[cfg(test)]
             pin_icons: Vec::new(),
             #[cfg(test)]
@@ -250,11 +271,13 @@ impl SidebarView {
     pub fn hidden(&mut self) {
         self.left();
         self.outline_shown = false;
+        self.pins_shown = false;
         // Called every frame while closed: once is enough.
-        if self.kept.is_empty() && self.sharp.is_empty() {
+        if self.kept.is_empty() && self.pinned_kept.is_empty() && self.sharp.is_empty() {
             return;
         }
         self.kept = 0..0;
+        self.pinned_kept.clear();
         self.sharp.clear();
         self.tracker.forget_outside(0..0);
         if let Some(renderer) = &self.renderer {
@@ -284,7 +307,7 @@ impl SidebarView {
         while let Some(rendered) = renderer.try_recv() {
             // Scrolled away or closed meanwhile: the tracker has forgotten
             // the page, so it is asked for again when it comes back.
-            if !self.kept.contains(&rendered.page) {
+            if !(self.kept.contains(&rendered.page) || self.pinned_kept.contains(&rendered.page)) {
                 continue;
             }
             match rendered.result {
@@ -364,6 +387,9 @@ impl SidebarView {
                         self.outline_rows.clear();
                         self.outline_shown = false;
                     }
+                    if state.tab != SidebarTab::Pins {
+                        self.pins_shown = false;
+                    }
                     match state.tab {
                         SidebarTab::Thumbnails => self.scrolled(ui, input),
                         SidebarTab::Results => {
@@ -383,9 +409,10 @@ impl SidebarView {
                             self.left();
                             self.outline(ui, input)
                         }
-                        // Until the Pins tab is built (its own task), a
-                        // restored state that names it shows nothing.
-                        SidebarTab::Pins => Output::default(),
+                        SidebarTab::Pins => {
+                            self.left();
+                            self.pins(ui, input)
+                        }
                     }
                 })
             });
@@ -398,8 +425,9 @@ impl SidebarView {
 
     /// The row of tabs; returns the one clicked.
     fn strip(&mut self, ui: &mut egui::Ui, active: SidebarTab) -> Option<SidebarTab> {
-        const TABS: [(SidebarTab, &str); 3] = [
+        const TABS: [(SidebarTab, &str); 4] = [
             (SidebarTab::Thumbnails, "Pages"),
+            (SidebarTab::Pins, "Pins"),
             (SidebarTab::Outline, "Outline"),
             (SidebarTab::Results, "Search"),
         ];
@@ -431,13 +459,13 @@ impl SidebarView {
                 ui.set_cursor_icon(egui::CursorIcon::PointingHand);
             }
             let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                label,
-                font.clone(),
-                colour,
-            );
+            // Truncated to its share when four labels are too wide for the
+            // sidebar: a cut word, never a cut glyph.
+            let mut job = LayoutJob::simple_singleline(label.to_owned(), font.clone(), colour);
+            job.wrap =
+                egui::text::TextWrapping::truncate_at_width((width - 2.0 * TAB_MARGIN).max(0.0));
+            let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+            painter.galley(rect.center() - galley.size() / 2.0, galley, colour);
         }
         clicked
     }
@@ -732,8 +760,9 @@ impl SidebarView {
             if let Some((bars, _)) = solid {
                 theme::paint_grooves(ui, ui.available_rect_before_wrap(), bars);
             }
-            let shown =
-                area.show_viewport(ui, |ui, viewport| self.column(ui, viewport, &column, input));
+            let shown = area.show_viewport(ui, |ui, viewport| {
+                self.column(ui, viewport, &column, input, None)
+            });
             if let Some((bars, _)) = solid {
                 // Following the page, the thumbnails jump and the thumb
                 // eases after them, gently while the pages scroll on; it
@@ -786,13 +815,16 @@ impl SidebarView {
         output
     }
 
-    /// The thumbnails in the scroll area's `viewport` (content coordinates).
+    /// The cards in the scroll area's `viewport` (content coordinates):
+    /// every page for the Pages tab (`pages` is `None`), or the pages of
+    /// `pages` in its order.
     fn column(
         &mut self,
         ui: &mut egui::Ui,
         viewport: Rect,
         column: &Column,
         input: &mut Input,
+        pages: Option<&[usize]>,
     ) -> Output {
         self.thumb_width = column.thumb_width();
         self.highlighted = input.highlighted.clone();
@@ -806,10 +838,20 @@ impl SidebarView {
             Sense::hover(),
         );
         let visible = column.visible(viewport.min.y, viewport.max.y);
-        self.request(column, &visible, ui.ctx().pixels_per_point(), input.layout);
-        let pages = with_margin(&visible, input.layout.page_count());
-        want_texts(input, pages);
-        self.visible = visible.clone();
+        self.request(
+            pages,
+            &visible,
+            column,
+            ui.ctx().pixels_per_point(),
+            input.layout,
+        );
+        if pages.is_none() {
+            let margins = with_margin(&visible, input.layout.page_count());
+            want_texts(input, margins);
+            self.visible = visible.clone();
+        } else {
+            self.visible = 0..0;
+        }
 
         let outline = ui.visuals().widgets.noninteractive.bg_stroke.color;
         let selection = ui.visuals().selection;
@@ -821,8 +863,11 @@ impl SidebarView {
         let now = ui.input(|i| i.time);
         let mut fading = false;
         self.drawn.clear();
-        for page in visible {
-            let (Some(thumb), Some(label)) = (column.thumb(page), column.label(page)) else {
+        for index in visible {
+            let Some(page) = page_of(pages, index) else {
+                continue;
+            };
+            let (Some(thumb), Some(label)) = (column.thumb(index), column.label(index)) else {
                 continue;
             };
             let rect = Rect::from_min_size(
@@ -848,8 +893,10 @@ impl SidebarView {
                 self.fades.alpha(page, now),
                 input.paper,
             );
-            // The document's highlights, as on the page.
-            if let PageTextState::Known(text) = input.texts.get(page)
+            // The document's highlights, as on the page (the Pages tab's;
+            // the Pins tab leaves them out for now).
+            if pages.is_none()
+                && let PageTextState::Known(text) = input.texts.get(page)
                 && let Some(size) = input.layout.page_size(page)
                 && size.width > 0.0
             {
@@ -890,24 +937,26 @@ impl SidebarView {
             }
             painter.galley(number.min, galley, colour);
             // The pin, over the page's corner: a press on it pins and does
-            // not navigate.
-            let pin = pin_rect(rect);
-            let pinned = input.pins.contains(page);
-            let response = ui.interact(pin, id.with("pin"), Sense::click());
-            if response.clicked() {
-                toggled = Some(page);
+            // not navigate. The Pins tab has no pin chips.
+            if pages.is_none() {
+                let pin = pin_rect(rect);
+                let pinned = input.pins.contains(page);
+                let response = ui.interact(pin, id.with("pin"), Sense::click());
+                if response.clicked() {
+                    toggled = Some(page);
+                }
+                if response.hovered() {
+                    ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                #[cfg(test)]
+                {
+                    let ink = paint_pin(ui, pin, pinned);
+                    self.pin_icons.push((page, pin, pinned));
+                    self.pin_inks.push((page, ink));
+                }
+                #[cfg(not(test))]
+                paint_pin(ui, pin, pinned);
             }
-            if response.hovered() {
-                ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            #[cfg(test)]
-            {
-                let ink = paint_pin(ui, pin, pinned);
-                self.pin_icons.push((page, pin, pinned));
-                self.pin_inks.push((page, ink));
-            }
-            #[cfg(not(test))]
-            paint_pin(ui, pin, pinned);
             self.drawn.push((page, rect));
         }
         if toggled.is_some() {
@@ -922,6 +971,91 @@ impl SidebarView {
             toggle_pin: toggled,
             ..Output::default()
         }
+    }
+
+    /// The pinned pages as cards, in page order, keeping the current page
+    /// in view when it is pinned.
+    fn pins(&mut self, ui: &mut egui::Ui, input: &mut Input) -> Output {
+        ui.spacing_mut().scroll.fade.strength = 0.0;
+        ui.spacing_mut().scroll.kinetic.rubber_band = false;
+        let pinned: Vec<usize> = input
+            .pins
+            .pages()
+            .iter()
+            .copied()
+            .filter(|&page| input.layout.page_size(page).is_some())
+            .collect();
+        let outer = (ui.available_width(), ui.available_height());
+        if pinned.is_empty() {
+            let column = Column::new(&[], outer.0);
+            self.request(
+                Some(&pinned),
+                &(0..0),
+                &column,
+                ui.ctx().pixels_per_point(),
+                input.layout,
+            );
+            muted_note(ui, "No pins yet. Pin pages from the Pages tab.");
+            self.pins_shown = true;
+            return Output::default();
+        }
+        let sizes: Vec<noido_engine::Size> = pinned
+            .iter()
+            .filter_map(|&page| input.layout.page_size(page))
+            .collect();
+        let solid = theme::solid_bar(ui).map(|bar| {
+            let bars = noido_core::scroll_bars(outer, bar, |(width, _)| {
+                let column = Column::new(&sizes, width);
+                (width, column.content_height())
+            });
+            (bars, bars.inner(outer, bar))
+        });
+        let (width, height) = solid.map_or(outer, |(_, room)| room);
+        let column = Column::new(&sizes, width);
+        let resized = (width - self.pins_width).abs() > 0.5;
+        self.pins_width = width;
+        let current = input
+            .current
+            .and_then(|page| pinned.iter().position(|&p| p == page));
+        let target = (!self.pins_shown || resized || self.followed_pin != current)
+            .then(|| {
+                self.followed_pin = current;
+                current.and_then(|index| column.reveal(index, self.pins_offset, height))
+            })
+            .flatten();
+        self.pins_shown = true;
+        let source = ScrollSource {
+            drag: DragScroll::Always,
+            ..Default::default()
+        };
+        let mut area = ScrollArea::vertical()
+            // Its own scroll position, not the thumbnails'.
+            .id_salt("pins")
+            .auto_shrink(false)
+            .scroll_source(source);
+        if let Some(target) = target {
+            area = area.vertical_scroll_offset(target);
+        }
+        if let Some((bars, _)) = solid {
+            area = theme::with_solid_bars(ui.ctx(), area, bars, self.pins_id);
+        }
+        let shown = theme::scope(ui, theme::Role::Scrollbar, |ui| {
+            if let Some((bars, _)) = solid {
+                theme::paint_grooves(ui, ui.available_rect_before_wrap(), bars);
+            }
+            let shown = area.show_viewport(ui, |ui, viewport| {
+                self.column(ui, viewport, &column, input, Some(&pinned))
+            });
+            if let Some((bars, _)) = solid {
+                theme::paint_thumbs(ui, &shown, bars);
+            }
+            shown
+        });
+        self.pins_id = Some(shown.id);
+        self.pins_offset = shown.state.clamped_offset().y;
+        // A click on a pin card previews from the pagelet's task on;
+        // until then it does nothing.
+        Output::default()
     }
 
     /// The list of matches, kept on the current one; returns the match
@@ -1129,20 +1263,43 @@ impl SidebarView {
     /// them, and drops the rest.
     fn request(
         &mut self,
-        column: &Column,
+        pages: Option<&[usize]>,
         visible: &Range<usize>,
+        column: &Column,
         pixels_per_point: f32,
         layout: &Layout,
     ) {
         let Some(renderer) = &self.renderer else {
             return;
         };
-        let kept = with_margin(visible, layout.page_count());
+        let len = pages.map_or(layout.page_count(), |list| list.len());
+        let kept = with_margin(visible, len);
         let order = render_order(visible, &kept);
-        renderer.set_keep(kept.clone());
-        renderer.set_priority(order.clone());
+        match pages {
+            // The Pages tab keeps its window; the pinned pages are extras.
+            None => {
+                self.kept = kept.clone();
+                self.pinned_kept.clear();
+            }
+            Some(list) => {
+                self.pinned_kept = kept
+                    .clone()
+                    .filter_map(|index| list.get(index).copied())
+                    .collect();
+            }
+        }
+        let keep = Keep {
+            window: self.kept.clone(),
+            extra: self.pinned_kept.clone(),
+        };
+        renderer.set_keep(keep.clone());
+        let pages_to_render: Vec<usize> = order
+            .into_iter()
+            .filter_map(|index| page_of(pages, index))
+            .collect();
+        renderer.set_priority(pages_to_render.clone());
         let width = column.thumb_width() * pixels_per_point;
-        for page in order {
+        for page in pages_to_render {
             let wanted = self.tracker.wanted(page..page + 1, |page| {
                 let size = layout.page_size(page).expect("page in range");
                 render_scale(size, width / size.width, MAX_RENDER_SIDE)
@@ -1151,9 +1308,13 @@ impl SidebarView {
                 renderer.request(RenderRequest { page, scale });
             }
         }
-        self.tracker.forget_outside(kept.clone());
-        self.sharp.retain(|page, _| kept.contains(page));
-        self.kept = kept;
+        self.tracker.forget_outside(keep.clone());
+        self.sharp.retain(|page, _| keep.contains(*page));
+    }
+
+    #[cfg(test)]
+    pub fn pinned_kept(&self) -> &[usize] {
+        &self.pinned_kept
     }
 
     /// The tabs, with where they were drawn.
@@ -1447,6 +1608,15 @@ fn with_margin(visible: &Range<usize>, page_count: usize) -> Range<usize> {
         return visible.clone();
     }
     visible.start.saturating_sub(MARGIN)..(visible.end + MARGIN).min(page_count)
+}
+
+/// The page at `index` of the sidebar's cards: `index` itself for the
+/// Pages tab (`pages` is `None`), or the list's entry.
+fn page_of(pages: Option<&[usize]>, index: usize) -> Option<usize> {
+    match pages {
+        None => Some(index),
+        Some(list) => list.get(index).copied(),
+    }
 }
 
 /// The pages of `kept` in the order to render them: the `visible` ones,

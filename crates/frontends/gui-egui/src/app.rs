@@ -7326,6 +7326,106 @@ pub(crate) mod tests {
         assert_eq!(h.app.pins.pages(), [2, 7]);
     }
 
+    /// A harness with pins set, the sidebar open, on the Pins tab.
+    fn pinned_on(pins: &[usize]) -> Harness {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        h.app.pins = Pins::from_sorted(pins.iter().copied());
+        click_tab(&mut h, SidebarTab::Pins);
+        h
+    }
+
+    #[test]
+    fn four_tabs_fit_their_shares_at_the_narrowest_sidebar() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        // At the default width all four labels are whole.
+        let texts = h.texts();
+        for label in ["Pages", "Pins", "Outline", "Search"] {
+            assert!(texts.iter().any(|t| t == label), "{label}: {texts:?}");
+        }
+        h.app.sidebar.width = noido_core::SIDEBAR_MIN_WIDTH;
+        h.frames(3, vec![]);
+        let tabs = h.app.sidebar_view.tab_rects().to_vec();
+        assert_eq!(tabs.len(), 4);
+        for (tab, rect) in tabs {
+            let label = h
+                .latest_texts()
+                .into_iter()
+                .find(|(t, r)| rect.contains_rect(*r) && !t.is_empty())
+                .unwrap_or_else(|| panic!("no label in {tab:?}"));
+            assert!(
+                rect.contains_rect(label.1),
+                "{tab:?}: {:?} outside {rect:?}",
+                label.0
+            );
+        }
+    }
+
+    #[test]
+    fn the_pins_tab_shows_only_the_pinned_pages() {
+        let h = pinned_on(&[2, 7]);
+        assert_eq!(drawn_pages(&h), [2, 7]);
+        assert!(
+            h.app.sidebar_view.pin_icons().is_empty(),
+            "pin icons on Pins"
+        );
+    }
+
+    #[test]
+    fn an_empty_pins_tab_says_how_to_pin() {
+        let h = pinned_on(&[]);
+        assert!(
+            h.texts()
+                .iter()
+                .any(|t| t == "No pins yet. Pin pages from the Pages tab.")
+        );
+        assert!(drawn_pages(&h).is_empty());
+    }
+
+    #[test]
+    fn the_pins_tab_marks_the_current_page() {
+        let mut h = pinned_on(&[2, 7]);
+        click_tab(&mut h, SidebarTab::Thumbnails);
+        click_thumbnail(&mut h, 2);
+        click_tab(&mut h, SidebarTab::Pins);
+        let fill = h.ctx.global_style().visuals.selection.bg_fill;
+        let card = thumb_rect(&h, 2);
+        assert!(filled_with(&h, fill).iter().any(|r| r.intersects(card)));
+    }
+
+    #[test]
+    fn the_pins_tab_keeps_the_pages_renders() {
+        let engine = RecordingEngine::default();
+        let mut h = with_sidebar(engine.clone());
+        let sharp = sharp_settled(&mut h);
+        h.app.pins = Pins::from_sorted([8, 9]);
+        click_tab(&mut h, SidebarTab::Pins);
+        h.until(|h| h.app.sidebar_view.pinned_kept().len() == 2);
+        assert_eq!(h.app.sidebar_view.pinned_kept(), &[8, 9]);
+        // The Pages tab's sharp thumbnails are still there.
+        for page in sharp {
+            assert!(h.app.sidebar_view.sharp_pages().contains(&page), "{page}");
+        }
+        // Once the pinned pages' renders have settled, going back to Pages
+        // asks for nothing again.
+        h.until(|h| h.app.sidebar_view.sharp_pages().contains(&9));
+        h.frames(3, vec![]);
+        let renders = engine.recorded().len();
+        click_tab(&mut h, SidebarTab::Thumbnails);
+        h.frames(5, vec![]);
+        assert_eq!(engine.recorded().len(), renders, "asked for Pages again");
+    }
+
+    #[test]
+    fn pins_off_the_thumbnails_window_are_rendered_and_kept() {
+        let engine = RecordingEngine::default();
+        let mut h = with_sidebar(engine.clone());
+        h.app.pins = Pins::from_sorted([9]);
+        click_tab(&mut h, SidebarTab::Pins);
+        h.until(|h| h.app.sidebar_view.sharp_pages().contains(&9));
+        assert!(h.app.sidebar_view.pinned_kept().contains(&9));
+        assert!(engine.pages().contains(&9));
+    }
+
     /// Zooms out until pages are much shorter than the window.
     fn zoomed_out(h: &mut Harness) {
         for _ in 0..4 {
@@ -8409,11 +8509,11 @@ pub(crate) mod tests {
     fn tabs_show_labels() {
         let mut h = sidebar_on(Arc::new(BlankEngine));
         let texts = h.texts();
-        for label in ["Pages", "Outline", "Search"] {
+        for label in ["Pages", "Pins", "Outline", "Search"] {
             assert!(texts.iter().any(|t| t == label), "{label}: {texts:?}");
         }
         let rects = h.app.sidebar_view.tab_rects().to_vec();
-        assert_eq!(rects.len(), 3);
+        assert_eq!(rects.len(), 4);
         // Even at the narrowest sidebar the strip fits.
         h.app.sidebar.width = 160.0;
         h.frames(3, vec![]);
