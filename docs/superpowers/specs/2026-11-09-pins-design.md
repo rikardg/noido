@@ -40,8 +40,13 @@ following a link inside it moves the document underneath.
 - Links on the previewed page are live: an internal link moves the main
   view and flashes the target (the preview stays on its page); a web or
   mail link opens the browser, as elsewhere.
-- One preview at a time. Clicking another pin swaps the page, keeping the
-  panel's place and size.
+- One preview at a time. Each pin's pagelet remembers its own place and
+  size: closing one and opening it again puts it back, and another pin's
+  pagelet opens at its own place.
+- A pin's first pagelet has its top at that pin's thumbnail and its left
+  edge at the left of the page view, next to the sidebar.
+- Resizing keeps the page's aspect: the panel is dragged by a grip in its
+  bottom-right corner, and the page inside it stays the page's shape.
 - Unpinning the page the preview shows closes the preview.
 
 ## Non-goals
@@ -206,37 +211,42 @@ struct PinPreview {
     page: usize,
     /// The panel's rect in screen points.
     rect: egui::Rect,
-    /// False until the reader moves or resizes it: it opens centred.
-    placed: bool,
+    /// The page's rect inside the panel.
+    page_rect: egui::Rect,
+    /// The page's size, which the panel keeps the aspect of.
+    page_size: Vec2,
     /// How opaque it is drawn now, 0.5 to 1.0.
     opacity: f32,
 }
 ```
 
-`Option<PinPreview>` is `None` while closed, and `NoidoApp` also holds the
-last rect and its `placed` flag, so closing keeps them: within a session,
-reopening opens where it last was (nothing is saved to disk). The app is
-the source of truth for the rect, not egui's window memory: each frame it
-hands the window `current_pos(rect.min)` and reads the resulting rect back.
-Opening a pin that is not the shown page swaps `page` and keeps `rect`,
-clamped into the window; the first open of a session computes it (page
-aspect, centred in the page view). Unpinning the page the preview shows
-closes the preview: the panel is the pin's page, so it goes with the pin.
+`Option<PinPreview>` is `None` while closed, and `NoidoApp` also keeps a
+map from page to that pin's rect and page size: within a session, closing a pagelet and opening it again puts it back,
+and each pin's pagelet has its own place (nothing is saved to disk). The
+app is the source of truth for the rect, not egui's window memory: each
+frame it hands the window `current_pos(rect.min)` and reads the resulting
+rect back. A pin seen for the first time gets a page fitted into a share
+of the page view, its top at the pin's thumbnail and its left at the page
+view's left edge, next to the sidebar (clamped inside the view). Unpinning
+the page the preview shows closes the preview: the panel is the pin's
+page, so it goes with the pin.
 
 **Fit.** A pure helper in `noido-core/src/preview.rs` fits a page's size
 into a rect with the page centred and its aspect kept, and maps a screen
 point back to page points for link hits; unit tests cover the letterboxing
 and the mapping's round trip.
 
-**The panel.** An `egui::Window` with no title bar, resizable, movable by
-dragging anywhere on it, drawn after the page view so it is above the
-pages. Its content is the page fitted inside a small padding, the paper
-tint, the sharp render from `textures`, with the thumbnail as stand-in
-while the sharp one arrives, fading in as on the pages. The panel has a
-border and a shadow from the theme so it reads as floating. First open
-sizes it to the page's aspect at about 60% of the page view's height,
-capped by the view's width, centred in the page view and kept inside the
-window; after the reader has placed it, the size and place stand.
+**The panel.** An `egui::Window` with no title bar, movable by dragging
+anywhere on it, drawn after the page view so it is above the pages. Its
+content is the page inside a small padding, the paper tint, the sharp
+render from `textures`, with the thumbnail as stand-in while the sharp one
+arrives, fading in as on the pages. The panel has a border and a shadow
+from the theme so it reads as floating. The page inside keeps the page's
+aspect; egui's own edge resizing is off and a grip in the panel's
+bottom-right corner resizes it along the page's shape, from the smallest
+panel up to the window's width. First open sizes it to about 60% of the
+page view's height, capped by the view's width; after the reader has
+placed it, that pin's size and place stand.
 
 **Close.** A `×` chip in the panel's upper-right, over the page's corner,
 with its own hit area that closes the preview. It is registered after the
@@ -244,9 +254,10 @@ window's own content, as the pin is after the thumbnail.
 
 **Fade.** While the pointer is inside the panel's rect it draws at full
 opacity; when it leaves, the panel eases to 0.5 (and back in on entry),
-repainting while it does. Both the page tint's alpha and the chrome's
-colours carry the opacity. Under reduced motion the two values are swapped
-at once.
+repainting while it does. The panel's surface, the page's tint and the
+chrome's colours all carry the opacity, so the document under it shows
+through. A pagelet opened with the pointer away starts at half, not at
+full. Under reduced motion the two values are swapped at once.
 
 **Links.** While the preview is open, the app asks
 `Links::want(preview.page)`; when the page's links arrive it hit-tests the
