@@ -49,8 +49,9 @@ following a link inside it moves the document underneath.
   against the sidebar. Its place, size and whether it is open (and on
   which page) are saved with the document and restored on the next start;
   an open pagelet whose page is no longer pinned stays shut.
-- Resizing keeps the page's aspect: the panel is dragged by a grip in its
-  bottom-right corner, and the page inside it stays the page's shape.
+- Resizing keeps the page's aspect: the panel has a handle on each of its
+  four sides and on three of its corners (the top-right is the close chip),
+  and the page inside it stays the page's shape as it is dragged.
 - Unpinning the page the preview shows closes the preview.
 
 ## Non-goals
@@ -235,7 +236,9 @@ page's aspect. The app is
 the source of truth for the rect, not egui's window memory: each frame it
 hands the window `current_pos(rect.min)` and reads the resulting rect
 back. Its first place is the page view's upper-left corner, flush against
-the sidebar (clamped inside the view), sized to a share of the view.
+the sidebar, sized to a share of the view. A remembered place is clamped
+to the window, not to the page view, so a pagelet the reader left over the
+sidebar opens over the sidebar again.
 Unpinning the page the preview shows closes the preview: the panel is the
 pin's page, so it goes with the pin.
 
@@ -250,9 +253,11 @@ content is the page inside a small padding, the paper tint, the sharp
 render from `textures`, with the thumbnail as stand-in while the sharp one
 arrives, fading in as on the pages. The panel has a border and a shadow
 from the theme so it reads as floating. The page inside keeps the page's
-aspect; egui's own edge resizing is off and a grip in the panel's
-bottom-right corner resizes it along the page's shape, from the smallest
-panel up to the window's width. First open sizes it to about 60% of the
+aspect; egui's own edge resizing is off and handles on the four sides and
+on three corners resize it along the page's shape, from the smallest panel
+up to the window's edges. Dragging a handle keeps the opposite side or
+corner where it was; a side drag keeps the panel's top or left, and a
+corner drag keeps the opposite corner. First open sizes it to about 60% of the
 page view's height, capped by the view's width; after the reader has
 placed it, that pin's size and place stand.
 
