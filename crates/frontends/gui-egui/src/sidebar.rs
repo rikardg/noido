@@ -441,10 +441,7 @@ impl SidebarView {
         let (width, height) = solid.map_or(outer, |(_, room)| room);
         // An overlay bar covers the rows' right end: keep clear of it when
         // the list overflows.
-        let covered = match solid {
-            None if content_height > height => theme::floating_bar(ui).unwrap_or(0.0),
-            _ => 0.0,
-        };
+        let covered = floating_cover(ui, content_height, height);
         let width = width - covered;
         let resized = (width - self.outline_width).abs() > 0.5;
         self.outline_width = width;
@@ -890,6 +887,9 @@ impl SidebarView {
             (bars, bars.inner(outer, bar))
         });
         let height = solid.map_or(outer.1, |(_, room)| room.1);
+        // An overlay bar covers the cards' right end: keep clear of it when
+        // the list overflows.
+        let covered = floating_cover(ui, content_height, height);
         let current = hits.current();
         // Scrolled to the current match when it changes, the least distance.
         let target = current
@@ -932,7 +932,7 @@ impl SidebarView {
             }
             let shown = area.show_viewport(ui, |ui, viewport| {
                 ui.set_style(panel);
-                let content = vec2(ui.available_width(), content_height);
+                let content = vec2(ui.available_width() - covered, content_height);
                 let (area, _) = ui.allocate_exact_size(content, Sense::hover());
                 let first = ((viewport.min.y - RESULT_MARGIN) / card).floor().max(0.0);
                 let last = ((viewport.max.y - RESULT_MARGIN) / card).ceil().max(0.0);
@@ -1285,6 +1285,16 @@ fn want_texts(input: &mut Input, pages: Range<usize>) {
         if highlights.iter().any(|h| h.pages().contains(&page)) {
             texts.want(page, *request_text);
         }
+    }
+}
+
+/// The width an overlay bar covers at the right of a list `content_height`
+/// tall in `height`: none unless the bar floats and the list overflows.
+fn floating_cover(ui: &egui::Ui, content_height: f32, height: f32) -> f32 {
+    if content_height > height {
+        theme::floating_bar(ui).unwrap_or(0.0)
+    } else {
+        0.0
     }
 }
 

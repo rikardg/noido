@@ -8410,6 +8410,52 @@ pub(crate) mod tests {
         );
     }
 
+    /// The matches' cards end left of the scroll bar when the list
+    /// overflows, solid or floating, at the narrowest sidebar too; a list
+    /// that fits gets the whole width.
+    #[test]
+    fn result_cards_leave_the_scroll_bar_clear() {
+        for (solid, bar) in [(false, 12.0), (true, 17.0)] {
+            for width in [None, Some(noido_core::SIDEBAR_MIN_WIDTH)] {
+                let make = |count: usize| {
+                    let pages: Vec<&[&str]> = vec![&["cat"]; count];
+                    let mut h = searching(&TextEngine::new(&pages));
+                    if solid {
+                        h = h.solid_bars();
+                    }
+                    if let Some(width) = width {
+                        h.app.sidebar.width = width;
+                    }
+                    search_for(&mut h, "cat");
+                    h.frames(4, vec![]);
+                    h
+                };
+                let h = make(60);
+                let bar_left = h.app.sidebar.width - 1.0 - bar;
+                let rows = h.app.sidebar_view.result_rows();
+                assert!(rows.len() > 5, "{}", rows.len());
+                for (index, row) in rows {
+                    assert!(
+                        row.max.x <= bar_left + 0.5,
+                        "solid {solid}, {width:?}: card {index} ends at {}, the bar starts at {bar_left}",
+                        row.max.x
+                    );
+                }
+                let short = make(2);
+                let rows = short.app.sidebar_view.result_rows();
+                assert_eq!(rows.len(), 2);
+                for (_, row) in rows {
+                    let edge = short.app.sidebar.width - 1.0;
+                    assert!(
+                        row.max.x >= edge - 0.5,
+                        "solid {solid}, {width:?}: a list that fits ends at {}",
+                        row.max.x
+                    );
+                }
+            }
+        }
+    }
+
     /// The cards' text keeps the panel's colours under the scrollbar role:
     /// the matched word is drawn in the strong text colour, whether the bars
     /// are solid (where the role makes egui's thumb colours transparent) or
