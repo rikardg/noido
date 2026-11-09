@@ -125,7 +125,10 @@ fn paper_name(paper: Paper) -> &'static str {
         Paper::White => "white",
         Paper::Sepia => "sepia",
         Paper::Bisque => "bisque",
+        Paper::Sand => "sand",
         Paper::Grey => "grey",
+        Paper::DarkGrey => "dark-grey",
+        Paper::DarkerGrey => "darker-grey",
     }
 }
 
@@ -341,27 +344,31 @@ mod tests {
     }
 
     #[test]
-    fn bisque_is_written_by_name() {
+    fn each_paper_is_written_by_its_stable_name() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = Settings {
-            paper: Paper::Bisque,
-            ..Settings::default()
-        };
-        file(&dir).save(&settings).unwrap();
-        let text = fs::read_to_string(file(&dir).path()).unwrap();
-        assert!(text.contains("paper = \"bisque\""), "{text}");
-    }
-
-    #[test]
-    fn paper_is_written_by_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let settings = Settings {
-            paper: Paper::Grey,
-            ..Settings::default()
-        };
-        file(&dir).save(&settings).unwrap();
-        let text = fs::read_to_string(file(&dir).path()).unwrap();
-        assert!(text.contains("paper = \"grey\""), "{text}");
+        // These names are in users' files: renaming one resets that user's
+        // paper to white, so each is pinned here, not derived from the enum.
+        let names = [
+            (Paper::White, "white"),
+            (Paper::Sepia, "sepia"),
+            (Paper::Bisque, "bisque"),
+            (Paper::Sand, "sand"),
+            (Paper::Grey, "grey"),
+            (Paper::DarkGrey, "dark-grey"),
+            (Paper::DarkerGrey, "darker-grey"),
+        ];
+        for (paper, name) in names {
+            let settings = Settings {
+                paper,
+                ..Settings::default()
+            };
+            file(&dir).save(&settings).unwrap();
+            let text = fs::read_to_string(file(&dir).path()).unwrap();
+            assert!(
+                text.contains(&format!("paper = \"{name}\"")),
+                "{paper:?}: {text}"
+            );
+        }
     }
 
     #[test]
