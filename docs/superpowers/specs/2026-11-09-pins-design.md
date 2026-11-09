@@ -19,8 +19,9 @@ following a link inside it moves the document underneath.
 
 ## Goals
 
-- A pin control in the upper-right corner of every Pages thumbnail.
-  Clicking it pins or unpins that page, and does not navigate.
+- A pin control in the upper-right corner of every Pages thumbnail, and of
+  every card in the Pins tab. Clicking it pins or unpins that page, and
+  neither navigates nor opens the pagelet.
 - A `Pins` tab beside `Pages`, in the strip at the left of `Outline`
   (`Pages · Pins · Outline · Search`). It shows the pinned pages, and only
   them, as thumbnails in page order: the page image, its number, and the
@@ -44,8 +45,9 @@ following a link inside it moves the document underneath.
   and size when another pin swaps its page, and when it is closed and
   opened again.
 - Its first place is the upper-left corner of the page view, flush
-  against the sidebar. Its place and size are saved with the document and
-  restored on the next start.
+  against the sidebar. Its place, size and whether it is open (and on
+  which page) are saved with the document and restored on the next start;
+  an open pagelet whose page is no longer pinned stays shut.
 - Resizing keeps the page's aspect: the panel is dragged by a grip in its
   bottom-right corner, and the page inside it stays the page's shape.
 - Unpinning the page the preview shows closes the preview.
@@ -53,8 +55,6 @@ following a link inside it moves the document underneath.
 ## Non-goals
 
 - Pins at a place (a scroll position, a selection) rather than a page.
-- Pinning or unpinning from the Pins tab; pins are managed from the Pages
-  tab only. (A pin icon there, or a context menu, can come later.)
 - Reordering pins by hand; they are in page order.
 - Keys or menu items for pinning, for opening the preview, or for
   switching to the Pins tab.
@@ -166,20 +166,23 @@ and opened in a short one lands on no page. `sidebar_tab` saves `"pins"`
 and reads it back; every other unknown value, including the old
 `"bookmarks"`, still means thumbnails. Old files load with no pins.
 
-### 3. The pin control on Pages thumbnails (`egui`)
+### 3. The pin control on the cards (`egui`)
 
-Each Pages thumbnail gets a small pin in its upper-right corner, inside the
-page image: a painted pin (head and needle), over a rounded chip filled
+Each card, on the Pages tab and on the Pins tab, gets a small pin in its
+upper-right corner, inside the page image: a painted pin (head and needle),
+over a rounded chip filled
 with the panel colour at most of its opacity so the pin reads on a white
 page, a dark scan or a photo. It is drawn always, in the weak text colour
 when the page is unpinned and the accent (link/selection) colour when it is
 pinned; hovering it brightens the chip and gives the pointing hand.
 
 Its hit area is about 22 points square, inset from the page's corner. It is
-registered after the thumbnail's own response, as the outline's chevron is,
-and a press on it neither navigates nor scrolls: the thumbnail's click is
+registered after the card's own response, as the outline's chevron is, and a
+press on it neither navigates, previews nor scrolls: the card's click is
 ignored for that press. The sidebar reports `toggle_pin: Option<usize>` to
-the app, which applies it to `Pins` and saves as usual.
+the app, which applies it to `Pins`, saves as usual, and closes the pagelet
+when the page it shows is the one unpinned. On the Pins tab every card's pin
+is filled, and unpinning removes the card.
 
 ### 4. The Pins tab (`egui`)
 
@@ -224,8 +227,10 @@ struct PinPreview {
 `Option<PinPreview>` is `None` while closed, and `NoidoApp` also keeps the
 pagelet's last place and page width (a `Pagelet` in the document's state),
 so closing it and opening it again puts it back, and a page swapped in
-keeps that place. It is saved with the document and restored on the next
-start; its height always follows the displayed page's aspect. The app is
+keeps that place. It is saved with the document, open or closed, on which
+page and at what place and size, and restored on the next start — unless
+the page is no longer pinned; its height always follows the displayed
+page's aspect. The app is
 the source of truth for the rect, not egui's window memory: each frame it
 hands the window `current_pos(rect.min)` and reads the resulting rect
 back. Its first place is the page view's upper-left corner, flush against

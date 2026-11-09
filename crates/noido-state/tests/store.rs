@@ -345,6 +345,7 @@ fn the_pagelets_place_round_trips() {
             x: 12.0,
             y: 34.0,
             width: 400.0,
+            page: Some(4),
         }),
         ..state(3)
     };
@@ -354,9 +355,31 @@ fn the_pagelets_place_round_trips() {
         Some(Pagelet {
             x: 12.0,
             y: 34.0,
-            width: 400.0
+            width: 400.0,
+            page: Some(4),
         })
     );
+}
+
+#[test]
+fn a_closed_pagelets_place_has_no_page() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        pagelet: Some(Pagelet {
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            page: None,
+        }),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    let text = fs::read_to_string(docs(&dir).join(format!("{}.toml", key.hex()))).unwrap();
+    let pagelet = text.split("[pagelet]").nth(1).expect("a [pagelet] table");
+    assert!(!pagelet.contains("page ="), "{pagelet}");
+    assert_eq!(loaded(&store, &key).unwrap().pagelet.unwrap().page, None);
 }
 
 #[test]

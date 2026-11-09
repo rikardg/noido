@@ -132,6 +132,9 @@ pub struct NoidoApp {
     pin_preview: Option<PinPreview>,
     /// Where the preview pagelet was, kept while it is closed.
     pagelet: Option<Pagelet>,
+    /// A pagelet to open once the view has a rect, restored with the
+    /// document.
+    pending_pagelet: Option<usize>,
     /// A link clicked in the pagelet, followed at the start of the next
     /// frame so the view's scroll takes the jump.
     clicked_target: Option<noido_engine::LinkTarget>,
@@ -310,6 +313,7 @@ impl NoidoApp {
             highlights: Highlights::default(),
             pins: Pins::default(),
             pagelet: None,
+            pending_pagelet: None,
             clicked_target: None,
             pin_preview: None,
             pending_pin: None,
@@ -925,7 +929,11 @@ impl NoidoApp {
             self.highlights = Highlights::from_items(state.highlights.clone());
             self.pins = state.pins.clone();
             self.pins.retain_below(self.view.layout().page_count());
-            self.pagelet = state.pagelet;
+            self.pagelet = state.pagelet.map(|pagelet| Pagelet {
+                page: None,
+                ..pagelet
+            });
+            self.pending_pagelet = state.pagelet.and_then(|pagelet| pagelet.page);
         }
         self.persistence = Some(Persistence {
             store,
@@ -945,7 +953,10 @@ impl NoidoApp {
             history: self.history.clone(),
             highlights: self.highlights.items().to_vec(),
             pins: self.pins.clone(),
-            pagelet: self.pagelet,
+            pagelet: self.pagelet.map(|pagelet| Pagelet {
+                page: self.pin_preview.as_ref().map(|preview| preview.page),
+                ..pagelet
+            }),
         })
     }
 
@@ -2197,6 +2208,7 @@ impl NoidoApp {
                 x: preview.rect.min.x,
                 y: preview.rect.min.y,
                 width: preview.page_size.x,
+                page: None,
             });
         }
     }
@@ -2348,6 +2360,21 @@ impl NoidoApp {
                 });
                 if let Some(link) = link {
                     ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+                    // The link lights up, as one on a page does: every
+                    // area, in the theme's link colour, at the panel's
+                    // scale.
+                    let scale = page_rect.width() / size.width;
+                    let stroke = Stroke::new(LINK_OUTLINE_WIDTH, ui.visuals().hyperlink_color);
+                    for area in &link.areas {
+                        let min = page_rect.min + vec2(area.x, area.y) * scale;
+                        let size = vec2(area.width, area.height) * scale;
+                        ui.painter().rect_stroke(
+                            Rect::from_min_size(min, size),
+                            2.0,
+                            stroke,
+                            egui::StrokeKind::Outside,
+                        );
+                    }
                     if !close && ui.input(|i| i.pointer.primary_clicked()) {
                         follow = Some(link.target);
                     }
@@ -2367,6 +2394,7 @@ impl NoidoApp {
                 x: drawn.min.x,
                 y: drawn.min.y,
                 width: preview.page_size.x,
+                page: None,
             });
         }
         // Followed next frame, so the view's scroll applies the jump.
@@ -2630,6 +2658,18 @@ impl NoidoApp {
             }
         } else {
             self.sidebar_view.hidden();
+        }
+
+        // A pagelet restored open waits for the view's rect, then shows.
+        if let Some(page) = self.pending_pagelet.take()
+            && page < self.view.layout().page_count()
+            && self.pins.contains(page)
+        {
+            let view = self
+                .last_scroll
+                .map_or_else(|| ctx.content_rect(), |last| last.inner);
+            let pointer = ctx.input(|i| i.pointer.hover_pos());
+            self.open_pagelet(page, view, pointer);
         }
 
         // A pin click waits out egui's double-click window before it
@@ -7850,10 +7890,21 @@ pub(crate) mod tests {
     fn the_pins_tab_shows_only_the_pinned_pages() {
         let h = pinned_on(&[2, 7]);
         assert_eq!(drawn_pages(&h), [2, 7]);
-        assert!(
-            h.app.sidebar_view.pin_icons().is_empty(),
-            "pin icons on Pins"
-        );
+        // Each card carries its pin too, so it can be unpinned here.
+        let icons = h.app.sidebar_view.pin_icons();
+        assert_eq!(icons.len(), 2);
+        assert!(icons.iter().all(|(_, _, pinned)| *pinned));
+    }
+
+    #[test]
+    fn clicking_a_pins_pin_unpins_it_without_previewing() {
+        let mut h = pinned_on(&[2]);
+        h.click(pin_rect(&h, 2).center());
+        // Longer than the double-click window.
+        h.frames(40, vec![]);
+        assert!(!h.app.pins.contains(2));
+        assert!(h.app.pin_preview.is_none(), "it previewed");
+        assert!(drawn_pages(&h).is_empty(), "the card stayed");
     }
 
     #[test]
@@ -8215,6 +8266,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_link_in_the_pagelet_lights_up_on_hover() {
+        let mut h = pagelet_linking(&[0], 0);
+        let at = pagelet_pos(&h, 100.0, 96.0);
+        hover_link(&mut h, at);
+        // Past the window's own fade-in, which dims everything it paints.
+        h.frames(10, vec![]);
+        let outlines = link_outlines(&h);
+        assert!(!outlines.is_empty(), "no outline under the pointer");
+        // The pagelet's link, at the pagelet's scale.
+        let page = h.app.pagelet_page_rect().unwrap();
+        let scale = page.width() / 612.0;
+        let wanted = Rect::from_min_size(
+            page.min + vec2(72.0, 90.0) * scale,
+            vec2(60.0, 12.0) * scale,
+        );
+        assert!(
+            outlines
+                .iter()
+                .any(|r| (r.center() - wanted.center()).length() < 1.5),
+            "{outlines:?} vs {wanted:?}"
+        );
+    }
+
+    #[test]
     fn a_web_link_in_the_pagelet_opens_it() {
         let mut h = pagelet_linking(&[0], 0);
         let at = pagelet_pos(&h, 100.0, 206.0);
@@ -8382,6 +8457,103 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_open_pagelet_is_saved_with_the_document() {
+        let mut h = pinned_on(&[2]);
+        h.click(thumb_rect(&h, 2).center());
+        wait_for_pagelet(&mut h, 2);
+        assert_eq!(
+            h.app.doc_state().unwrap().pagelet.unwrap().page,
+            Some(2),
+            "an open pagelet is saved with its page"
+        );
+        let rect = h.app.pin_preview.as_ref().unwrap().rect;
+        let chip = egui::pos2(
+            rect.max.x - PAGELET_PADDING - PAGELET_CLOSE / 2.0,
+            rect.min.y + PAGELET_PADDING + PAGELET_CLOSE / 2.0,
+        );
+        h.click(chip);
+        h.frames(2, vec![]);
+        assert_eq!(
+            h.app.doc_state().unwrap().pagelet.unwrap().page,
+            None,
+            "a closed pagelet is saved shut"
+        );
+    }
+
+    #[test]
+    fn an_open_pagelet_is_restored_with_the_document() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let restored = DocState {
+            view: ViewState {
+                zoom: noido_core::ZoomMode::FitWidth,
+                scale: 1.0,
+                continuous: true,
+                dual: false,
+                odd_left: true,
+                gapless: false,
+                centre: noido_core::DocPoint {
+                    page: 0,
+                    x: 306.0,
+                    y: 400.0,
+                },
+            },
+            sidebar: SidebarState::default(),
+            history: History::default(),
+            highlights: Vec::new(),
+            pins: Pins::from_sorted([2]),
+            pagelet: Some(noido_state::Pagelet {
+                x: 300.0,
+                y: 120.0,
+                width: 360.0,
+                page: Some(2),
+            }),
+        };
+        let h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
+        });
+        assert!(pagelet_on(&h, 2), "the pagelet did not reopen");
+        let panel = h.app.pin_preview.as_ref().unwrap().rect;
+        assert!((panel.min.x - 300.0).abs() < 1.0, "{panel:?}");
+        assert!((panel.min.y - 120.0).abs() < 1.0, "{panel:?}");
+        let page = h.app.pagelet_page_rect().unwrap();
+        assert!((page.width() - 360.0).abs() < 1.0, "{page:?}");
+    }
+
+    #[test]
+    fn a_restored_pagelet_whose_page_is_not_pinned_stays_shut() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let restored = DocState {
+            view: ViewState {
+                zoom: noido_core::ZoomMode::FitWidth,
+                scale: 1.0,
+                continuous: true,
+                dual: false,
+                odd_left: true,
+                gapless: false,
+                centre: noido_core::DocPoint {
+                    page: 0,
+                    x: 306.0,
+                    y: 400.0,
+                },
+            },
+            sidebar: SidebarState::default(),
+            history: History::default(),
+            highlights: Vec::new(),
+            pins: Pins::from_sorted([2]),
+            pagelet: Some(noido_state::Pagelet {
+                x: 300.0,
+                y: 120.0,
+                width: 360.0,
+                page: Some(9),
+            }),
+        };
+        let h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
+        });
+        assert!(h.app.pin_preview.is_none(), "it opened an unpinned page");
+    }
+
+    #[test]
     fn the_pagelets_place_is_restored_with_the_document() {
         let dir = tempfile::TempDir::new().unwrap();
         let restored = DocState {
@@ -8406,6 +8578,7 @@ pub(crate) mod tests {
                 x: 300.0,
                 y: 120.0,
                 width: 360.0,
+                page: None,
             }),
         };
         let mut h = Harness::build(|app| {

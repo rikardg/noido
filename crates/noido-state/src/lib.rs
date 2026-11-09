@@ -97,13 +97,14 @@ impl Frame {
     }
 }
 
-/// Where the preview pagelet was, and how wide its page was. Its height
-/// follows the page's aspect.
+/// Where the preview pagelet was, how wide its page was, and whether it
+/// was open, on which page. Its height follows the page's aspect.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pagelet {
     pub x: f32,
     pub y: f32,
     pub width: f32,
+    pub page: Option<usize>,
 }
 
 /// What is remembered about a document.
@@ -456,6 +457,9 @@ struct StoredPagelet {
     x: f32,
     y: f32,
     width: f32,
+    /// Absent when the pagelet was closed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    page: Option<usize>,
 }
 
 /// The TOML form of the document's own [`ViewState`].
@@ -584,6 +588,7 @@ impl Entry {
                 x: pagelet.x,
                 y: pagelet.y,
                 width: pagelet.width,
+                page: pagelet.page,
             }),
         }
     }
@@ -619,6 +624,7 @@ impl Entry {
                 x: pagelet.x,
                 y: pagelet.y,
                 width: pagelet.width,
+                page: pagelet.page,
             }),
         }
     }

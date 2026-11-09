@@ -948,27 +948,25 @@ impl SidebarView {
                 painter.rect_filled(pill, pill.height() / 2.0, selection.bg_fill);
             }
             painter.galley(number.min, galley, colour);
-            // The pin, over the page's corner: a press on it pins and does
-            // not navigate. The Pins tab has no pin chips.
-            if pages.is_none() {
-                let pin = pin_rect(rect);
-                let pinned = input.pins.contains(page);
-                let response = ui.interact(pin, id.with("pin"), Sense::click());
-                if response.clicked() {
-                    toggled = Some(page);
-                }
-                if response.hovered() {
-                    ui.set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                #[cfg(test)]
-                {
-                    let ink = paint_pin(ui, pin, pinned, response.hovered());
-                    self.pin_icons.push((page, pin, pinned));
-                    self.pin_inks.push((page, ink));
-                }
-                #[cfg(not(test))]
-                paint_pin(ui, pin, pinned, response.hovered());
+            // The pin, over the page's corner: a press on it pins or
+            // unpins, on both tabs, and does not click the card.
+            let pin = pin_rect(rect);
+            let pinned = input.pins.contains(page);
+            let response = ui.interact(pin, id.with("pin"), Sense::click());
+            if response.clicked() {
+                toggled = Some(page);
             }
+            if response.hovered() {
+                ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            #[cfg(test)]
+            {
+                let ink = paint_pin(ui, pin, pinned, response.hovered());
+                self.pin_icons.push((page, pin, pinned));
+                self.pin_inks.push((page, ink));
+            }
+            #[cfg(not(test))]
+            paint_pin(ui, pin, pinned, response.hovered());
             self.drawn.push((page, rect));
         }
         if toggled.is_some() {
@@ -1067,6 +1065,7 @@ impl SidebarView {
         self.pins_offset = shown.state.clamped_offset().y;
         Output {
             pin_clicked: shown.inner.clicked,
+            toggle_pin: shown.inner.toggle_pin,
             ..Output::default()
         }
     }
