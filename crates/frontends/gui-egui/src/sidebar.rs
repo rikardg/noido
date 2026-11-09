@@ -141,7 +141,7 @@ pub struct SidebarView {
     sharp: HashMap<usize, PageImage>,
     /// Sharp renders fading in over the low-res thumbnails.
     fades: Fades,
-    /// The pages visible last frame; empty while closed.
+    /// The pages visible last frame; empty while closed or on another tab.
     visible: Range<usize>,
     /// The visible pages and the margin around them, whose sharp renders
     /// are asked for and kept.
@@ -159,7 +159,8 @@ pub struct SidebarView {
     width: f32,
     /// The thumbnails' scroll area's id, once shown.
     scroll_id: Option<egui::Id>,
-    /// Whether the sidebar was shown last frame.
+    /// Whether the thumbnails were shown last frame: not while the sidebar
+    /// is closed or another tab shows.
     shown: bool,
     highlighted: Range<usize>,
     /// The list of matches: its visible rows' screen rects last frame, the
@@ -219,11 +220,23 @@ impl SidebarView {
         }
     }
 
-    /// The sidebar is closed: no sharp renders, and the outline follows the
-    /// reader again when it opens.
+    /// The sidebar is closed, from whichever tab: the sharp renders and
+    /// the pages asked for are let go, the thumbnails and the outline
+    /// follow the reader again when it opens, and the thumb is drawn in
+    /// place.
     pub fn hidden(&mut self) {
-        self.closed();
+        self.left();
         self.outline_shown = false;
+        // Called every frame while closed: once is enough.
+        if self.kept.is_empty() && self.sharp.is_empty() {
+            return;
+        }
+        self.kept = 0..0;
+        self.sharp.clear();
+        self.tracker.forget_outside(0..0);
+        if let Some(renderer) = &self.renderer {
+            renderer.set_keep(0..0);
+        }
     }
 
     /// A different outline: its folding started over and its rows moved, so
@@ -281,22 +294,16 @@ impl SidebarView {
         self.sharp.retain(|&page, _| page < page_count);
     }
 
-    /// Forgets the sharp renders while the sidebar is closed, and where its
-    /// thumb was drawn: it is drawn in place when the thumbnails show again.
-    pub fn closed(&mut self) {
-        if !self.shown {
-            return;
-        }
+    /// The thumbnails are out of sight on another tab: they count as not
+    /// shown, so they follow the current page when they come back, and the
+    /// thumb is drawn in place. No new sharp renders are asked for, but
+    /// those made or in flight stay, within the range kept, so they show
+    /// sharp at once on coming back.
+    fn left(&mut self) {
         self.shown = false;
         self.thumb = Eased::default();
         self.visible = 0..0;
-        self.kept = 0..0;
-        self.sharp.clear();
         self.drawn.clear();
-        self.tracker.forget_outside(0..0);
-        if let Some(renderer) = &self.renderer {
-            renderer.set_keep(0..0);
-        }
     }
 
     /// Draws the open sidebar at the left of `ui` and records its width,
@@ -337,9 +344,7 @@ impl SidebarView {
                     match state.tab {
                         SidebarTab::Thumbnails => self.scrolled(ui, input),
                         SidebarTab::Results => {
-                            // The thumbnails are out of sight: no sharp
-                            // renders for them.
-                            self.closed();
+                            self.left();
                             match &input.results {
                                 Some(results) => Output {
                                     hit: self.results(ui, results),
@@ -352,7 +357,7 @@ impl SidebarView {
                             }
                         }
                         SidebarTab::Outline => {
-                            self.closed();
+                            self.left();
                             self.outline(ui, input)
                         }
                     }
@@ -1129,6 +1134,14 @@ impl SidebarView {
     #[cfg(test)]
     pub fn outline_offset(&self) -> f32 {
         self.outline_offset
+    }
+
+    /// The window of pages the renderer is told to keep.
+    #[cfg(test)]
+    pub fn renderer_keep(&self) -> Range<usize> {
+        self.renderer
+            .as_ref()
+            .map_or(0..0, |renderer| renderer.keep().window)
     }
 
     #[cfg(test)]
