@@ -11976,6 +11976,95 @@ pub(crate) mod tests {
         assert!(h.app.history.back_entries().is_empty());
     }
 
+    /// A reader with branches of each kind, folded and open: with and
+    /// without targets, one a web address.
+    fn double_click_engine() -> TextEngine {
+        TextEngine::new(&[&["x"] as &[&str]; 10]).with_outline(vec![
+            heading("Top", 0),
+            branch(heading("Chap", 3), false, vec![heading("Kid", 4)]),
+            branch(heading("Open", 6), true, vec![heading("OKid", 7)]),
+            branch(untargeted("Folder"), false, vec![heading("FKid", 8)]),
+            branch(untargeted("OpenFolder"), true, vec![heading("OFKid", 9)]),
+            branch(
+                address("WebB", "https://example.org/"),
+                false,
+                vec![heading("WKid", 9)],
+            ),
+            heading("Leaf", 8),
+        ])
+    }
+
+    /// Two presses in quick succession at `at`.
+    fn double_click(h: &mut Harness, at: egui::Pos2) {
+        h.click(at);
+        h.click(at);
+        h.frames(2, vec![]);
+    }
+
+    fn double_click_row(h: &mut Harness, title: &str) {
+        let at = row_of(h, title).row.center();
+        double_click(h, at);
+    }
+
+    #[test]
+    fn double_click_on_a_folded_branch_with_a_target_jumps_once_and_unfolds() {
+        let mut h = outline_ready(&double_click_engine());
+        let row = row_of(&h, "Chap").row;
+        let offset = h.app.sidebar_view.outline_offset();
+        double_click(&mut h, row.center());
+        assert_eq!(h.app.history.back_entries().len(), 1);
+        assert_eq!(h.app.chosen, Some(3));
+        assert!(row_titles(&h).contains(&"Kid".to_owned()));
+        assert_eq!(row_of(&h, "Chap").row, row);
+        assert_eq!(h.app.sidebar_view.outline_offset(), offset);
+    }
+
+    #[test]
+    fn double_click_on_an_open_branch_with_a_target_keeps_it_open() {
+        let mut h = outline_ready(&double_click_engine());
+        double_click_row(&mut h, "Open");
+        assert_eq!(h.app.history.back_entries().len(), 1);
+        assert!(row_titles(&h).contains(&"OKid".to_owned()));
+    }
+
+    #[test]
+    fn double_click_on_a_branch_without_a_target_ends_unfolded() {
+        let mut h = outline_ready(&double_click_engine());
+        double_click_row(&mut h, "Folder");
+        assert!(row_titles(&h).contains(&"FKid".to_owned()));
+        double_click_row(&mut h, "OpenFolder");
+        assert!(row_titles(&h).contains(&"OFKid".to_owned()));
+        assert!(h.app.history.back_entries().is_empty());
+    }
+
+    #[test]
+    fn double_click_on_a_leaf_jumps_once() {
+        let mut h = outline_ready(&double_click_engine());
+        double_click_row(&mut h, "Leaf");
+        assert_eq!(h.app.history.back_entries().len(), 1);
+        assert_eq!(h.app.chosen, Some(8));
+    }
+
+    #[test]
+    fn double_click_on_the_chevron_toggles_twice() {
+        let mut h = outline_ready(&double_click_engine());
+        let at = row_of(&h, "Chap").chevron.unwrap().center();
+        double_click(&mut h, at);
+        assert!(!row_titles(&h).contains(&"Kid".to_owned()));
+        assert!(h.app.history.back_entries().is_empty());
+        let at = row_of(&h, "Open").chevron.unwrap().center();
+        double_click(&mut h, at);
+        assert!(row_titles(&h).contains(&"OKid".to_owned()));
+    }
+
+    #[test]
+    fn double_click_on_a_web_branch_opens_once_and_unfolds() {
+        let mut h = outline_ready(&double_click_engine());
+        double_click_row(&mut h, "WebB");
+        assert_eq!(h.opened, ["https://example.org/".to_owned()]);
+        assert!(row_titles(&h).contains(&"WKid".to_owned()));
+    }
+
     #[test]
     fn mark_follows_the_pages_without_unfolding() {
         let mut h = outline_ready(&outline_engine());
@@ -12111,7 +12200,9 @@ pub(crate) mod tests {
         h.frames(2, vec![]);
         assert_eq!(h.app.clicked_entry, None);
         assert_eq!(marked_rows(&h), ["Chapter 2"]);
-        // Another way of choosing a page ends it too.
+        // Another way of choosing a page ends it too. A pause first: two
+        // clicks on a row in quick succession are a double click.
+        h.frames(30, vec![]);
         click_row(&mut h, "Chapter 1");
         assert_eq!(marked_rows(&h), ["Chapter 1"]);
         h.press(egui::Key::Home, Modifiers::NONE);

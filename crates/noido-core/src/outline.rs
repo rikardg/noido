@@ -152,6 +152,19 @@ impl OutlineTree {
         }
     }
 
+    /// Unfolds `entry` if it is a folded branch; already open, or without
+    /// children, it changes nothing.
+    pub fn unfold(&mut self, entry: usize) {
+        if let Some(n) = self
+            .nodes
+            .get_mut(entry)
+            .filter(|n| n.has_children && !n.open)
+        {
+            n.open = true;
+            self.rebuild();
+        }
+    }
+
     /// The entry the reader is in: of those with an internal target, the
     /// last at or before `at`, the later in tree order on a tie. A target
     /// without y counts as the top of its page.
@@ -262,6 +275,24 @@ mod tests {
             .iter()
             .map(|r| (tree.title(r.entry), r.depth))
             .collect()
+    }
+
+    #[test]
+    fn unfold_opens_a_folded_branch_and_only_that() {
+        let mut t = OutlineTree::new(tree());
+        // C (2) is folded: D is hidden.
+        assert!(!shown(&t).contains(&("D", 2)));
+        t.unfold(2);
+        assert!(shown(&t).contains(&("D", 2)));
+        // Idempotent, and an open branch stays open.
+        let rows = shown(&t).len();
+        t.unfold(2);
+        t.unfold(0);
+        assert_eq!(shown(&t).len(), rows);
+        // A leaf and an entry past the end change nothing.
+        t.unfold(4);
+        t.unfold(99);
+        assert_eq!(shown(&t).len(), rows);
     }
 
     #[test]

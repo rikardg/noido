@@ -494,6 +494,7 @@ impl SidebarView {
                 let visible: Vec<OutlineRow> = rows[first.min(end)..end].to_vec();
                 let mut clicked = None;
                 let mut toggled = None;
+                let mut unfolded = None;
                 for (i, row) in (first..).zip(&visible) {
                     let rect = Rect::from_min_size(
                         area.min + vec2(0.0, i as f32 * row_height),
@@ -509,10 +510,11 @@ impl SidebarView {
                     match self.outline_row(ui, rect, row, &drawn) {
                         RowClick::Go => clicked = Some(row.entry),
                         RowClick::Toggle => toggled = Some(row.entry),
+                        RowClick::Unfold => unfolded = Some(row.entry),
                         RowClick::None => {}
                     }
                 }
-                (clicked, toggled)
+                (clicked, toggled, unfolded)
             });
             if let Some((bars, _)) = solid {
                 theme::paint_thumbs(ui, &shown, bars);
@@ -521,9 +523,12 @@ impl SidebarView {
         });
         self.outline_id = Some(shown.id);
         self.outline_offset = shown.state.clamped_offset().y;
-        let (clicked, toggled) = shown.inner;
+        let (clicked, toggled, unfolded) = shown.inner;
         if let Some(entry) = toggled {
             tree.toggle(entry);
+        }
+        if let Some(entry) = unfolded {
+            tree.unfold(entry);
         }
         if let Some(entry) = clicked
             && matches!(tree.target(entry), Some(LinkTarget::Internal(_)))
@@ -574,7 +579,13 @@ impl SidebarView {
             }
         }
         if click == RowClick::None && response.clicked() {
-            click = if goes {
+            click = if response.double_clicked() {
+                if row.has_children {
+                    RowClick::Unfold
+                } else {
+                    RowClick::None
+                }
+            } else if goes {
                 RowClick::Go
             } else if row.has_children {
                 RowClick::Toggle
@@ -1151,6 +1162,9 @@ enum RowClick {
     Go,
     /// It folded or unfolded the row.
     Toggle,
+    /// The second click of a double click: the branch ends unfolded; the
+    /// first click already went to the target, or toggled.
+    Unfold,
 }
 
 /// What drawing an outline row needs besides the row.
