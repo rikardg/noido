@@ -2280,7 +2280,7 @@ impl NoidoApp {
                     Rect::from_min_size(pos2(fit.x, fit.y), vec2(fit.width, fit.height));
                 fitted = page_rect;
                 let _ = &page_rect;
-                paint_page(
+                let fading = paint_page(
                     ui.painter(),
                     page_rect,
                     sharp,
@@ -2288,6 +2288,11 @@ impl NoidoApp {
                     fade,
                     paper.gamma_multiply(opacity),
                 );
+                if fading {
+                    // The fade finishes only if something asks for the
+                    // frames: the pointer may not move at all.
+                    ui.ctx().request_repaint();
+                }
                 let chip = Rect::from_min_size(
                     pos2(page_rect.max.x - PAGELET_CLOSE, page_rect.min.y),
                     Vec2::splat(PAGELET_CLOSE),
@@ -8103,6 +8108,50 @@ pub(crate) mod tests {
             Some(255),
             "the surface stayed faded"
         );
+    }
+
+    #[test]
+    fn the_pagelets_page_fades_in_without_a_pointer_move() {
+        // A render that arrives after the window's own opening animation:
+        // only the page's fade can ask for the frames that finish it.
+        let (gate, waiting) = std::sync::mpsc::channel::<()>();
+        let engine = Arc::new(GatedEngine(Arc::new(std::sync::Mutex::new(waiting))));
+        let mut h = Harness::build_with(engine, |app| {
+            app.with_thumbnails(Thumbnailer::start(
+                Arc::new(UnopenableEngine),
+                Arc::new(Vec::new()),
+                Box::new(|| {}),
+            ))
+        });
+        let lowres = blank_texture(&h.ctx, "lowres 9");
+        h.app
+            .thumbnails
+            .as_mut()
+            .unwrap()
+            .textures
+            .insert(9, lowres);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.app.pins = Pins::from_sorted([9]);
+        click_tab(&mut h, SidebarTab::Pins);
+        h.frames(2, vec![]);
+        h.click(thumb_rect(&h, 9).center());
+        wait_for_pagelet(&mut h, 9);
+        // Past the window's own fade-in, the page still waiting.
+        h.frames(20, vec![]);
+        assert!(!h.app.textures.contains_key(&9));
+        drop(gate);
+        h.until(|h| h.app.textures.contains_key(&9));
+        h.frames(3, vec![]);
+        assert!(h.app.fades.started(9), "no fade to watch");
+        assert_eq!(
+            h.repaint_delay,
+            Duration::ZERO,
+            "the pagelet's fade asked for no repaint"
+        );
+        // And the page ends up sharp, at the panel's half opacity.
+        h.frames(15, vec![]);
+        let page = h.app.pagelet_page_rect().unwrap();
+        assert_eq!(image_alpha(&h, page), Some(128));
     }
 
     #[test]
