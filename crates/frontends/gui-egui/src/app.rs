@@ -2171,7 +2171,7 @@ impl NoidoApp {
 
     /// Opens the pagelet on `page`, or swaps its page, keeping the place
     /// and size it last had.
-    fn open_pagelet(&mut self, page: usize, view: Rect, pointer: Option<egui::Pos2>) {
+    fn open_pagelet(&mut self, page: usize, view: Rect, bounds: Rect, pointer: Option<egui::Pos2>) {
         if self.view.layout().page_size(page).is_none() {
             return;
         }
@@ -2182,10 +2182,12 @@ impl NoidoApp {
         let page_size = self.page_size_at(page, view, width);
         // Its first place is the document view's upper-left corner, flush
         // against the sidebar.
+        // Its first place is the document view's corner; once placed, the
+        // reader's place stands, even over the sidebar.
         let pos = self.pagelet.map_or(view.min, |p| pos2(p.x, p.y));
         let rect = clamp_into(
             Rect::from_min_size(pos, page_size + Vec2::splat(2.0 * PAGELET_PADDING)),
-            view,
+            bounds,
         );
         let opacity = if pointer.is_some_and(|at| rect.contains(at)) {
             1.0
@@ -2229,11 +2231,9 @@ impl NoidoApp {
         let links = &self.links;
         let paper = self.paper_tint(ctx);
         let now = ctx.input(|i| i.time);
-        // Half-opaque while the pointer is away, so the page behind shows
-        // through; opaque under the pointer.
-        let pointer = ctx.input(|i| i.pointer.hover_pos());
         // Opaque under the pointer and while the pointer is in the sidebar,
         // where the pins are read; half over the rest of the pages.
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
         let in_sidebar = self.sidebar.open
             && pointer.is_some_and(|at| {
                 let view = self
@@ -2270,11 +2270,16 @@ impl NoidoApp {
         // The surface fades with its contents, so the page behind the panel
         // shows through.
         frame.fill = frame.fill.gamma_multiply(opacity);
+        let page_size = preview.page_size;
         let mut close = false;
         let mut fitted = preview.page_rect;
         let mut follow = None;
         let mut resized = None;
-        let page_size = preview.page_size;
+        // The page's size is the panel's: a drag keeps its aspect.
+        let aspect = size.width / size.height;
+        let min = (PAGELET_MIN.x - 2.0 * PAGELET_PADDING)
+            .max((PAGELET_MIN.y - 2.0 * PAGELET_PADDING) * aspect);
+        let bounds = ctx.content_rect().shrink2(Vec2::splat(PAGELET_PADDING));
         let window = egui::Window::new("pagelet")
             .title_bar(false)
             .resizable(false)
@@ -2300,7 +2305,6 @@ impl NoidoApp {
                 let page_rect =
                     Rect::from_min_size(pos2(fit.x, fit.y), vec2(fit.width, fit.height));
                 fitted = page_rect;
-                let _ = &page_rect;
                 let fading = paint_page(
                     ui.painter(),
                     page_rect,
@@ -2314,6 +2318,31 @@ impl NoidoApp {
                     // frames: the pointer may not move at all.
                     ui.ctx().request_repaint();
                 }
+                // A resize handle on every side and corner; the page's
+                // aspect stands, with the opposite side or corner fixed.
+                let inset = (rect.size() - page_rect.size()) / 2.0;
+                for (index, (direction, hit, cursor)) in
+                    resize_handles(page_rect).into_iter().enumerate()
+                {
+                    let response = ui.interact(
+                        hit,
+                        ui.scope_id().with(("pagelet-resize", index)),
+                        Sense::drag(),
+                    );
+                    if response.hovered() || response.dragged() {
+                        ui.set_cursor_icon(cursor);
+                    }
+                    if response.dragged()
+                        && response.drag_delta() != Vec2::ZERO
+                        && let Some(pointer) = ui.ctx().input(|i| i.pointer.interact_pos())
+                    {
+                        let page = resized_page(page_rect, aspect, direction, pointer, bounds, min);
+                        let outer =
+                            Rect::from_min_size(page.min - inset, page.size() + inset * 2.0);
+                        resized = Some((outer, page.size()));
+                    }
+                }
+                // The close chip, after the handles so a click on it wins.
                 let chip = Rect::from_min_size(
                     pos2(page_rect.max.x - PAGELET_CLOSE, page_rect.min.y),
                     Vec2::splat(PAGELET_CLOSE),
@@ -2325,33 +2354,17 @@ impl NoidoApp {
                     ui.set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 paint_close(ui, chip, response.hovered(), opacity);
-                // The resize grip: dragged, it keeps the page's aspect.
-                let grip = Rect::from_min_size(
-                    page_rect.max - Vec2::splat(PAGELET_GRIP),
-                    Vec2::splat(PAGELET_GRIP),
+                // The grip marks the bottom-right corner.
+                paint_grip(
+                    ui,
+                    Rect::from_min_size(
+                        page_rect.max - Vec2::splat(PAGELET_GRIP),
+                        Vec2::splat(PAGELET_GRIP),
+                    ),
+                    opacity,
                 );
-                let response =
-                    ui.interact(grip, ui.scope_id().with("pagelet-resize"), Sense::drag());
-                if response.hovered() || response.dragged() {
-                    ui.set_cursor_icon(egui::CursorIcon::ResizeNwSe);
-                }
-                if response.dragged() {
-                    let delta = response.drag_delta();
-                    let aspect = size.width / size.height;
-                    let wanted = if delta.x.abs() * page_size.y >= delta.y.abs() * page_size.x {
-                        page_size.x + delta.x
-                    } else {
-                        (page_size.y + delta.y) * aspect
-                    };
-                    let min = (PAGELET_MIN.x - 2.0 * PAGELET_PADDING)
-                        .max((PAGELET_MIN.y - 2.0 * PAGELET_PADDING) * aspect);
-                    let max = (ctx.content_rect().width() - 2.0 * PAGELET_PADDING).max(min);
-                    let width = wanted.clamp(min, max);
-                    resized = Some(vec2(width, width / aspect));
-                }
-                paint_grip(ui, grip, opacity);
-                // A link under the pointer: the hand, and a click follows
-                // it in the main view.
+                // A link under the pointer: the hand, the link lit up, and
+                // a click follows it in the main view.
                 let pointer = ui.ctx().input(|i| i.pointer.hover_pos());
                 let link = pointer.and_then(|at| {
                     let (x, y) = page_point(
@@ -2376,9 +2389,9 @@ impl NoidoApp {
                     let stroke = Stroke::new(LINK_OUTLINE_WIDTH, ui.visuals().hyperlink_color);
                     for area in &link.areas {
                         let min = page_rect.min + vec2(area.x, area.y) * scale;
-                        let size = vec2(area.width, area.height) * scale;
+                        let area_size = vec2(area.width, area.height) * scale;
                         ui.painter().rect_stroke(
-                            Rect::from_min_size(min, size),
+                            Rect::from_min_size(min, area_size),
                             2.0,
                             stroke,
                             egui::StrokeKind::Outside,
@@ -2393,15 +2406,19 @@ impl NoidoApp {
         if close {
             self.close_pagelet();
         } else if let Some(preview) = &mut self.pin_preview {
-            if let Some(page_size) = resized {
+            if let Some((outer, page_size)) = resized {
+                preview.rect = outer;
                 preview.page_size = page_size;
+                fitted =
+                    Rect::from_min_size(outer.min + (outer.size() - page_size) / 2.0, page_size);
+            } else {
+                preview.rect = drawn;
             }
-            preview.rect = drawn;
             preview.page_rect = fitted;
             preview.opacity = opacity;
             self.pagelet = Some(Pagelet {
-                x: drawn.min.x,
-                y: drawn.min.y,
+                x: preview.rect.min.x,
+                y: preview.rect.min.y,
                 width: preview.page_size.x,
                 page: None,
             });
@@ -2417,6 +2434,104 @@ impl NoidoApp {
     fn pagelet_page_rect(&self) -> Option<Rect> {
         self.pin_preview.as_ref().map(|preview| preview.page_rect)
     }
+}
+
+/// The pagelet's eight resize handles: each side and corner, with its
+/// direction (`-1`, `0` or `1` per axis), hit area and cursor.
+fn resize_handles(page: Rect) -> Vec<((i8, i8), Rect, egui::CursorIcon)> {
+    const EDGE: f32 = 6.0;
+    const CORNER: f32 = 14.0;
+    use egui::CursorIcon::{ResizeHorizontal, ResizeNeSw, ResizeNwSe, ResizeVertical};
+    let (p, e, c) = (page, EDGE, CORNER);
+    vec![
+        (
+            (1, 0),
+            Rect::from_min_max(pos2(p.max.x - e, p.min.y + c), pos2(p.max.x, p.max.y - c)),
+            ResizeHorizontal,
+        ),
+        (
+            (-1, 0),
+            Rect::from_min_max(pos2(p.min.x, p.min.y + c), pos2(p.min.x + e, p.max.y - c)),
+            ResizeHorizontal,
+        ),
+        (
+            (0, 1),
+            Rect::from_min_max(pos2(p.min.x + c, p.max.y - e), pos2(p.max.x - c, p.max.y)),
+            ResizeVertical,
+        ),
+        (
+            (0, -1),
+            Rect::from_min_max(pos2(p.min.x + c, p.min.y), pos2(p.max.x - c, p.min.y + e)),
+            ResizeVertical,
+        ),
+        (
+            (1, 1),
+            Rect::from_min_max(pos2(p.max.x - c, p.max.y - c), p.max),
+            ResizeNwSe,
+        ),
+        (
+            (1, -1),
+            Rect::from_min_max(pos2(p.max.x - c, p.min.y), pos2(p.max.x, p.min.y + c)),
+            ResizeNeSw,
+        ),
+        (
+            (-1, 1),
+            Rect::from_min_max(pos2(p.min.x, p.max.y - c), pos2(p.min.x + c, p.max.y)),
+            ResizeNeSw,
+        ),
+        (
+            (-1, -1),
+            Rect::from_min_max(p.min, pos2(p.min.x + c, p.min.y + c)),
+            ResizeNwSe,
+        ),
+    ]
+}
+
+/// `page` after dragging `direction`'s handle to `pointer`: the opposite
+/// side or corner stays, its `aspect` and `width` follow the pointer, and
+/// it stays within `min` and `bounds`.
+fn resized_page(
+    page: Rect,
+    aspect: f32,
+    (dx, dy): (i8, i8),
+    pointer: egui::Pos2,
+    bounds: Rect,
+    min: f32,
+) -> Rect {
+    let anchor = pos2(
+        if dx > 0 {
+            page.min.x
+        } else if dx < 0 {
+            page.max.x
+        } else {
+            page.min.x
+        },
+        if dy > 0 {
+            page.min.y
+        } else if dy < 0 {
+            page.max.y
+        } else {
+            page.min.y
+        },
+    );
+    let max = bounds.width().min(bounds.height() * aspect).max(min);
+    let width = if dx != 0 && dy != 0 {
+        (pointer.x - anchor.x)
+            .abs()
+            .max((pointer.y - anchor.y).abs() * aspect)
+    } else if dx != 0 {
+        (pointer.x - anchor.x).abs()
+    } else {
+        (pointer.y - anchor.y).abs() * aspect
+    };
+    let width = width.clamp(min, max);
+    let height = width / aspect;
+    let size = vec2(width, height);
+    let min_pos = pos2(
+        if dx < 0 { anchor.x - width } else { anchor.x },
+        if dy < 0 { anchor.y - height } else { anchor.y },
+    );
+    clamp_into(Rect::from_min_size(min_pos, size), bounds)
 }
 
 /// `rect` moved inside `area`, shrunk to it if it is bigger.
@@ -2676,8 +2791,9 @@ impl NoidoApp {
             let view = self
                 .last_scroll
                 .map_or_else(|| ctx.content_rect(), |last| last.inner);
+            let bounds = Rect::from_min_max(pos2(ctx.content_rect().min.x, view.min.y), view.max);
             let pointer = ctx.input(|i| i.pointer.hover_pos());
-            self.open_pagelet(page, view, pointer);
+            self.open_pagelet(page, view, bounds, pointer);
         }
 
         // A pin click waits out egui's double-click window before it
@@ -2692,8 +2808,10 @@ impl NoidoApp {
                 let view = self
                     .last_scroll
                     .map_or_else(|| ctx.content_rect(), |last| last.inner);
+                let bounds =
+                    Rect::from_min_max(pos2(ctx.content_rect().min.x, view.min.y), view.max);
                 let pointer = ctx.input(|i| i.pointer.hover_pos());
-                self.open_pagelet(page, view, pointer);
+                self.open_pagelet(page, view, bounds, pointer);
             } else {
                 ctx.request_repaint_after(Duration::from_secs_f64(delay - (now - at)));
             }
@@ -8676,6 +8794,101 @@ pub(crate) mod tests {
         assert!(
             (moved.min - panel.min).length() < 1.0,
             "it moved: {panel:?} -> {moved:?}"
+        );
+    }
+
+    /// Opens the pagelet on page 0 and returns its page rect.
+    fn pagelet_page(h: &mut Harness) -> Rect {
+        h.click(thumb_rect(h, 0).center());
+        wait_for_pagelet(h, 0);
+        h.app.pagelet_page_rect().unwrap()
+    }
+
+    #[test]
+    fn resizing_from_the_left_edge_keeps_the_right_edge() {
+        let mut h = pinned_on(&[0]);
+        let before = pagelet_page(&mut h);
+        let at = egui::pos2(before.min.x + 3.0, before.center().y);
+        h.drag(at, vec2(-40.0, 0.0));
+        h.frames(3, vec![]);
+        let after = h.app.pagelet_page_rect().unwrap();
+        assert!(
+            (after.max.x - before.max.x).abs() < 1.0,
+            "{before:?} -> {after:?}"
+        );
+        assert!(after.width() > before.width() + 20.0, "{after:?}");
+        assert!((after.width() / after.height() - 612.0 / 792.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn resizing_from_the_right_edge_keeps_the_left_edge() {
+        let mut h = pinned_on(&[0]);
+        let before = pagelet_page(&mut h);
+        let at = egui::pos2(before.max.x - 3.0, before.center().y);
+        h.drag(at, vec2(40.0, 0.0));
+        h.frames(3, vec![]);
+        let after = h.app.pagelet_page_rect().unwrap();
+        assert!(
+            (after.min.x - before.min.x).abs() < 1.0,
+            "{before:?} -> {after:?}"
+        );
+        assert!(after.width() > before.width() + 20.0, "{after:?}");
+    }
+
+    #[test]
+    fn resizing_from_the_top_edge_keeps_the_bottom() {
+        let mut h = pinned_on(&[0]);
+        let before = pagelet_page(&mut h);
+        let at = egui::pos2(before.center().x, before.min.y + 3.0);
+        h.drag(at, vec2(0.0, -20.0));
+        h.frames(3, vec![]);
+        let after = h.app.pagelet_page_rect().unwrap();
+        assert!(
+            (after.max.y - before.max.y).abs() < 1.0,
+            "{before:?} -> {after:?}"
+        );
+        assert!(after.height() > before.height() + 15.0, "{after:?}");
+    }
+
+    #[test]
+    fn resizing_from_the_bottom_edge_keeps_the_top() {
+        let mut h = pinned_on(&[0]);
+        let before = pagelet_page(&mut h);
+        let at = egui::pos2(before.center().x, before.max.y - 3.0);
+        h.drag(at, vec2(0.0, 30.0));
+        h.frames(3, vec![]);
+        let after = h.app.pagelet_page_rect().unwrap();
+        assert!(
+            (after.min.y - before.min.y).abs() < 1.0,
+            "{before:?} -> {after:?}"
+        );
+        assert!(after.height() > before.height() + 20.0, "{after:?}");
+    }
+
+    #[test]
+    fn a_pagelet_over_the_sidebar_keeps_its_x() {
+        let mut h = pinned_on(&[2]);
+        h.click(thumb_rect(&h, 2).center());
+        wait_for_pagelet(&mut h, 2);
+        let rect = h.app.pin_preview.as_ref().unwrap().rect;
+        // Move it left, over the sidebar.
+        h.drag(rect.center(), vec2(-200.0, 0.0));
+        h.frames(2, vec![]);
+        let moved = h.app.pin_preview.as_ref().unwrap().rect;
+        let view = h.app.last_scroll.unwrap().inner;
+        assert!(
+            moved.min.x < view.min.x,
+            "not over the sidebar: {moved:?} vs {view:?}"
+        );
+        // Close it, then open it again as a click would.
+        h.app.close_pagelet();
+        h.frames(1, vec![]);
+        let bounds = Rect::from_min_max(pos2(h.ctx.content_rect().min.x, view.min.y), view.max);
+        h.app.open_pagelet(2, view, bounds, None);
+        h.frames(1, vec![]);
+        assert!(
+            (h.app.pin_preview.as_ref().unwrap().rect.min.x - moved.min.x).abs() < 1.0,
+            "moved when reopened"
         );
     }
 
