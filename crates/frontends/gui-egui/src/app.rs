@@ -87,6 +87,8 @@ struct PinPreview {
     page_size: Vec2,
     /// How opaque it is drawn: 1 on the pointer, 0.5 off it.
     opacity: f32,
+    /// Whether a resize handle is being dragged.
+    resizing: bool,
 }
 
 /// What egui's scroll area reported at the end of the last frame.
@@ -2200,6 +2202,7 @@ impl NoidoApp {
             page_rect: Rect::from_min_size(rect.min + Vec2::splat(PAGELET_PADDING), page_size),
             page_size,
             opacity,
+            resizing: false,
         });
     }
 
@@ -2241,11 +2244,12 @@ impl NoidoApp {
                     .map_or_else(|| ctx.content_rect(), |last| last.inner);
                 at.x < view.min.x && at.y >= view.min.y
             });
-        let target = if pointer.is_some_and(|at| rect.contains(at)) || in_sidebar {
-            1.0
-        } else {
-            0.5
-        };
+        let target =
+            if preview.resizing || pointer.is_some_and(|at| rect.contains(at)) || in_sidebar {
+                1.0
+            } else {
+                0.5
+            };
         let reduce = crate::theme::Theme::current(ctx).reduce_motion();
         let dt = ctx.input(|i| i.stable_dt).min(0.1);
         let opacity = if reduce {
@@ -2275,6 +2279,7 @@ impl NoidoApp {
         let mut fitted = preview.page_rect;
         let mut follow = None;
         let mut resized = None;
+        let mut resizing = false;
         // The page's size is the panel's: a drag keeps its aspect.
         let aspect = size.width / size.height;
         let min = (PAGELET_MIN.x - 2.0 * PAGELET_PADDING)
@@ -2332,6 +2337,7 @@ impl NoidoApp {
                     if response.hovered() || response.dragged() {
                         ui.set_cursor_icon(cursor);
                     }
+                    resizing |= response.dragged();
                     if response.dragged()
                         && response.drag_delta() != Vec2::ZERO
                         && let Some(pointer) = ui.ctx().input(|i| i.pointer.interact_pos())
@@ -2416,6 +2422,7 @@ impl NoidoApp {
             }
             preview.page_rect = fitted;
             preview.opacity = opacity;
+            preview.resizing = resizing;
             self.pagelet = Some(Pagelet {
                 x: preview.rect.min.x,
                 y: preview.rect.min.y,
@@ -8889,6 +8896,43 @@ pub(crate) mod tests {
         assert!(
             (h.app.pin_preview.as_ref().unwrap().rect.min.x - moved.min.x).abs() < 1.0,
             "moved when reopened"
+        );
+    }
+
+    #[test]
+    fn the_pagelet_stays_opaque_while_a_handle_is_dragged() {
+        let mut h = pinned_on(&[0]);
+        let _ = pagelet_page(&mut h);
+        h.until(|h| h.app.textures.contains_key(&0));
+        h.frames(20, vec![]);
+        let page = h.app.pagelet_page_rect().unwrap();
+        let corner = page.max - Vec2::splat(2.0);
+        let button = |pos, pressed| Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        h.frames(1, vec![Event::PointerMoved(corner)]);
+        h.frames(1, vec![button(corner, true)]);
+        // Far past the window: the panel stops at its edge, the pointer
+        // does not.
+        let out = egui::pos2(1200.0, 1200.0);
+        h.frames(1, vec![Event::PointerMoved(out)]);
+        h.frames(20, vec![]);
+        let panel = h.app.pin_preview.as_ref().unwrap().rect;
+        assert!(!panel.contains(out), "{out:?} in {panel:?}");
+        assert_eq!(
+            image_alpha(&h, h.app.pagelet_page_rect().unwrap()),
+            Some(255),
+            "translucent while the border is dragged"
+        );
+        h.frames(1, vec![button(out, false)]);
+        h.frames(20, vec![]);
+        assert_eq!(
+            image_alpha(&h, h.app.pagelet_page_rect().unwrap()),
+            Some(128),
+            "still opaque after the drag"
         );
     }
 
