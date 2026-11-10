@@ -82,6 +82,9 @@ pub const ARROW_PADDING: f32 = 4.0;
 pub const ARROW_STRIP: f32 = ARROW_SIZE + 2.0 * ARROW_PADDING;
 /// The arrow chip's corner radius.
 const ARROW_ROUNDING: f32 = 4.0;
+/// The arrow's grey band, at rest and under the pointer, in alpha.
+const ARROW_BAND: u8 = 48;
+const ARROW_BAND_HOVER: u8 = 72;
 /// What the sidebar needs from the app each frame.
 pub struct Input<'a> {
     pub layout: &'a Layout,
@@ -1515,13 +1518,17 @@ fn paint_arrow(ui: &egui::Ui, rect: Rect, open: bool, hovered: bool) -> Color32 
         visuals.weak_text_color()
     };
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-    let chip = if hovered { 1.0 } else { 0.85 };
-    // A square around the glyph, not the strip: the strip is the hit area.
-    let behind = Rect::from_center_size(rect.center(), egui::Vec2::splat(ARROW_STRIP));
+    // A grey band over the whole strip, light enough to read the page
+    // through it, so the strip shows as the arrow's target.
+    let alpha = if hovered {
+        ARROW_BAND_HOVER
+    } else {
+        ARROW_BAND
+    };
     painter.rect_filled(
-        behind,
+        rect,
         ARROW_ROUNDING,
-        visuals.panel_fill.gamma_multiply(chip),
+        Color32::from_rgba_unmultiplied(128, 128, 128, alpha),
     );
     let c = rect.center();
     painter.add(egui::Shape::line(
