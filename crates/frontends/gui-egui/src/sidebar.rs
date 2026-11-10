@@ -140,8 +140,6 @@ pub struct Output {
     pub outline_entry: Option<usize>,
     /// A thumbnail's pin was clicked: the page to pin or unpin.
     pub toggle_pin: Option<usize>,
-    /// A pin card was clicked: its page.
-    pub pin_clicked: Option<usize>,
     /// A card's arrow was pressed: the page to open or close the pagelet on.
     pub pagelet: Option<usize>,
 }
@@ -1110,7 +1108,7 @@ impl SidebarView {
         self.pins_id = Some(shown.id);
         self.pins_offset = shown.state.clamped_offset().y;
         Output {
-            pin_clicked: shown.inner.clicked,
+            clicked: shown.inner.clicked,
             toggle_pin: shown.inner.toggle_pin,
             pagelet: shown.inner.pagelet,
             ..Output::default()
