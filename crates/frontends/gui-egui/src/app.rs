@@ -8057,6 +8057,11 @@ pub(crate) mod tests {
         let strip = arrow_rect(&h, 2);
         assert!(strip.width() > 0.0);
         arrow_chip(&h, strip);
+        let banded = h
+            .shapes
+            .iter()
+            .any(|clipped| matches!(&clipped.shape, egui::Shape::Rect(r) if r.rect == strip));
+        assert!(!banded, "the strip is drawn under a pointer far away");
         assert!(
             h.app
                 .sidebar_view

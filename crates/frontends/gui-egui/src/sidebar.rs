@@ -1015,13 +1015,24 @@ impl SidebarView {
                 }
                 #[cfg(test)]
                 {
-                    let ink =
-                        paint_arrow(ui, strip, input.preview == Some(page), response.hovered());
+                    let ink = paint_arrow(
+                        ui,
+                        strip,
+                        input.preview == Some(page),
+                        response.hovered(),
+                        ui.rect_contains_pointer(rect),
+                    );
                     self.arrow_icons.push((page, strip));
                     self.arrow_inks.push((page, ink));
                 }
                 #[cfg(not(test))]
-                paint_arrow(ui, strip, input.preview == Some(page), response.hovered());
+                paint_arrow(
+                    ui,
+                    strip,
+                    input.preview == Some(page),
+                    response.hovered(),
+                    ui.rect_contains_pointer(rect),
+                );
             }
             self.drawn.push((page, rect));
         }
@@ -1521,7 +1532,7 @@ fn arrow_rect(thumb: Rect) -> Rect {
 }
 
 /// Draws `rect`'s arrow chip and glyph; returns the ink it used.
-fn paint_arrow(ui: &egui::Ui, rect: Rect, open: bool, hovered: bool) -> Color32 {
+fn paint_arrow(ui: &egui::Ui, rect: Rect, open: bool, hovered: bool, band: bool) -> Color32 {
     let visuals = ui.visuals();
     let ink = if open {
         visuals.selection.stroke.color
@@ -1529,18 +1540,21 @@ fn paint_arrow(ui: &egui::Ui, rect: Rect, open: bool, hovered: bool) -> Color32 
         visuals.weak_text_color()
     };
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
-    // A grey band over the whole strip, light enough to read the page
-    // through it, so the strip shows as the arrow's target.
-    let band = if hovered {
-        ARROW_BAND_HOVER
-    } else {
-        ARROW_BAND
-    };
-    painter.rect_filled(
-        rect,
-        ARROW_ROUNDING,
-        Color32::from_rgba_unmultiplied(128, 128, 128, band),
-    );
+    // A grey band over the whole strip while the pointer is on the card,
+    // light enough to read the page through it: it shows the strip as the
+    // arrow's target. Without the pointer, only the chip marks the page.
+    if band {
+        let alpha = if hovered {
+            ARROW_BAND_HOVER
+        } else {
+            ARROW_BAND
+        };
+        painter.rect_filled(
+            rect,
+            ARROW_ROUNDING,
+            Color32::from_rgba_unmultiplied(128, 128, 128, alpha),
+        );
+    }
     // The pin's chip on top of it, outlined so it reads on a white page as
     // on a scan.
     let chip = if hovered { 1.0 } else { 0.85 };
