@@ -94,11 +94,49 @@ jobs:
                   short=$(printf '%s' "$SHA" | cut -c1-8)
                   stamp=$(date -u +%Y%m%d-%H%M)
                   tag="snapshot-$stamp-$short"
+                  # The notes link to the archives this run uploaded, by the
+                  # names in dist/, so a build that lost one fails here rather
+                  # than publishing a dead link.
+                  linux= mac_arm= mac_intel=
+                  for f in dist/*.tar.gz; do
+                      case "$f" in
+                          *x86_64-unknown-linux-gnu*) linux=${f#dist/} ;;
+                          *aarch64-apple-darwin*) mac_arm=${f#dist/} ;;
+                          *x86_64-apple-darwin*) mac_intel=${f#dist/} ;;
+                      esac
+                  done
+                  for asset in "$linux" "$mac_arm" "$mac_intel"; do
+                      if [ -z "$asset" ]; then
+                          echo "dist/ is missing an archive: linux=$linux arm=$mac_arm intel=$mac_intel" >&2
+                          exit 1
+                      fi
+                  done
+                  release="https://github.com/$GH_REPO/releases/download/$tag"
                   {
                       if [ -n "${NOTE:-}" ]; then printf '%s\n\n' "$NOTE"; fi
-                      printf 'Snapshot of commit `%s`.\n\n' "$short"
-                      printf 'Unpack and (optionally) copy out noido to a directory that is in PATH. Then run `noido --install` to integrate it with the system launcher.'
-                      printf '[Source](https://github.com/%s/tree/%s)\n' "$GH_REPO" "$SHA"
+                      cat <<EOF
+                  Snapshot of commit \`$short\`.
+
+                  **Linux** (x86_64, glibc 2.35 or newer)
+
+                      curl -fLO $release/$linux
+
+                  **macOS, Apple Silicon**
+
+                      curl -fLO $release/$mac_arm
+
+                  **macOS, Intel**
+
+                      curl -fLO $release/$mac_intel
+
+                  Use \`curl\` to avoid the download being quarantined on macOS, or clear the quarantine attribute with:
+
+                      xattr -dr com.apple.quarantine noido-*.tar.gz
+
+                  Unpack and (optionally) copy out noido to a directory that is in PATH. Then run \`noido --install\` to integrate it with the system launcher.
+
+                  [Source](https://github.com/$GH_REPO/tree/$SHA)
+                  EOF
                   } > notes.md
                   draft=""
                   if [ "${DRAFT:-}" = "true" ]; then draft=--draft; fi
