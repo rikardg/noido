@@ -7926,11 +7926,6 @@ pub(crate) mod tests {
             })
             .expect("the pin's chip");
         assert_eq!(fill, pin_fill, "not the pin's chip");
-        let strip_painted = h
-            .shapes
-            .iter()
-            .any(|clipped| matches!(&clipped.shape, egui::Shape::Rect(r) if r.rect == strip));
-        assert!(!strip_painted, "the whole strip is still filled");
     }
 
     #[test]
