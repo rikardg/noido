@@ -141,7 +141,6 @@ pub struct NoidoApp {
     /// frame so the view's scroll takes the jump.
     clicked_target: Option<noido_engine::LinkTarget>,
     /// A pin click waiting out egui's double-click window.
-    pending_pin: Option<(usize, f64)>,
     /// A hit was jumped to since the reader last moved: later hits, of this
     /// search or a new one, add no history entry.
     searched_away: bool,
@@ -318,7 +317,6 @@ impl NoidoApp {
             pending_pagelet: None,
             clicked_target: None,
             pin_preview: None,
-            pending_pin: None,
             searched_away: false,
             thumbnails: None,
             focus: None,
@@ -2785,22 +2783,6 @@ impl NoidoApp {
                     self.open_pagelet(page, view, bounds, pointer);
                 }
             }
-            if let Some(page) = output.pin_clicked {
-                let now = ctx.input(|i| i.time);
-                let delay = ctx.options(|o| o.input_options.max_double_click_delay);
-                let double = self
-                    .pending_pin
-                    .is_some_and(|(pending, at)| pending == page && now - at < delay);
-                if double {
-                    self.pending_pin = None;
-                    self.leave_here();
-                    self.view.go_to_page(page);
-                    self.choose_page(page);
-                    self.search_state.reader_moved();
-                } else {
-                    self.pending_pin = Some((page, now));
-                }
-            }
             if let Some(index) = output.hit {
                 self.go_to_hit(index);
             }
@@ -2819,27 +2801,6 @@ impl NoidoApp {
             let bounds = Rect::from_min_max(pos2(ctx.content_rect().min.x, view.min.y), view.max);
             let pointer = ctx.input(|i| i.pointer.hover_pos());
             self.open_pagelet(page, view, bounds, pointer);
-        }
-
-        // A pin click waits out egui's double-click window before it
-        // previews, so the first click of a double click opens nothing.
-        if let Some((page, at)) = self.pending_pin {
-            let delay = ctx.options(|o| o.input_options.max_double_click_delay);
-            let now = ctx.input(|i| i.time);
-            if page >= self.view.layout().page_count() {
-                self.pending_pin = None;
-            } else if now - at >= delay {
-                self.pending_pin = None;
-                let view = self
-                    .last_scroll
-                    .map_or_else(|| ctx.content_rect(), |last| last.inner);
-                let bounds =
-                    Rect::from_min_max(pos2(ctx.content_rect().min.x, view.min.y), view.max);
-                let pointer = ctx.input(|i| i.pointer.hover_pos());
-                self.open_pagelet(page, view, bounds, pointer);
-            } else {
-                ctx.request_repaint_after(Duration::from_secs_f64(delay - (now - at)));
-            }
         }
 
         // The page area changes size this frame when the sidebar opens or
@@ -8276,8 +8237,7 @@ pub(crate) mod tests {
         h.press(egui::Key::F9, Modifiers::NONE);
         h.app.pins = Pins::from_sorted([5]);
         click_tab(&mut h, SidebarTab::Pins);
-        h.click(thumb_rect(&h, 5).center());
-        wait_for_pagelet(&mut h, 5);
+        open_pagelet(&mut h, 5);
         let ppp = h.ctx.pixels_per_point();
         // The panel's page rect settles after its first frame; wait for a
         // render at the scale the settled rect calls for.
@@ -8315,8 +8275,7 @@ pub(crate) mod tests {
         h.press(egui::Key::F9, Modifiers::NONE);
         h.app.pins = Pins::from_sorted([9]);
         click_tab(&mut h, SidebarTab::Pins);
-        h.click(thumb_rect(&h, 9).center());
-        wait_for_pagelet(&mut h, 9);
+        open_pagelet(&mut h, 9);
         h.until(|h| h.app.textures.contains_key(&9));
         // The main view stays on page 0: the pagelet's page stays sharp.
         h.frames(10, vec![]);
@@ -8343,8 +8302,7 @@ pub(crate) mod tests {
         h.press(egui::Key::F9, Modifiers::NONE);
         h.app.pins = Pins::from_sorted([0]);
         click_tab(&mut h, SidebarTab::Pins);
-        h.click(thumb_rect(&h, 0).center());
-        wait_for_pagelet(&mut h, 0);
+        open_pagelet(&mut h, 0);
         zoomed_out(&mut h);
         h.frames(30, vec![]);
         // Settled: no further renders of it.
@@ -8403,8 +8361,7 @@ pub(crate) mod tests {
     #[test]
     fn the_pagelet_fades_to_half_off_the_pointer() {
         let mut h = pinned_on(&[0]);
-        h.click(thumb_rect(&h, 0).center());
-        wait_for_pagelet(&mut h, 0);
+        open_pagelet(&mut h, 0);
         h.until(|h| h.app.textures.contains_key(&0));
         let page = h.app.pagelet_page_rect().unwrap();
         // Away from the panel and the sidebar.
@@ -8433,8 +8390,7 @@ pub(crate) mod tests {
     #[test]
     fn the_pagelet_stays_opaque_over_the_sidebar() {
         let mut h = pinned_on(&[0]);
-        h.click(thumb_rect(&h, 0).center());
-        wait_for_pagelet(&mut h, 0);
+        open_pagelet(&mut h, 0);
         h.until(|h| h.app.textures.contains_key(&0));
         let page = h.app.pagelet_page_rect().unwrap();
         // The pointer rests on the card it clicked: in the sidebar.
@@ -8453,29 +8409,41 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_double_click_leaves_an_open_pagelet() {
+    fn a_card_click_leaves_the_pagelet_open() {
         let mut h = pinned_on(&[2, 5]);
-        h.click(thumb_rect(&h, 2).center());
-        wait_for_pagelet(&mut h, 2);
-        let at = thumb_rect(&h, 5).center();
-        let button = |pressed| Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        };
-        h.frames(1, vec![Event::PointerMoved(at)]);
-        for _ in 0..2 {
-            h.frames(1, vec![button(true)]);
-            h.frames(1, vec![button(false)]);
-        }
-        h.frames(40, vec![]);
-        assert_eq!(h.app.current_page(), Some(5), "it did not navigate");
+        open_pagelet(&mut h, 2);
+        let rect = h.app.pin_preview.as_ref().unwrap().rect;
+        let card = thumb_rect(&h, 5);
+        h.click(card.center());
+        h.frames(2, vec![]);
         assert!(
             pagelet_on(&h, 2),
             "the pagelet closed or changed page: {:?}",
             h.app.pin_preview.as_ref().map(|p| p.page)
         );
+        assert_eq!(h.app.pin_preview.as_ref().unwrap().rect, rect);
+        assert_eq!(h.app.current_page(), Some(5));
+    }
+
+    #[test]
+    fn a_pins_card_click_goes_there_at_once() {
+        let mut h = pinned_on(&[5]);
+        let card = thumb_rect(&h, 5);
+        h.click(card.center());
+        h.frames(1, vec![]);
+        assert_eq!(h.app.current_page(), Some(5), "it did not navigate at once");
+        assert_eq!(h.app.chosen, Some(5));
+        assert!(h.app.pin_preview.is_none(), "it opened the pagelet");
+    }
+
+    #[test]
+    fn an_arrow_on_another_page_swaps_the_page_and_keeps_the_place() {
+        let mut h = pinned_on(&[2, 5]);
+        open_pagelet(&mut h, 2);
+        let rect = h.app.pin_preview.as_ref().unwrap().rect;
+        open_pagelet(&mut h, 5);
+        assert!(pagelet_on(&h, 5));
+        assert_eq!(h.app.pin_preview.as_ref().unwrap().rect, rect);
     }
 
     #[test]
@@ -8502,8 +8470,7 @@ pub(crate) mod tests {
         h.app.pins = Pins::from_sorted([9]);
         click_tab(&mut h, SidebarTab::Pins);
         h.frames(2, vec![]);
-        h.click(thumb_rect(&h, 9).center());
-        wait_for_pagelet(&mut h, 9);
+        open_pagelet(&mut h, 9);
         // Past the window's own fade-in, the page still waiting.
         h.frames(20, vec![]);
         assert!(!h.app.textures.contains_key(&9));
@@ -8526,8 +8493,7 @@ pub(crate) mod tests {
     #[test]
     fn reduced_motion_swaps_the_fade_at_once() {
         let mut h = pinned_on(&[0]).reduced_motion();
-        h.click(thumb_rect(&h, 0).center());
-        wait_for_pagelet(&mut h, 0);
+        open_pagelet(&mut h, 0);
         h.until(|h| h.app.textures.contains_key(&0));
         // Past the page's own fade-in, then away from the panel and the
         // sidebar: with reduced motion the panel is half at once.
@@ -8554,8 +8520,7 @@ pub(crate) mod tests {
         });
         h.app.pins = Pins::from_sorted(pins.iter().copied());
         click_tab(&mut h, SidebarTab::Pins);
-        h.click(thumb_rect(&h, page).center());
-        wait_for_pagelet(&mut h, page);
+        open_pagelet(&mut h, page);
         h.until(|h| h.app.links.at(page, 100.0, 96.0).is_some());
         h
     }
@@ -8676,55 +8641,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_single_click_opens_the_pagelet_after_the_double_click_window() {
-        let mut h = pinned_on(&[5]);
-        let card = thumb_rect(&h, 5);
-        h.click(card.center());
-        // Not at once: the click may still become a double click.
-        h.frames(2, vec![]);
-        assert!(
-            h.app.pin_preview.is_none(),
-            "opened before the window passed"
-        );
-        wait_for_pagelet(&mut h, 5);
-        assert_eq!(h.app.chosen, None, "it navigated");
-        assert_eq!(h.app.current_page(), Some(0));
-        // The page is fitted with its aspect kept.
-        let fitted = h.app.pagelet_page_rect().unwrap();
-        assert!(
-            (fitted.width() / fitted.height() - 612.0 / 792.0).abs() < 0.01,
-            "{fitted:?}"
-        );
-    }
-
-    #[test]
-    fn a_double_click_goes_there_and_never_opens_the_pagelet() {
-        let mut h = pinned_on(&[5]);
-        let at = thumb_rect(&h, 5).center();
-        let button = |pressed| Event::PointerButton {
-            pos: at,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        };
-        h.frames(1, vec![Event::PointerMoved(at)]);
-        for _ in 0..2 {
-            h.frames(1, vec![button(true)]);
-            h.frames(1, vec![button(false)]);
-        }
-        for _ in 0..40 {
-            h.frames(1, vec![]);
-            assert!(h.app.pin_preview.is_none(), "the pagelet opened");
-        }
-        assert_eq!(h.app.current_page(), Some(5));
-        assert_eq!(h.app.chosen, Some(5));
-    }
-
-    #[test]
     fn the_close_chip_closes_the_pagelet() {
         let mut h = pinned_on(&[5]);
-        h.click(thumb_rect(&h, 5).center());
-        wait_for_pagelet(&mut h, 5);
+        open_pagelet(&mut h, 5);
         let rect = h.app.pin_preview.as_ref().unwrap().rect;
         let chip = egui::pos2(
             rect.max.x - PAGELET_PADDING - PAGELET_CLOSE / 2.0,
@@ -8748,24 +8667,21 @@ pub(crate) mod tests {
     #[test]
     fn there_is_one_pagelet_and_it_keeps_its_place() {
         let mut h = pinned_on(&[2, 5]);
-        h.click(thumb_rect(&h, 2).center());
-        wait_for_pagelet(&mut h, 2);
+        open_pagelet(&mut h, 2);
         let rect = h.app.pin_preview.as_ref().unwrap().rect;
         h.drag(rect.min + vec2(40.0, 40.0), vec2(60.0, 40.0));
         h.frames(2, vec![]);
         let mine = h.app.pin_preview.as_ref().unwrap().rect;
         assert_ne!(mine, rect, "the panel did not move");
         // Another pin swaps the page; the one pagelet keeps its place.
-        h.click(thumb_rect(&h, 5).center());
-        wait_for_pagelet(&mut h, 5);
+        open_pagelet(&mut h, 5);
         assert_eq!(h.app.pin_preview.as_ref().unwrap().rect, mine);
     }
 
     #[test]
     fn a_first_pagelet_sits_in_the_documents_corner() {
         let mut h = pinned_on(&[2]);
-        h.click(thumb_rect(&h, 2).center());
-        wait_for_pagelet(&mut h, 2);
+        open_pagelet(&mut h, 2);
         h.frames(1, vec![]);
         let panel = h.app.pin_preview.as_ref().unwrap().rect;
         let view = h.app.last_scroll.unwrap().inner;
@@ -8782,8 +8698,7 @@ pub(crate) mod tests {
     #[test]
     fn the_open_pagelet_is_saved_with_the_document() {
         let mut h = pinned_on(&[2]);
-        h.click(thumb_rect(&h, 2).center());
-        wait_for_pagelet(&mut h, 2);
+        open_pagelet(&mut h, 2);
         assert_eq!(
             h.app.doc_state().unwrap().pagelet.unwrap().page,
             Some(2),
@@ -8910,8 +8825,7 @@ pub(crate) mod tests {
         h.app.sidebar.open = true;
         h.frames(2, vec![]);
         click_tab(&mut h, SidebarTab::Pins);
-        h.click(thumb_rect(&h, 2).center());
-        wait_for_pagelet(&mut h, 2);
+        open_pagelet(&mut h, 2);
         let panel = h.app.pin_preview.as_ref().unwrap().rect;
         assert!((panel.min.x - 300.0).abs() < 1.0, "{panel:?}");
         assert!((panel.min.y - 120.0).abs() < 1.0, "{panel:?}");
@@ -8927,8 +8841,7 @@ pub(crate) mod tests {
     #[test]
     fn resizing_the_pagelet_keeps_the_pages_aspect() {
         let mut h = pinned_on(&[0]);
-        h.click(thumb_rect(&h, 0).center());
-        wait_for_pagelet(&mut h, 0);
+        open_pagelet(&mut h, 0);
         let before = h.app.pagelet_page_rect().unwrap();
         let panel = h.app.pin_preview.as_ref().unwrap().rect;
         h.drag(grip_centre(&h), vec2(80.0, 20.0));
@@ -8955,8 +8868,7 @@ pub(crate) mod tests {
 
     /// Opens the pagelet on page 0 and returns its page rect.
     fn pagelet_page(h: &mut Harness) -> Rect {
-        h.click(thumb_rect(h, 0).center());
-        wait_for_pagelet(h, 0);
+        open_pagelet(h, 0);
         h.app.pagelet_page_rect().unwrap()
     }
 
@@ -9024,8 +8936,7 @@ pub(crate) mod tests {
     #[test]
     fn a_pagelet_over_the_sidebar_keeps_its_x() {
         let mut h = pinned_on(&[2]);
-        h.click(thumb_rect(&h, 2).center());
-        wait_for_pagelet(&mut h, 2);
+        open_pagelet(&mut h, 2);
         let rect = h.app.pin_preview.as_ref().unwrap().rect;
         // Move it left, over the sidebar.
         h.drag(rect.center(), vec2(-200.0, 0.0));
@@ -9088,8 +8999,7 @@ pub(crate) mod tests {
     #[test]
     fn resizing_stops_at_the_shortest_pagelet() {
         let mut h = pinned_on(&[0]);
-        h.click(thumb_rect(&h, 0).center());
-        wait_for_pagelet(&mut h, 0);
+        open_pagelet(&mut h, 0);
         h.drag(grip_centre(&h), vec2(-2000.0, -2000.0));
         h.frames(3, vec![]);
         let once = h.app.pagelet_page_rect().unwrap();
@@ -9106,8 +9016,7 @@ pub(crate) mod tests {
     #[test]
     fn closing_and_reopening_keeps_the_pagelets_rect() {
         let mut h = pinned_on(&[2, 5]);
-        h.click(thumb_rect(&h, 2).center());
-        wait_for_pagelet(&mut h, 2);
+        open_pagelet(&mut h, 2);
         let first = h.app.pin_preview.as_ref().unwrap().rect;
         let chip = egui::pos2(
             first.max.x - PAGELET_PADDING - PAGELET_CLOSE / 2.0,
@@ -9115,16 +9024,14 @@ pub(crate) mod tests {
         );
         h.click(chip);
         h.frames(2, vec![]);
-        h.click(thumb_rect(&h, 2).center());
-        wait_for_pagelet(&mut h, 2);
+        open_pagelet(&mut h, 2);
         assert_eq!(h.app.pin_preview.as_ref().unwrap().rect, first);
     }
 
     #[test]
     fn unpinning_the_previewed_page_closes_the_pagelet() {
         let mut h = pinned_on(&[2]);
-        h.click(thumb_rect(&h, 2).center());
-        wait_for_pagelet(&mut h, 2);
+        open_pagelet(&mut h, 2);
         click_tab(&mut h, SidebarTab::Thumbnails);
         h.click(pin_rect(&h, 2).center());
         h.frames(2, vec![]);
@@ -9135,8 +9042,7 @@ pub(crate) mod tests {
     #[test]
     fn a_reload_to_fewer_pages_closes_a_lost_pagelet_and_prunes_pins() {
         let mut h = pinned_on(&[5, 9]);
-        h.click(thumb_rect(&h, 9).center());
-        wait_for_pagelet(&mut h, 9);
+        open_pagelet(&mut h, 9);
         h.reload(Arc::new(SizedEngine::letter(3)), recompiled_key());
         h.frames(2, vec![]);
         assert!(h.app.pins.pages().is_empty(), "{:?}", h.app.pins.pages());
