@@ -2732,6 +2732,7 @@ impl NoidoApp {
                 outline: self.links.outline.as_mut(),
                 current_entry,
                 pins: &self.pins,
+                preview: self.pin_preview.as_ref().map(|preview| preview.page),
             };
             let output = self.sidebar_view.show(ui, &mut self.sidebar, &mut input);
             if let Some(page) = output.clicked {
@@ -2765,6 +2766,23 @@ impl NoidoApp {
                         .is_some_and(|preview| preview.page == page)
                 {
                     self.close_pagelet();
+                }
+            }
+            if let Some(page) = output.pagelet {
+                if self
+                    .pin_preview
+                    .as_ref()
+                    .is_some_and(|preview| preview.page == page)
+                {
+                    self.close_pagelet();
+                } else if page < self.view.layout().page_count() {
+                    let view = self
+                        .last_scroll
+                        .map_or_else(|| ctx.content_rect(), |last| last.inner);
+                    let bounds =
+                        Rect::from_min_max(pos2(ctx.content_rect().min.x, view.min.y), view.max);
+                    let pointer = ctx.input(|i| i.pointer.hover_pos());
+                    self.open_pagelet(page, view, bounds, pointer);
                 }
             }
             if let Some(page) = output.pin_clicked {
@@ -7872,6 +7890,134 @@ pub(crate) mod tests {
             .find(|(p, _, _)| *p == page)
             .map(|(_, rect, _)| *rect)
             .unwrap_or_else(|| panic!("page {page}'s pin not drawn"))
+    }
+
+    /// Page `page`'s arrow strip as drawn last frame, which must be under
+    /// the pointer.
+    fn arrow_rect(h: &Harness, page: usize) -> Rect {
+        h.app
+            .sidebar_view
+            .arrow_icons()
+            .iter()
+            .find(|(p, _)| *p == page)
+            .map(|(_, rect)| *rect)
+            .unwrap_or_else(|| panic!("page {page}'s arrow not drawn"))
+    }
+
+    /// Hovers `page`'s card, presses its arrow and waits for the pagelet.
+    fn open_pagelet(h: &mut Harness, page: usize) {
+        let card = thumb_rect(h, page);
+        h.frames(1, vec![Event::PointerMoved(card.center())]);
+        let arrow = arrow_rect(h, page);
+        h.click(arrow.center());
+        wait_for_pagelet(h, page);
+    }
+
+    #[test]
+    fn hovering_a_card_draws_an_arrow_on_its_right_edge() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        let thumb = thumb_rect(&h, 2);
+        h.frames(1, vec![Event::PointerMoved(thumb.center())]);
+        let arrow = arrow_rect(&h, 2);
+        assert!(
+            (arrow.max.x - thumb.max.x).abs() < 0.5,
+            "{arrow:?} vs {thumb:?}"
+        );
+        assert!(
+            (arrow.width() - 24.0).abs() < 0.5,
+            "not one icon and padding: {arrow:?}"
+        );
+        assert!((arrow.min.y - thumb.min.y).abs() < 0.5);
+        assert!((arrow.center().y - thumb.center().y).abs() < 0.5);
+    }
+
+    #[test]
+    fn the_arrow_is_drawn_only_while_the_pointer_is_over_the_card() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        let thumb = thumb_rect(&h, 2);
+        h.frames(1, vec![Event::PointerMoved(thumb.center())]);
+        assert_eq!(arrow_rect(&h, 2).max.x, thumb.max.x);
+        h.frames(1, vec![Event::PointerMoved(egui::pos2(4.0, 4.0))]);
+        assert!(
+            h.app
+                .sidebar_view
+                .arrow_icons()
+                .iter()
+                .all(|(p, _)| *p != 2),
+            "the arrow outlived the pointer"
+        );
+    }
+
+    #[test]
+    fn an_arrow_press_opens_the_pagelet_without_moving() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        open_pagelet(&mut h, 2);
+        assert!(pagelet_on(&h, 2));
+        assert_eq!(h.app.current_page(), Some(0), "it navigated");
+        assert_eq!(h.app.chosen, None, "it navigated");
+    }
+
+    #[test]
+    fn a_second_arrow_press_closes_the_pagelet() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        open_pagelet(&mut h, 2);
+        let rect = h.app.pin_preview.as_ref().unwrap().rect;
+        let arrow = arrow_rect(&h, 2);
+        h.click(arrow.center());
+        h.frames(2, vec![]);
+        assert!(h.app.pin_preview.is_none(), "the arrow did not close it");
+        let card = thumb_rect(&h, 2);
+        h.frames(1, vec![Event::PointerMoved(card.center())]);
+        let arrow = arrow_rect(&h, 2);
+        h.click(arrow.center());
+        wait_for_pagelet(&mut h, 2);
+        assert_eq!(
+            h.app.pin_preview.as_ref().unwrap().rect,
+            rect,
+            "the place moved"
+        );
+    }
+
+    #[test]
+    fn a_pins_card_arrow_opens_the_pagelet() {
+        let mut h = pinned_on(&[5]);
+        open_pagelet(&mut h, 5);
+        assert!(pagelet_on(&h, 5));
+        assert_eq!(h.app.current_page(), Some(0), "it navigated");
+    }
+
+    #[test]
+    fn the_arrows_ink_marks_the_pagelet_page() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        open_pagelet(&mut h, 2);
+        let arrow_ink = |h: &Harness, page: usize| {
+            h.app
+                .sidebar_view
+                .arrow_inks()
+                .iter()
+                .find(|(p, _)| *p == page)
+                .map(|(_, colour)| *colour)
+                .unwrap_or_else(|| panic!("page {page}'s arrow ink not recorded"))
+        };
+        let accent = h.ctx.global_style().visuals.selection.stroke.color;
+        // Only the hovered card draws its arrow, so read each in its own
+        // frame: the open page's, then another's.
+        h.frames(1, vec![]);
+        assert_eq!(arrow_ink(&h, 2), accent, "the open page's arrow");
+        h.frames(1, vec![Event::PointerMoved(thumb_rect(&h, 1).center())]);
+        h.frames(1, vec![]);
+        assert_ne!(arrow_ink(&h, 1), accent, "another page's arrow");
+    }
+
+    #[test]
+    fn the_arrow_and_the_pin_stay_clear_of_each_other() {
+        for mut h in [sidebar_on(Arc::new(BlankEngine)), pinned_on(&[2, 7])] {
+            let thumb = thumb_rect(&h, 2);
+            h.frames(1, vec![Event::PointerMoved(thumb.center())]);
+            let arrow = arrow_rect(&h, 2);
+            let pin = pin_rect(&h, 2);
+            assert!(!arrow.intersects(pin), "{arrow:?} meets {pin:?}");
+        }
     }
 
     #[test]

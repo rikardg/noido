@@ -76,6 +76,12 @@ const PIN_INSET: f32 = 4.0;
 const PIN_ROUNDING: f32 = 4.0;
 /// The pin glyph's head radius.
 const PIN_GLYPH: f32 = 4.0;
+/// The arrow's icon, its padding inside the strip, and the strip's width.
+pub const ARROW_SIZE: f32 = 16.0;
+pub const ARROW_PADDING: f32 = 4.0;
+pub const ARROW_STRIP: f32 = ARROW_SIZE + 2.0 * ARROW_PADDING;
+/// The arrow chip's corner radius.
+const ARROW_ROUNDING: f32 = 4.0;
 /// What the sidebar needs from the app each frame.
 pub struct Input<'a> {
     pub layout: &'a Layout,
@@ -106,6 +112,8 @@ pub struct Input<'a> {
     pub current_entry: Option<usize>,
     /// The pages the reader pinned.
     pub pins: &'a Pins,
+    /// The page the pagelet shows, if it is open.
+    pub preview: Option<usize>,
 }
 
 /// The matches of a search, for the sidebar.
@@ -134,6 +142,8 @@ pub struct Output {
     pub toggle_pin: Option<usize>,
     /// A pin card was clicked: its page.
     pub pin_clicked: Option<usize>,
+    /// A card's arrow was pressed: the page to open or close the pagelet on.
+    pub pagelet: Option<usize>,
 }
 
 /// A visible outline row, for the tests.
@@ -224,6 +234,11 @@ pub struct SidebarView {
     /// Each visible pin's ink last frame.
     #[cfg(test)]
     pin_inks: Vec<(usize, Color32)>,
+    /// Each visible thumbnail's arrow strip last frame, and its ink.
+    #[cfg(test)]
+    arrow_icons: Vec<(usize, Rect)>,
+    #[cfg(test)]
+    arrow_inks: Vec<(usize, Color32)>,
 }
 
 impl SidebarView {
@@ -267,6 +282,10 @@ impl SidebarView {
             pin_icons: Vec::new(),
             #[cfg(test)]
             pin_inks: Vec::new(),
+            #[cfg(test)]
+            arrow_icons: Vec::new(),
+            #[cfg(test)]
+            arrow_inks: Vec::new(),
         }
     }
 
@@ -840,6 +859,8 @@ impl SidebarView {
         {
             self.pin_icons.clear();
             self.pin_inks.clear();
+            self.arrow_icons.clear();
+            self.arrow_inks.clear();
         }
         let (content, _) = ui.allocate_exact_size(
             vec2(ui.available_width(), column.content_height()),
@@ -872,6 +893,7 @@ impl SidebarView {
         let font = egui::TextStyle::Body.resolve(ui.style());
         let mut clicked = None;
         let mut toggled = None;
+        let mut pagelet = None;
         let now = ui.input(|i| i.time);
         let mut fading = false;
         self.drawn.clear();
@@ -967,10 +989,33 @@ impl SidebarView {
             }
             #[cfg(not(test))]
             paint_pin(ui, pin, pinned, response.hovered());
+            // The arrow on the page's right edge, shown while the pointer
+            // is on the page image: a press opens or closes the pagelet on
+            // that page and does not click the card.
+            if ui.rect_contains_pointer(rect) {
+                let strip = arrow_rect(rect);
+                let response = ui.interact(strip, id.with("arrow"), Sense::click());
+                if response.clicked() {
+                    pagelet = Some(page);
+                }
+                if response.hovered() {
+                    ui.set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                #[cfg(test)]
+                {
+                    let ink =
+                        paint_arrow(ui, strip, input.preview == Some(page), response.hovered());
+                    self.arrow_icons.push((page, strip));
+                    self.arrow_inks.push((page, ink));
+                }
+                #[cfg(not(test))]
+                paint_arrow(ui, strip, input.preview == Some(page), response.hovered());
+            }
             self.drawn.push((page, rect));
         }
-        if toggled.is_some() {
-            // The pin sits over the card: its press is not a card click.
+        if toggled.is_some() || pagelet.is_some() {
+            // The pin and the arrow sit over the card: their presses are
+            // not card clicks.
             clicked = None;
         }
         if fading {
@@ -979,6 +1024,7 @@ impl SidebarView {
         Output {
             clicked,
             toggle_pin: toggled,
+            pagelet,
             ..Output::default()
         }
     }
@@ -1066,6 +1112,7 @@ impl SidebarView {
         Output {
             pin_clicked: shown.inner.clicked,
             toggle_pin: shown.inner.toggle_pin,
+            pagelet: shown.inner.pagelet,
             ..Output::default()
         }
     }
@@ -1373,6 +1420,16 @@ impl SidebarView {
     }
 
     #[cfg(test)]
+    pub fn arrow_icons(&self) -> &[(usize, Rect)] {
+        &self.arrow_icons
+    }
+
+    #[cfg(test)]
+    pub fn arrow_inks(&self) -> &[(usize, Color32)] {
+        &self.arrow_inks
+    }
+
+    #[cfg(test)]
     pub fn outline_offset(&self) -> f32 {
         self.outline_offset
     }
@@ -1440,6 +1497,42 @@ fn muted_note(ui: &mut egui::Ui, text: &str) {
         .show(ui, |ui| {
             ui.add(egui::Label::new(egui::RichText::new(text).color(muted)).wrap());
         });
+}
+
+/// The arrow's strip in `thumb`: its right edge, one icon and padding wide,
+/// the full height of the page image.
+fn arrow_rect(thumb: Rect) -> Rect {
+    Rect::from_min_max(
+        egui::pos2(thumb.max.x - ARROW_STRIP, thumb.min.y),
+        thumb.max,
+    )
+}
+
+/// Draws `rect`'s arrow chip and glyph; returns the ink it used.
+fn paint_arrow(ui: &egui::Ui, rect: Rect, open: bool, hovered: bool) -> Color32 {
+    let visuals = ui.visuals();
+    let ink = if open {
+        visuals.selection.stroke.color
+    } else {
+        visuals.weak_text_color()
+    };
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let chip = if hovered { 1.0 } else { 0.85 };
+    painter.rect_filled(
+        rect,
+        ARROW_ROUNDING,
+        visuals.panel_fill.gamma_multiply(chip),
+    );
+    let c = rect.center();
+    painter.add(egui::Shape::line(
+        vec![
+            egui::pos2(c.x - 3.5, c.y - 5.0),
+            egui::pos2(c.x + 3.5, c.y),
+            egui::pos2(c.x - 3.5, c.y + 5.0),
+        ],
+        Stroke::new(1.5, ink),
+    ));
+    ink
 }
 
 /// The chip's rect at the centre of `thumb`'s top edge.
