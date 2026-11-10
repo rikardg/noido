@@ -7891,23 +7891,43 @@ pub(crate) mod tests {
         assert!((arrow.center().y - thumb.center().y).abs() < 0.5);
     }
 
+    /// The arrow strip's band as painted last frame.
+    fn arrow_band(h: &Harness, strip: Rect) -> Color32 {
+        h.shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(r) if r.rect == strip => Some(r.fill),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no band under the arrow at {strip:?}"))
+    }
+
     #[test]
-    fn the_arrows_chip_is_a_square_around_its_glyph() {
+    fn the_arrows_strip_is_a_grey_translucent_band() {
         let mut h = sidebar_on(Arc::new(BlankEngine));
         let thumb = thumb_rect(&h, 2);
         h.frames(1, vec![Event::PointerMoved(thumb.center())]);
         let strip = arrow_rect(&h, 2);
-        let chip = Rect::from_center_size(strip.center(), egui::Vec2::splat(sidebar::ARROW_STRIP));
-        let painted = |rect: Rect| {
-            h.shapes
-                .iter()
-                .any(|clipped| matches!(&clipped.shape, egui::Shape::Rect(r) if r.rect == rect))
-        };
-        assert!(painted(chip), "no chip behind the glyph: {chip:?}");
+        let band = arrow_band(&h, strip);
+        assert!(band.a() < 255 && band.a() > 0, "not translucent: {band:?}");
         assert!(
-            !painted(strip),
-            "the chip covers the whole strip: {strip:?}"
+            band.r() == band.g() && band.g() == band.b(),
+            "not grey: {band:?}"
         );
+    }
+
+    #[test]
+    fn hovering_the_arrow_strengthens_its_band() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        let thumb = thumb_rect(&h, 2);
+        h.frames(1, vec![Event::PointerMoved(thumb.center())]);
+        let strip = arrow_rect(&h, 2);
+        let resting = arrow_band(&h, strip);
+        h.frames(1, vec![Event::PointerMoved(strip.center())]);
+        h.frames(1, vec![]);
+        let hovered = arrow_band(&h, strip);
+        assert!(hovered.a() > resting.a(), "{resting:?} -> {hovered:?}");
+        assert_eq!(h.cursor, egui::CursorIcon::PointingHand);
     }
 
     #[test]
