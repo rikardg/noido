@@ -8049,6 +8049,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_pagelet_page_always_shows_its_arrow() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        open_pagelet(&mut h, 2);
+        // Off the card, and off the sidebar: the open page keeps its arrow.
+        h.frames(1, vec![Event::PointerMoved(egui::pos2(600.0, 500.0))]);
+        let strip = arrow_rect(&h, 2);
+        assert!(strip.width() > 0.0);
+        arrow_chip(&h, strip);
+        assert!(
+            h.app
+                .sidebar_view
+                .arrow_icons()
+                .iter()
+                .all(|(p, _)| *p == 2),
+            "another card showed its arrow: {:?}",
+            h.app.sidebar_view.arrow_icons()
+        );
+    }
+
+    #[test]
     fn the_arrow_and_the_pin_stay_clear_of_each_other() {
         for mut h in [sidebar_on(Arc::new(BlankEngine)), pinned_on(&[2, 7])] {
             let thumb = thumb_rect(&h, 2);
