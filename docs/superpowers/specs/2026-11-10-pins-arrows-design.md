@@ -26,9 +26,10 @@ and the Pins tab is no longer the only door.
   that page, on both tabs. It does not move the document: the current
   page, zoom and scroll stay as they were.
 - The arrow is drawn while the pointer is over that thumbnail, and always
-  on the page the pagelet shows, so the open page is marked. The
-  thumbnail's full right strip, one arrow icon wide plus a little
-  padding, is its hit area.
+  on the page the pagelet shows, so the open page is marked. The grey
+  band is only there under the pointer; without it the card shows the
+  arrow and its chip alone. The thumbnail's full right strip, one arrow
+  icon wide plus a little padding, is its hit area.
 - The arrow closes the pagelet when it already shows that page, and
   opens it on that page otherwise — at the pagelet's remembered place and
   size, as any other open.
