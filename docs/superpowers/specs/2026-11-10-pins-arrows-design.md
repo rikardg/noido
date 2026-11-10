@@ -35,9 +35,9 @@ and the Pins tab is no longer the only door.
   centre of its top edge, on both tabs. Its press still pins or unpins
   and neither navigates nor opens the pagelet. Unpinning the page the
   pagelet shows still closes it.
-- The arrow's strip carries a grey, translucent band, light enough to read
-  the page through it, so the strip shows as the arrow's target over a
-  white page and a dark scan. The exact alpha is tuned by hand.
+- The arrow sits on the pin's own chip — the panel colour at 0.85, full
+  under the pointer — with a thin outline, so it reads over a white page
+  and a dark scan. The exact values are tuned by hand.
 - The double-click machinery goes: `pin_clicked`, the pending press and
   its `max_double_click_delay` wait, and the `double_clicked` test of a
   card. A double click is simply two navigations.

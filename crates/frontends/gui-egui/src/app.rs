@@ -7890,42 +7890,70 @@ pub(crate) mod tests {
         assert!((arrow.center().y - thumb.center().y).abs() < 0.5);
     }
 
-    /// The arrow strip's band as painted last frame.
-    fn arrow_band(h: &Harness, strip: Rect) -> Color32 {
+    /// The arrow's chip as painted last frame, and its fill.
+    fn arrow_chip(h: &Harness, strip: Rect) -> (Rect, Color32) {
+        let shape = arrow_chip_shape(h, strip);
+        (shape.rect, shape.fill)
+    }
+
+    /// The arrow's chip as painted last frame.
+    fn arrow_chip_shape(h: &Harness, strip: Rect) -> egui::epaint::RectShape {
+        let chip = Rect::from_center_size(strip.center(), egui::Vec2::splat(sidebar::ARROW_STRIP));
         h.shapes
             .iter()
             .find_map(|clipped| match &clipped.shape {
-                egui::Shape::Rect(r) if r.rect == strip => Some(r.fill),
+                egui::Shape::Rect(r) if r.rect == chip => Some(r.clone()),
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("no band under the arrow at {strip:?}"))
+            .unwrap_or_else(|| panic!("no chip at {chip:?}"))
     }
 
     #[test]
-    fn the_arrows_strip_is_a_grey_translucent_band() {
+    fn the_arrows_chip_is_the_pins_style() {
         let mut h = sidebar_on(Arc::new(BlankEngine));
         let thumb = thumb_rect(&h, 2);
         h.frames(1, vec![Event::PointerMoved(thumb.center())]);
         let strip = arrow_rect(&h, 2);
-        let band = arrow_band(&h, strip);
-        assert!(band.a() < 255 && band.a() > 0, "not translucent: {band:?}");
-        assert!(
-            band.r() == band.g() && band.g() == band.b(),
-            "not grey: {band:?}"
-        );
+        let (chip, fill) = arrow_chip(&h, strip);
+        assert!((chip.center() - strip.center()).length() < 0.5, "{chip:?}");
+        let pin = pin_rect(&h, 2);
+        let pin_fill = h
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(r) if r.rect == pin => Some(r.fill),
+                _ => None,
+            })
+            .expect("the pin's chip");
+        assert_eq!(fill, pin_fill, "not the pin's chip");
+        let strip_painted = h
+            .shapes
+            .iter()
+            .any(|clipped| matches!(&clipped.shape, egui::Shape::Rect(r) if r.rect == strip));
+        assert!(!strip_painted, "the whole strip is still filled");
     }
 
     #[test]
-    fn hovering_the_arrow_strengthens_its_band() {
+    fn the_arrows_chip_has_an_outline() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        let thumb = thumb_rect(&h, 2);
+        h.frames(1, vec![Event::PointerMoved(thumb.center())]);
+        let chip = arrow_chip_shape(&h, arrow_rect(&h, 2));
+        assert!(chip.stroke.width > 0.0, "the chip has no outline");
+        assert_ne!(chip.stroke.color, Color32::TRANSPARENT);
+    }
+
+    #[test]
+    fn hovering_the_arrow_brightens_its_chip() {
         let mut h = sidebar_on(Arc::new(BlankEngine));
         let thumb = thumb_rect(&h, 2);
         h.frames(1, vec![Event::PointerMoved(thumb.center())]);
         let strip = arrow_rect(&h, 2);
-        let resting = arrow_band(&h, strip);
+        let (_, resting) = arrow_chip(&h, strip);
         h.frames(1, vec![Event::PointerMoved(strip.center())]);
         h.frames(1, vec![]);
-        let hovered = arrow_band(&h, strip);
-        assert!(hovered.a() > resting.a(), "{resting:?} -> {hovered:?}");
+        let (_, hovered) = arrow_chip(&h, strip);
+        assert_ne!(resting, hovered, "the chip did not brighten");
         assert_eq!(h.cursor, egui::CursorIcon::PointingHand);
     }
 
