@@ -7,7 +7,7 @@ pub const SIDEBAR_MIN_WIDTH: f32 = 160.0;
 /// The widest the sidebar gets, as a fraction of the window width.
 pub const SIDEBAR_MAX_FRACTION: f32 = 0.5;
 /// The widest the sidebar gets on any window, in UI points.
-pub const SIDEBAR_MAX_WIDTH: f32 = 480.0;
+pub const SIDEBAR_MAX_WIDTH: f32 = 640.0;
 
 /// The widest the sidebar may be in a window `window_width` wide.
 pub fn max_width(window_width: f32) -> f32 {
@@ -107,8 +107,8 @@ mod tests {
 
     #[test]
     fn wide_window_caps_width() {
-        assert_eq!(width(2000.0, 3000.0), 480.0);
-        assert_eq!(max_width(3000.0), 480.0);
+        assert_eq!(width(2000.0, 3000.0), 640.0);
+        assert_eq!(max_width(3000.0), 640.0);
         assert_eq!(max_width(900.0), 450.0);
         assert_eq!(max_width(200.0), 160.0);
     }
