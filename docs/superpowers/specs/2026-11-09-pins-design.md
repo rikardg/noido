@@ -2,6 +2,12 @@
 
 Date: 2026-11-09 · Status: draft for review
 
+> **Superseded in part** by
+> [2026-11-10-pins-arrows-design.md](2026-11-10-pins-arrows-design.md): a
+> card click now navigates on both tabs, an arrow on the card opens and
+> closes the pagelet, the pin chip sits at the top centre, and the
+> double-click delay is gone. Everything else here still stands.
+
 ## Intent
 
 The Pages tab is the whole document at a glance, and the Outline tab is the
@@ -19,21 +25,22 @@ following a link inside it moves the document underneath.
 
 ## Goals
 
-- A pin control in the upper-right corner of every Pages thumbnail, and of
-  every card in the Pins tab. Clicking it pins or unpins that page, and
-  neither navigates nor opens the pagelet.
+- A pin control at the top centre of every Pages thumbnail, and of every
+  card in the Pins tab (upper-right as written; the arrow revamp moved it).
+  Clicking it pins or unpins that page, and neither navigates nor opens
+  the pagelet.
 - A `Pins` tab beside `Pages`, in the strip at the left of `Outline`
   (`Pages · Pins · Outline · Search`). It shows the pinned pages, and only
   them, as thumbnails in page order: the page image, its number, and the
   current page marked.
 - Pins are the reader's, kept per document, saved with the rest of the
   document's view state and restored with it.
-- Single-clicking a pin opens the preview on that page, once egui's
-  double-click window has passed with no second click. The main view does
-  not move; the current page, zoom and scroll stay as they were.
-- Double-clicking a pin navigates the main view to that page, as clicking a
-  thumbnail in Pages does. An open preview stays open, on its own page. The
-  first click of the double click does not open the preview.
+- A click on a card (as first written, a press on its pin) opens the
+  preview on that page after egui's double-click window; the arrow revamp
+  gives that job to an arrow on the thumbnail and makes the card click
+  navigate. The main view does not move when the preview opens.
+- Double-clicking a pin navigated the main view to that page; a card click
+  now does, in one press.
 - The preview is a floating panel over the pages: the whole page fitted
   inside it, resizable, movable, with a close `×` in its upper-right
   corner. The pointer leaving the panel fades it to half opacity, except
@@ -171,7 +178,7 @@ and reads it back; every other unknown value, including the old
 ### 3. The pin control on the cards (`egui`)
 
 Each card, on the Pages tab and on the Pins tab, gets a small pin in its
-upper-right corner, inside the page image: a painted pin (head and needle),
+upper-right corner (later moved to the top centre), inside the page image: a painted pin (head and needle),
 over a rounded chip filled
 with the panel colour at most of its opacity so the pin reads on a white
 page, a dark scan or a photo. It is drawn always, in the weak text colour
@@ -292,8 +299,8 @@ visible in the main view, the larger of the panel's scale and the view's
 the preview removes it from the keep, and the page's texture is dropped as
 any other page outside the keep.
 
-**The delay, and double click.** A click on a pin card does not open the
-preview at once: the app records the page and the time, and opens the
+**The delay, and double click** (removed by the arrow revamp). A click on
+a pin card did not open the preview at once: the app records the page and the time, and opens the
 preview only when egui's double-click window (`max_double_click_delay`,
 0.3 s by default) has passed without a second click; it asks for a repaint
 at that moment. A second click on the same card inside the window is
