@@ -24,10 +24,10 @@ compose before pressing.
   tag only if the same commit finishes within the same minute; the
   concurrency group makes the second wait, and a collision then fails in
   `gh release create` rather than overwriting the entry.
-- The body is written by the workflow — the commit, a link to that commit as
-  the source, and the Gatekeeper note — and edited on GitHub afterwards if
-  the user has something to add. The dispatch form's optional `note` input
-  becomes its first line.
+- The body is written by the workflow — the commit, a download command for
+  each platform, a link to that commit as the source, and the Gatekeeper
+  note — and edited on GitHub afterwards if the user has something to add.
+  The dispatch form's optional `note` input becomes its first line.
 - `noido --version` prints `0.1.0+1bae2fac`: the package version plus the
   commit as SemVer build metadata, which never changes how versions compare.
 
