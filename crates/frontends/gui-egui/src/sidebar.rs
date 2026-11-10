@@ -1442,10 +1442,10 @@ fn muted_note(ui: &mut egui::Ui, text: &str) {
         });
 }
 
-/// The chip's rect in `thumb`'s upper-right corner.
+/// The chip's rect at the centre of `thumb`'s top edge.
 fn pin_rect(thumb: Rect) -> Rect {
     let side = vec2(PIN_SIZE, PIN_SIZE);
-    let min = egui::pos2(thumb.max.x - PIN_INSET - PIN_SIZE, thumb.min.y + PIN_INSET);
+    let min = egui::pos2(thumb.center().x - PIN_SIZE / 2.0, thumb.min.y + PIN_INSET);
     Rect::from_min_size(min, side)
 }
 

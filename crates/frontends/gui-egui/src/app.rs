@@ -7875,7 +7875,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn every_visible_thumbnail_has_a_pin_in_its_corner() {
+    fn every_visible_thumbnail_has_a_pin_at_its_top_centre() {
         let h = sidebar_on(Arc::new(BlankEngine));
         let drawn = drawn_pages(&h);
         assert!(!drawn.is_empty());
@@ -7883,10 +7883,13 @@ pub(crate) mod tests {
             let (thumb, pin) = (thumb_rect(&h, page), pin_rect(&h, page));
             assert!(thumb.contains_rect(pin), "{page}: {pin:?} in {thumb:?}");
             assert!(
-                pin.center().x > thumb.center().x,
-                "{page}: not at the right"
+                (pin.center().x - thumb.center().x).abs() < 0.5,
+                "{page}: not centred: {pin:?} over {thumb:?}"
             );
-            assert!(pin.center().y < thumb.center().y, "{page}: not at the top");
+            assert!(
+                (pin.min.y - thumb.min.y - 4.0).abs() < 0.5,
+                "{page}: not at the top: {pin:?} over {thumb:?}"
+            );
         }
     }
 
