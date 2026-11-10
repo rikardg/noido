@@ -2793,7 +2793,6 @@ impl NoidoApp {
         // A pagelet restored open waits for the view's rect, then shows.
         if let Some(page) = self.pending_pagelet.take()
             && page < self.view.layout().page_count()
-            && self.pins.contains(page)
         {
             let view = self
                 .last_scroll
@@ -7893,6 +7892,25 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_arrows_chip_is_a_square_around_its_glyph() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        let thumb = thumb_rect(&h, 2);
+        h.frames(1, vec![Event::PointerMoved(thumb.center())]);
+        let strip = arrow_rect(&h, 2);
+        let chip = Rect::from_center_size(strip.center(), egui::Vec2::splat(sidebar::ARROW_STRIP));
+        let painted = |rect: Rect| {
+            h.shapes
+                .iter()
+                .any(|clipped| matches!(&clipped.shape, egui::Shape::Rect(r) if r.rect == rect))
+        };
+        assert!(painted(chip), "no chip behind the glyph: {chip:?}");
+        assert!(
+            !painted(strip),
+            "the chip covers the whole strip: {strip:?}"
+        );
+    }
+
+    #[test]
     fn the_arrow_is_drawn_only_while_the_pointer_is_over_the_card() {
         let mut h = sidebar_on(Arc::new(BlankEngine));
         let thumb = thumb_rect(&h, 2);
@@ -8758,7 +8776,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_restored_pagelet_whose_page_is_not_pinned_stays_shut() {
+    fn a_restored_pagelet_reopens_on_its_page_even_unpinned() {
         let dir = tempfile::TempDir::new().unwrap();
         let restored = DocState {
             view: ViewState {
@@ -8788,7 +8806,11 @@ pub(crate) mod tests {
         let h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
         });
-        assert!(h.app.pin_preview.is_none(), "it opened an unpinned page");
+        assert!(
+            pagelet_on(&h, 9),
+            "an unpinned page did not reopen: {:?}",
+            h.app.pin_preview.as_ref().map(|p| p.page)
+        );
     }
 
     #[test]

@@ -88,7 +88,8 @@ navigates, through the existing `clicked` path (`leave_here`,
 tab stops mapping its card click to `pin_clicked`.
 
 **The arrow.** A chevron pointing right, centred in the strip,
-vertically centred on the page image. `ARROW_SIZE` is the icon (near the
+vertically centred on the page image, over a square chip the strip's
+width, not the full-height strip — the strip only takes the presses. `ARROW_SIZE` is the icon (near the
 pin's 20 points); the strip is that wide plus `ARROW_PADDING` per side,
 inset from the page's right edge, and the page image's full height. It is
 painted only when `rect_contains_pointer` holds for the thumbnail, over a
@@ -108,7 +109,9 @@ double-click branches are deleted.
 
 **State.** Unchanged: the pagelet's place, size and page are still saved
 in `[pagelet]`. A pagelet closed by the arrow keeps its place for the
-next open.
+next open. An open pagelet reopens on its page whether or not that page
+is still pinned: the arrow opens any page, so the pin no longer decides
+what may come back.
 
 ## Tests
 

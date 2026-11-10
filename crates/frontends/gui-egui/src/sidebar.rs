@@ -1516,8 +1516,10 @@ fn paint_arrow(ui: &egui::Ui, rect: Rect, open: bool, hovered: bool) -> Color32 
     };
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     let chip = if hovered { 1.0 } else { 0.85 };
+    // A square around the glyph, not the strip: the strip is the hit area.
+    let behind = Rect::from_center_size(rect.center(), egui::Vec2::splat(ARROW_STRIP));
     painter.rect_filled(
-        rect,
+        behind,
         ARROW_ROUNDING,
         visuals.panel_fill.gamma_multiply(chip),
     );
