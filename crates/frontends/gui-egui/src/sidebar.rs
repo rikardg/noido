@@ -1000,10 +1000,11 @@ impl SidebarView {
             }
             #[cfg(not(test))]
             paint_pin(ui, pin, pinned, response.hovered());
-            // The arrow on the page's right edge, shown while the pointer
-            // is on the page image: a press opens or closes the pagelet on
-            // that page and does not click the card.
-            if ui.rect_contains_pointer(rect) {
+            // The arrow on the page's right edge: shown while the pointer
+            // is on the page image, and always on the page the pagelet
+            // shows. A press opens or closes the pagelet on that page and
+            // does not click the card.
+            if ui.rect_contains_pointer(rect) || input.preview == Some(page) {
                 let strip = arrow_rect(rect);
                 let response = ui.interact(strip, id.with("arrow"), Sense::click());
                 if response.clicked() {
