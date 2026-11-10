@@ -12203,7 +12203,16 @@ pub(crate) mod tests {
         let below = h.app.last_scroll.unwrap().inner.center_bottom() + vec2(0.0, 50.0);
         let after = hold_drag(&mut h, (73.0, 95.0), below, Modifiers::SHIFT, 30);
         assert!(after.1 > before.1 + 100.0, "{before:?} → {after:?}");
-        let (start, end) = h.app.select.selection.unwrap().carets().unwrap();
+        // The drag ran onto the next page, whose far caret waits for that
+        // page's text: on a slower machine it lands a frame or two after
+        // the button is released, so wait for it rather than assume it.
+        h.until(|h| h.app.select.selection.is_some_and(|s| s.carets().is_some()));
+        let (start, end) = h
+            .app
+            .select
+            .selection
+            .and_then(|s| s.carets())
+            .expect("the far end never became a caret");
         assert!(end.page > start.page, "{start:?}..{end:?}");
     }
 
