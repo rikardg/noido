@@ -378,6 +378,11 @@ impl SidebarView {
         self.visible = 0..0;
         self.visible_pins.clear();
         self.drawn.clear();
+        #[cfg(test)]
+        {
+            self.arrow_icons.clear();
+            self.arrow_inks.clear();
+        }
     }
 
     /// Draws the open sidebar at the left of `ui` and records its width,
@@ -388,6 +393,13 @@ impl SidebarView {
         state: &mut SidebarState,
         input: &mut Input,
     ) -> Output {
+        #[cfg(test)]
+        {
+            // Recorded per frame the sidebar draws, on whichever tab: nothing
+            // outlives the frame it was drawn in.
+            self.arrow_icons.clear();
+            self.arrow_inks.clear();
+        }
         let window = ui.max_rect().width();
         let max = max_width(window);
         let frame = theme::Theme::current(ui.ctx()).frame(
@@ -860,8 +872,6 @@ impl SidebarView {
         {
             self.pin_icons.clear();
             self.pin_inks.clear();
-            self.arrow_icons.clear();
-            self.arrow_inks.clear();
         }
         let (content, _) = ui.allocate_exact_size(
             vec2(ui.available_width(), column.content_height()),

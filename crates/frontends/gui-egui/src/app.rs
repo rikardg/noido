@@ -140,7 +140,6 @@ pub struct NoidoApp {
     /// A link clicked in the pagelet, followed at the start of the next
     /// frame so the view's scroll takes the jump.
     clicked_target: Option<noido_engine::LinkTarget>,
-    /// A pin click waiting out egui's double-click window.
     /// A hit was jumped to since the reader last moved: later hits, of this
     /// search or a new one, add no history entry.
     searched_away: bool,
@@ -7931,6 +7930,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_arrows_records_do_not_outlive_the_sidebar() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        let thumb = thumb_rect(&h, 2);
+        h.frames(1, vec![Event::PointerMoved(thumb.center())]);
+        assert_eq!(arrow_rect(&h, 2).max.x, thumb.max.x);
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(3, vec![]);
+        assert!(!h.app.sidebar.open);
+        assert!(
+            h.app.sidebar_view.arrow_icons().is_empty(),
+            "the arrow outlived the sidebar: {:?}",
+            h.app.sidebar_view.arrow_icons()
+        );
+    }
+
+    #[test]
     fn the_arrow_is_drawn_only_while_the_pointer_is_over_the_card() {
         let mut h = sidebar_on(Arc::new(BlankEngine));
         let thumb = thumb_rect(&h, 2);
@@ -7950,10 +7965,12 @@ pub(crate) mod tests {
     #[test]
     fn an_arrow_press_opens_the_pagelet_without_moving() {
         let mut h = sidebar_on(Arc::new(BlankEngine));
+        let scroll = h.app.view.offset();
         open_pagelet(&mut h, 2);
         assert!(pagelet_on(&h, 2));
         assert_eq!(h.app.current_page(), Some(0), "it navigated");
         assert_eq!(h.app.chosen, None, "it navigated");
+        assert_eq!(h.app.view.offset(), scroll, "it scrolled");
     }
 
     #[test]
