@@ -10,6 +10,24 @@ use noido_core::{Family, families};
 use noido_engine::{Date, PdfBytes, PdfEngine, Properties, Size};
 use noido_render::read_properties;
 
+use crate::icons;
+
+/// The settings row's copy button, by the id a test clicks.
+pub const COPY_BUTTON: &str = "info-settings-copy";
+/// The settings row's folder button, by the id a test clicks.
+pub const FOLDER_BUTTON: &str = "info-settings-folder";
+
+/// What the reader asked of the page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Asked {
+    /// Close the page.
+    Close,
+    /// Put the settings file's path on the clipboard.
+    CopyPath,
+    /// Show the settings file's folder.
+    ShowFolder,
+}
+
 /// The open document's file, to read its properties from.
 pub struct Source {
     pub engine: Arc<dyn PdfEngine>,
@@ -56,11 +74,18 @@ impl Page {
     }
 }
 
-/// Shows the page over the window; returns whether it should close.
-/// `sizes` are the pages' sizes.
-pub fn show(page: &mut Page, ctx: &egui::Context, source: &Source, sizes: &[Size]) -> bool {
+/// Shows the page over the window; returns what the reader asked of it.
+/// `sizes` are the pages' sizes, and `settings` the file the document's
+/// settings are saved in, shown when there is one.
+pub fn show(
+    page: &mut Page,
+    ctx: &egui::Context,
+    source: &Source,
+    sizes: &[Size],
+    settings: Option<&Path>,
+) -> Option<Asked> {
     page.receive();
-    let mut close = false;
+    let mut asked = None;
     let max_height = ctx.content_rect().height() * 0.7;
     // The frame has no right margin, so the scroll bar runs along the
     // page's edge; everything else keeps the margin itself.
@@ -75,20 +100,12 @@ pub fn show(page: &mut Page, ctx: &egui::Context, source: &Source, sizes: &[Size
         right: 0,
         ..frame.inner_margin
     });
-    let right = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
-        egui::Frame::NONE
-            .inner_margin(egui::Margin {
-                right: margin,
-                ..egui::Margin::ZERO
-            })
-            .show(ui, |ui| add(ui));
-    };
     let response = egui::Modal::new(egui::Id::unique("document-info"))
         .frame(frame)
         .show(ctx, |ui| {
             crate::theme::scope(ui, crate::theme::Role::Dialog, |ui| {
                 ui.set_width(WIDTH + f32::from(margin));
-                right(ui, &mut |ui| {
+                right(ui, margin, |ui| {
                     ui.heading("Document info");
                 });
                 ui.add_space(4.0);
@@ -96,22 +113,45 @@ pub fn show(page: &mut Page, ctx: &egui::Context, source: &Source, sizes: &[Size
                     .max_height(max_height)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        right(ui, &mut |ui| contents(ui, page, source, sizes))
+                        asked = right(ui, margin, |ui| contents(ui, page, source, sizes, settings));
                     });
                 ui.add_space(8.0);
-                right(ui, &mut |ui| {
+                right(ui, margin, |ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        close = ui.button("Close").clicked();
+                        if ui.button("Close").clicked() {
+                            asked = Some(Asked::Close);
+                        }
                     });
                 });
             })
         });
-    close || response.should_close()
+    if response.should_close() {
+        asked = Some(Asked::Close);
+    }
+    asked
 }
 
-fn contents(ui: &mut egui::Ui, page: &Page, source: &Source, sizes: &[Size]) {
+/// `add`'s part of the page, with the margin the frame leaves it.
+fn right<R>(ui: &mut egui::Ui, margin: i8, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::NONE
+        .inner_margin(egui::Margin {
+            right: margin,
+            ..egui::Margin::ZERO
+        })
+        .show(ui, add)
+        .inner
+}
+
+fn contents(
+    ui: &mut egui::Ui,
+    page: &Page,
+    source: &Source,
+    sizes: &[Size],
+    settings: Option<&Path>,
+) -> Option<Asked> {
     let read = page.read.as_ref();
     let properties = read.map(|(p, _)| p);
+    let mut asked = None;
     section(ui, "File", |ui| {
         let name = page
             .shown
@@ -121,6 +161,9 @@ fn contents(ui: &mut egui::Ui, page: &Page, source: &Source, sizes: &[Size]) {
         row(ui, "Name", name);
         row(ui, "Folder", folder.filter(|f| !f.is_empty()));
         row(ui, "Size", Some(file_size_text(source.bytes.len() as u64)));
+        if let Some(path) = settings {
+            asked = settings_row(ui, path);
+        }
     });
     section(ui, "Document", |ui| {
         let Some(p) = properties else {
@@ -183,6 +226,7 @@ fn contents(ui: &mut egui::Ui, page: &Page, source: &Source, sizes: &[Size]) {
             }
         }
     });
+    asked
 }
 
 /// The path the page shows: made absolute where it can be, with `.` and
@@ -217,7 +261,7 @@ fn shown_path(path: &Path) -> PathBuf {
 }
 
 /// The width of the page's text.
-const WIDTH: f32 = 440.0;
+pub(crate) const WIDTH: f32 = 440.0;
 
 /// The width of the keys' column. Fixed, not an `egui::Grid`: a grid lays
 /// out with last frame's column widths, so when the rows arrive the page
@@ -225,12 +269,24 @@ const WIDTH: f32 = 440.0;
 const KEY_WIDTH: f32 = 96.0;
 
 /// A heading and rows under it.
-fn section(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui)) {
+fn section<R>(ui: &mut egui::Ui, title: &str, rows: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.add_space(8.0);
     ui.label(egui::RichText::new(title).strong());
     ui.add_space(2.0);
     ui.spacing_mut().item_spacing.y = 4.0;
-    rows(ui);
+    rows(ui)
+}
+
+/// The row's key: a narrow column, so the values line up.
+fn key_column(ui: &mut egui::Ui, key: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(KEY_WIDTH, 0.0),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.set_width(KEY_WIDTH);
+            ui.add(egui::Label::new(egui::RichText::new(key).weak()).wrap());
+        },
+    );
 }
 
 /// A row of a section, left out without a value.
@@ -239,16 +295,56 @@ fn row(ui: &mut egui::Ui, key: &str, value: Option<String>) {
         return;
     };
     ui.horizontal_top(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(KEY_WIDTH, 0.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(KEY_WIDTH);
-                ui.add(egui::Label::new(egui::RichText::new(key).weak()).wrap());
-            },
-        );
+        key_column(ui, key);
         ui.add(egui::Label::new(value).wrap());
     });
+}
+
+/// The width of a button beside the settings path.
+const BUTTON: f32 = 24.0;
+
+/// The settings file's path, with a button that copies it and one that
+/// shows its folder; returns what was clicked.
+fn settings_row(ui: &mut egui::Ui, path: &Path) -> Option<Asked> {
+    let mut asked = None;
+    ui.horizontal_top(|ui| {
+        key_column(ui, "Settings");
+        // The buttons take their room first, with the gaps either side of
+        // them, so the path wraps beside them and the row ends where the
+        // page's other rows do.
+        let gap = ui.spacing().item_spacing.x;
+        let room = 2.0 * BUTTON + 2.0 * gap;
+        let width = (ui.available_width() - room).max(0.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(width);
+                ui.add(egui::Label::new(path.display().to_string()).wrap());
+            },
+        );
+        let copy = icons::button(
+            ui,
+            egui::Id::unique(COPY_BUTTON),
+            BUTTON,
+            false,
+            icons::paint_copy_icon,
+        );
+        if crate::theme::hover_text(copy, "Copy path").clicked() {
+            asked = Some(Asked::CopyPath);
+        }
+        let folder = icons::button(
+            ui,
+            egui::Id::unique(FOLDER_BUTTON),
+            BUTTON,
+            false,
+            icons::paint_folder_icon,
+        );
+        if crate::theme::hover_text(folder, "Open folder").clicked() {
+            asked = Some(Asked::ShowFolder);
+        }
+    });
+    asked
 }
 
 /// "216 × 279 mm (612 × 792 pt)"; "mixed" when the pages differ by a

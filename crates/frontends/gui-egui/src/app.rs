@@ -226,6 +226,9 @@ pub struct NoidoApp {
     /// Opens a picked document in a new window; `Arc` so the picker's
     /// thread can call it. Fakes in tests.
     open: open::OnPicked,
+    /// Shows a file's folder in the desktop's file manager, as the info
+    /// page asks. Fakes in tests.
+    show_folder: open::ShowFolder,
     /// The old view's edge after PageUp/PageDown and when its flash
     /// started: `None` while the key is still held.
     screen_edge: Option<(noido_core::DocPoint, Option<f64>)>,
@@ -353,6 +356,7 @@ impl NoidoApp {
             pick: Box::new(open::pick_pdf),
             requests: None,
             open: Arc::new(open::open),
+            show_folder: Arc::new(open::show_folder),
             screen_edge: None,
             page_key_repeated: false,
             recent: Vec::new(),
@@ -2944,12 +2948,29 @@ impl NoidoApp {
         let (Some(page), Some(source)) = (&mut self.info_page, &self.source) else {
             return;
         };
+        // Worked out afresh each frame: an in-place edit re-files the state
+        // under the document's new hash.
+        let settings = self
+            .persistence
+            .as_ref()
+            .map(|persistence| persistence.store.state_path(&persistence.slot));
         let layout = self.view.layout();
         let sizes: Vec<noido_engine::Size> = (0..layout.page_count())
             .filter_map(|page| layout.page_size(page))
             .collect();
-        if info::show(page, ctx, source, &sizes) {
-            self.info_page = None;
+        match info::show(page, ctx, source, &sizes, settings.as_deref()) {
+            None => {}
+            Some(info::Asked::Close) => self.info_page = None,
+            Some(info::Asked::CopyPath) => {
+                if let Some(path) = settings {
+                    ctx.copy_text(path.display().to_string());
+                }
+            }
+            Some(info::Asked::ShowFolder) => {
+                if let Some(path) = settings {
+                    (self.show_folder)(&path);
+                }
+            }
         }
     }
 
@@ -3548,6 +3569,29 @@ pub(crate) mod tests {
         }
 
         /// Clicks the middle of `text`.
+        /// Where the widget with `id` was drawn last frame.
+        fn widget_rect(&self, id: egui::Id) -> Rect {
+            self.ctx
+                .read_response(id)
+                .unwrap_or_else(|| panic!("{id:?} not drawn"))
+                .rect
+        }
+
+        /// Clicks the widget with `id`, following it while the page settles
+        /// as the properties arrive, so the press lands on it.
+        fn click_id(&mut self, id: egui::Id) {
+            let mut rect = self.widget_rect(id);
+            for _ in 0..10 {
+                self.frames(1, vec![Event::PointerMoved(rect.center())]);
+                let settled = self.widget_rect(id);
+                if settled == rect {
+                    break;
+                }
+                rect = settled;
+            }
+            self.click(rect.center());
+        }
+
         fn click_text(&mut self, text: &str) {
             let rect = self
                 .text_rect(text)
@@ -5920,6 +5964,129 @@ pub(crate) mod tests {
         for text in ["Subject", "Keywords", "Modified", "Outline"] {
             assert!(h.text_rect(text).is_none(), "{text:?} drawn");
         }
+    }
+
+    /// A harness showing Document info for /docs/paper.pdf, with a store at
+    /// `dir` for its settings; `show_folder`'s calls are recorded in
+    /// `opened` instead of opening anything.
+    fn info_with_settings(
+        dir: &std::path::Path,
+        opened: Arc<std::sync::Mutex<Vec<PathBuf>>>,
+    ) -> Harness {
+        let source = crate::info::Source {
+            engine: Arc::new(PropsEngine),
+            bytes: Arc::new(b"Info Title".to_vec()),
+            path: "/docs/paper.pdf".into(),
+        };
+        let (store, slot) = (Store::at(dir), test_slot(dir));
+        Harness::build(move |mut app| {
+            app.show_folder = Arc::new(move |path: &std::path::Path| {
+                opened.lock().unwrap().push(path.to_path_buf());
+            });
+            app.with_source(source).with_persistence(store, slot, None)
+        })
+    }
+
+    /// The settings file the document in `h` is kept in.
+    fn settings_file(dir: &std::path::Path) -> String {
+        Store::at(dir)
+            .state_path(&test_slot(dir))
+            .display()
+            .to_string()
+    }
+
+    #[test]
+    fn info_shows_where_the_settings_are_kept() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = info_with_settings(dir.path(), Arc::default());
+        show_info(&mut h);
+        assert!(h.text_rect("Settings").is_some(), "no settings row");
+        let path = settings_file(dir.path());
+        assert!(h.text_rect(&path).is_some(), "{path:?} not drawn");
+    }
+
+    #[test]
+    fn the_settings_buttons_end_where_the_page_does() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Long enough that the path fills the row and wraps where no break
+        // is wanted.
+        let folder_dir = dir.path().join("a".repeat(40));
+        let mut h = info_with_settings(&folder_dir, Arc::default());
+        // Short enough that the page scrolls, so its bar takes its room.
+        h.size = vec2(900.0, 500.0);
+        show_info(&mut h);
+        h.frames(3, vec![]);
+        // The page's columns end where its text does.
+        let edge = h.text_rect("Document info").unwrap().left() + crate::info::WIDTH;
+        let copy = h.widget_rect(egui::Id::unique(crate::info::COPY_BUTTON));
+        let folder = h.widget_rect(egui::Id::unique(crate::info::FOLDER_BUTTON));
+        assert!(copy.right() < folder.left(), "{copy:?} and {folder:?}");
+        assert!(
+            folder.right() <= edge + 0.5,
+            "the folder button ends at {}, the page at {edge}",
+            folder.right()
+        );
+        let path = h.text_rect(&settings_file(&folder_dir)).expect("no path");
+        assert!(
+            path.right() <= copy.left(),
+            "the path runs under the buttons: {path:?} and {copy:?}"
+        );
+    }
+
+    #[test]
+    fn the_settings_path_copies() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = info_with_settings(dir.path(), Arc::default());
+        show_info(&mut h);
+        h.click_id(egui::Id::unique(crate::info::COPY_BUTTON));
+        h.frames(1, vec![]);
+        assert_eq!(h.copied.last(), Some(&settings_file(dir.path())));
+    }
+
+    #[test]
+    fn the_settings_folder_opens() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let opened = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut h = info_with_settings(dir.path(), opened.clone());
+        show_info(&mut h);
+        h.click_id(egui::Id::unique(crate::info::FOLDER_BUTTON));
+        h.frames(1, vec![]);
+        let file = Store::at(dir.path()).state_path(&test_slot(dir.path()));
+        assert_eq!(*opened.lock().unwrap(), vec![file]);
+    }
+
+    #[test]
+    fn the_settings_row_follows_the_document_to_its_new_hash() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = info_with_settings(dir.path(), Arc::default());
+        show_info(&mut h);
+        assert!(h.text_rect(&settings_file(dir.path())).is_some());
+        // An in-place edit refiles the state under the document's new hash.
+        let key = DocKey::new(b"new version", std::path::Path::new("/test.pdf"));
+        h.reload(Arc::new(PropsEngine), key.clone());
+        let moved = Store::at(dir.path())
+            .state_path(&Store::at(dir.path()).load(key).0)
+            .display()
+            .to_string();
+        h.until(|h| h.text_rect(&moved).is_some());
+        assert!(h.text_rect(&moved).is_some(), "the old name stays");
+        assert!(
+            h.text_rect(&settings_file(dir.path())).is_none(),
+            "the old name is still drawn"
+        );
+    }
+
+    #[test]
+    fn info_leaves_out_the_settings_row_without_a_store() {
+        let mut h = with_info_source(b"Info Title");
+        show_info(&mut h);
+        assert!(h.text_rect("Settings").is_none(), "a settings row is drawn");
+        assert!(
+            h.ctx
+                .read_response(egui::Id::unique(crate::info::COPY_BUTTON))
+                .is_none(),
+            "a copy button is drawn"
+        );
     }
 
     #[test]

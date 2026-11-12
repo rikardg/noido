@@ -7,6 +7,7 @@ mod desktop;
 mod document;
 mod frame;
 mod icon;
+mod icons;
 mod image;
 mod info;
 mod instance;

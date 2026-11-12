@@ -4,6 +4,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Shows a file's folder in the desktop's file manager. Fakes in tests,
+/// which record the file rather than open anything.
+pub type ShowFolder = std::sync::Arc<dyn Fn(&Path) + Send + Sync>;
+
 /// Picks a PDF in the desktop's own dialog: noido's window goes along
 /// as the dialog's parent, the dialog opens in the directory of the
 /// open document when there is one, and a picked file is handed to
@@ -70,4 +74,79 @@ pub fn open(path: &Path) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+/// Shows the folder `path` is in, in the desktop's file manager. On macOS
+/// Finder opens with `path` selected where it has been written, and at the
+/// folder itself where it has not; elsewhere the folder opens. A desktop
+/// with no file manager to call gets nothing, quietly.
+pub fn show_folder(path: &Path) {
+    // Detached: the file manager's output is not ours to show.
+    let _ = show_folder_command(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// The command [`show_folder`] runs.
+fn show_folder_command(path: &Path) -> std::process::Command {
+    // Finder opens with the file selected where it has been written.
+    #[cfg(target_os = "macos")]
+    if path.exists() {
+        let mut command = std::process::Command::new("open");
+        command.arg("-R").arg(path);
+        return command;
+    }
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(windows)]
+    let program = "explorer";
+    // Everything else is a freedesktop desktop, which is not only Linux's:
+    // the BSDs run GNOME and KDE too, and xdg-open is theirs as well.
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let program = "xdg-open";
+    let mut command = std::process::Command::new(program);
+    command.arg(path.parent().unwrap_or(path));
+    command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::show_folder_command;
+
+    fn args(command: &std::process::Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    #[test]
+    fn the_folder_opens_in_the_desktops_file_manager() {
+        let command = show_folder_command(std::path::Path::new("/state/noido/docs/ab.toml"));
+        assert_eq!(command.get_program(), "xdg-open");
+        assert_eq!(args(&command), ["/state/noido/docs"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_file_opens_selected_in_finder() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ab.toml");
+        std::fs::write(&file, "").unwrap();
+        let command = show_folder_command(&file);
+        assert_eq!(command.get_program(), "open");
+        assert_eq!(args(&command), ["-R", file.to_str().unwrap()]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_file_not_written_yet_opens_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ab.toml");
+        let command = show_folder_command(&file);
+        assert_eq!(args(&command), [dir.path().to_str().unwrap()]);
+    }
 }

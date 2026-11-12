@@ -354,6 +354,12 @@ impl Store {
         path
     }
 
+    /// The file `slot`'s settings are saved in, whether or not it has been
+    /// written yet.
+    pub fn state_path(&self, slot: &Slot) -> PathBuf {
+        self.state_file(&slot.key)
+    }
+
     fn state_file(&self, key: &DocKey) -> PathBuf {
         self.docs.join(format!("{}{STATE_SUFFIX}", key.hex()))
     }
@@ -696,6 +702,25 @@ impl StoredColour {
             Self::Pink => HighlightColour::Pink,
             Self::Purple => HighlightColour::Purple,
         }
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{DocKey, Store};
+
+    #[test]
+    fn a_slots_state_file_is_named_by_its_hash() {
+        let store = Store::at(Path::new("/state"));
+        let (slot, _) = store.load(DocKey::new(b"x", Path::new("/docs/paper.pdf")));
+        let hex = slot.key().hex();
+        assert_eq!(hex.len(), 64, "{hex} is not a content hash");
+        assert_eq!(
+            store.state_path(&slot),
+            PathBuf::from(format!("/state/docs/{hex}.toml"))
+        );
     }
 }
 
