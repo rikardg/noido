@@ -110,8 +110,9 @@ pub fn open(
     let source = info::Source {
         engine: Arc::new(HayroEngine),
         bytes: bytes.clone(),
-        // The info page shows the folder: a relative one says little.
-        path: std::path::absolute(path).unwrap_or_else(|_| path.to_owned()),
+        // As it was given: the info page makes it absolute itself, so that
+        // what it shows is decided in one place (and `..` folded there).
+        path: path.to_owned(),
     };
     let (renderer, info) = Renderer::start(Arc::new(HayroEngine), bytes, waker(ctx, viewport))
         .map_err(|e| format!("{}: {e}", path.display()))?;

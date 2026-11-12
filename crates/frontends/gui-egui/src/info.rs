@@ -1,7 +1,7 @@
 //! The document info page: the file, what the document says about itself,
 //! its format and its fonts.
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
@@ -14,12 +14,18 @@ use noido_render::read_properties;
 pub struct Source {
     pub engine: Arc<dyn PdfEngine>,
     pub bytes: PdfBytes,
+    /// As the reader gave it: neither absolute nor tidied; the page tidies
+    /// it when it shows it.
     pub path: PathBuf,
 }
 
 /// The open info page.
 pub struct Page {
     reply: Receiver<Properties>,
+    /// The file's path as the page shows it, worked out when the page opens
+    /// so that what it says does not depend on the folder noido is in by the
+    /// time it is drawn.
+    shown: PathBuf,
     /// Once read: the properties, and their fonts as families.
     read: Option<(Properties, Vec<Family>)>,
 }
@@ -33,7 +39,11 @@ impl Page {
             source.bytes.clone(),
             Box::new(move || ctx.request_repaint()),
         );
-        Self { reply, read: None }
+        Self {
+            reply,
+            shown: shown_path(&source.path),
+            read: None,
+        }
     }
 
     fn receive(&mut self) {
@@ -103,11 +113,11 @@ fn contents(ui: &mut egui::Ui, page: &Page, source: &Source, sizes: &[Size]) {
     let read = page.read.as_ref();
     let properties = read.map(|(p, _)| p);
     section(ui, "File", |ui| {
-        let name = source
-            .path
+        let name = page
+            .shown
             .file_name()
             .map(|n| n.to_string_lossy().into_owned());
-        let folder = source.path.parent().map(|p| p.display().to_string());
+        let folder = page.shown.parent().map(|p| p.display().to_string());
         row(ui, "Name", name);
         row(ui, "Folder", folder.filter(|f| !f.is_empty()));
         row(ui, "Size", Some(file_size_text(source.bytes.len() as u64)));
@@ -173,6 +183,37 @@ fn contents(ui: &mut egui::Ui, page: &Page, source: &Source, sizes: &[Size]) {
             }
         }
     });
+}
+
+/// The path the page shows: made absolute where it can be, with `.` and
+/// `..` folded away, and symlinks left as they were written. A `..` is a way
+/// of getting somewhere, not part of a folder's name. The folding is
+/// lexical, as Windows' `GetFullPathNameW` is, so a `..` after a symlink
+/// names the folder that was written, not the one the link resolves to.
+/// A path that cannot be made absolute is shown as it was given.
+fn shown_path(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut kept: Vec<Component> = Vec::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match kept.last() {
+                // A name goes back over what `..` follows.
+                Some(Component::Normal(_)) => {
+                    kept.pop();
+                }
+                // Above the root there is nothing to go back over.
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => kept.push(component),
+            },
+            _ => kept.push(component),
+        }
+    }
+    let mut shown = PathBuf::new();
+    for component in kept {
+        shown.push(component.as_os_str());
+    }
+    shown
 }
 
 /// The width of the page's text.
@@ -322,6 +363,57 @@ mod tests {
         assert_eq!(date_text(date(Some(-270))), "2024-03-05 14:22 −04:30");
         assert_eq!(date_text(date(Some(0))), "2024-03-05 14:22 UTC");
         assert_eq!(date_text(date(None)), "2024-03-05 14:22");
+    }
+
+    fn shown(path: &str) -> PathBuf {
+        shown_path(Path::new(path))
+    }
+
+    #[test]
+    fn the_folder_is_shown_without_the_way_there() {
+        let cwd = std::env::current_dir().unwrap();
+        // `noido ../papers/paper.pdf`: the folder, not the way to it. The
+        // `..` here goes up from the crate noido is opened in.
+        assert_eq!(
+            shown("../papers/paper.pdf"),
+            cwd.parent().unwrap().join("papers/paper.pdf")
+        );
+        assert_eq!(
+            shown("/docs/scans/../papers/paper.pdf"),
+            Path::new("/docs/papers/paper.pdf")
+        );
+    }
+
+    #[test]
+    fn a_parent_dir_goes_back_over_the_folder_it_follows() {
+        let cwd = std::env::current_dir().unwrap();
+        // The first `..` takes back `a`, the second the folder noido is in.
+        assert_eq!(shown("a/../../b.pdf"), cwd.parent().unwrap().join("b.pdf"));
+        // Above the root there is nothing to take back.
+        assert_eq!(shown("/.."), Path::new("/"));
+        assert_eq!(shown("/docs/../.."), Path::new("/"));
+    }
+
+    #[test]
+    fn the_path_is_tidied() {
+        assert_eq!(
+            shown("/docs//papers/./paper.pdf"),
+            Path::new("/docs/papers/paper.pdf")
+        );
+    }
+
+    /// A folder reached through a symlink stays the one it was opened
+    /// through, not the one it resolves to.
+    #[cfg(unix)]
+    #[test]
+    fn the_folder_is_shown_as_it_was_written_not_as_it_resolves() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join("real")).unwrap();
+        std::fs::write(dir.path().join("real").join("paper.pdf"), b"x").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link")).unwrap();
+
+        let through_the_link = dir.path().join("link").join("paper.pdf");
+        assert_eq!(shown_path(&through_the_link), through_the_link);
     }
 
     #[test]
