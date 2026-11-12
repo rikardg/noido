@@ -5898,6 +5898,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn info_shows_the_folder_without_the_way_there() {
+        let source = crate::info::Source {
+            engine: Arc::new(PropsEngine),
+            bytes: Arc::new(b"Info Title".to_vec()),
+            path: "/docs/scans/../papers/./paper.pdf".into(),
+        };
+        let mut h = Harness::build(|app| app.with_source(source));
+        show_info(&mut h);
+        assert!(h.text_rect("/docs/papers").is_some(), "folder not folded");
+        assert!(
+            h.text_rect("/docs/scans/../papers").is_none(),
+            "the way there is shown"
+        );
+    }
+
+    #[test]
     fn rows_without_values_are_left_out() {
         let mut h = with_info_source(b"Info Title");
         show_info(&mut h);
