@@ -431,23 +431,15 @@ fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Rect {
     close.rect
 }
 
-/// A square button with a painted icon, highlighted while `selected`.
-pub fn icon_button(
+/// A square button with a painted icon, highlighted while `selected`, as
+/// wide as the bar's own buttons. A drag that starts on one isn't passed
+/// on to the bar underneath, which would move the window.
+fn icon_button(
     ui: &mut egui::Ui,
     selected: bool,
     paint: impl FnOnce(&Painter, Rect, Color32),
 ) -> Response {
-    // Senses drags too, so a drag that starts on the button isn't passed on
-    // to the bar underneath, which would move the window.
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(ICON_BUTTON, ICON_BUTTON), Sense::click_and_drag());
-    let visuals = ui.style().interact_selectable(&response, selected);
-    let painter = ui.painter();
-    if selected || response.hovered() || response.has_focus() {
-        painter.rect_filled(rect, visuals.corner_radius, visuals.weak_bg_fill);
-    }
-    paint(painter, rect.shrink(8.0), visuals.fg_stroke.color);
-    response
+    crate::icons::button(ui, ui.next_auto_id(), ICON_BUTTON, selected, paint)
 }
 
 /// A panel outline with a bar down its left side.
