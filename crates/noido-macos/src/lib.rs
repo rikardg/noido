@@ -19,6 +19,9 @@ mod open_panel;
 mod open_urls;
 
 #[cfg(target_os = "macos")]
+mod title_bar;
+
+#[cfg(target_os = "macos")]
 pub use activate::activate_pid;
 
 #[cfg(target_os = "macos")]
@@ -35,3 +38,6 @@ pub use open_panel::pick_pdfs;
 
 #[cfg(target_os = "macos")]
 pub use open_urls::{install_open_urls, take_opened};
+
+#[cfg(target_os = "macos")]
+pub use title_bar::unify_title_bars;

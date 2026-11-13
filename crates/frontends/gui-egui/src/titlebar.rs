@@ -15,8 +15,14 @@ use noido_core::{
 
 use crate::theme;
 
-/// Height of the bar, in UI points.
-pub const TITLE_BAR_HEIGHT: f32 = 40.0;
+/// Height of the bar, in UI points. On macOS, the bar AppKit makes for a
+/// window with a unified toolbar (see `noido_macos::unify_title_bars`),
+/// as Preview's and Safari's.
+pub const TITLE_BAR_HEIGHT: f32 = if cfg!(target_os = "macos") {
+    52.0
+} else {
+    40.0
+};
 /// The search field's height: egui's 20 pt and 2 pt more above and below.
 const SEARCH_HEIGHT: f32 = 24.0;
 /// The narrowest the search field gets.
@@ -27,8 +33,13 @@ const SEARCH_HIDDEN_WIDTH: f32 = 200.0;
 const ICON_BUTTON: f32 = 28.0;
 /// Space between the name and the page and zoom text.
 const STATUS_GAP: f32 = 8.0;
-/// Room left for macOS's window buttons at the bar's left.
-const TRAFFIC_LIGHTS_INSET: f32 = 76.0;
+/// Room left for macOS's window buttons at the bar's left: in the unified
+/// bar they end 73 pt in, and the first control comes 15 pt after them.
+const TRAFFIC_LIGHTS_INSET: f32 = 88.0;
+/// Room beside the bar's outermost buttons on macOS: their glyphs, 8 pt
+/// inside the button, are 19 pt from the edge, as the window buttons are
+/// from the left. On the right always, on the left in fullscreen.
+const SIDE_INSET: f32 = 11.0;
 /// The least room a scrolling menu keeps for itself, in points: enough for
 /// a few entries, even when the window's edge is closer.
 const MENU_LOWEST_ROOM: f32 = 96.0;
@@ -55,6 +66,8 @@ pub struct Bar<'a> {
 /// Where the bar's parts were drawn last frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Rects {
+    /// The sidebar toggle, the bar's first control.
+    pub sidebar: Rect,
     pub search: Rect,
     pub menu: Rect,
     /// The select tool's button.
@@ -66,6 +79,7 @@ pub struct Rects {
 impl Default for Rects {
     fn default() -> Self {
         Self {
+            sidebar: Rect::NOTHING,
             search: Rect::NOTHING,
             menu: Rect::NOTHING,
             select: Rect::NOTHING,
@@ -133,15 +147,28 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         ui.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
     }
 
-    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-        if cfg!(target_os = "macos") && !fullscreen {
-            ui.add_space(TRAFFIC_LIGHTS_INSET);
+    // Centred in the whole bar, as macOS centres its window buttons: the
+    // panel keeps its last point for the separator line below.
+    let row = Rect::from_min_size(full.min, vec2(full.width(), TITLE_BAR_HEIGHT));
+    let row = egui::UiBuilder::new()
+        .max_rect(row)
+        .layout(Layout::left_to_right(Align::Center));
+    ui.scope_builder(row, |ui| {
+        if cfg!(target_os = "macos") {
+            // In fullscreen, with no window buttons, as far in as the
+            // menu is from the right.
+            ui.add_space(if fullscreen {
+                SIDE_INSET
+            } else {
+                TRAFFIC_LIGHTS_INSET
+            });
         }
         let toggle =
             theme::hover_text(
             icon_button(ui, bar.sidebar.open, paint_sidebar_icon),
             "Sidebar (F9)",
         );
+        output.rects.sidebar = toggle.rect;
         if toggle.clicked() {
             output.actions.push(Action::ToggleSidebar);
         }
@@ -205,7 +232,9 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
         }
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if !cfg!(target_os = "macos") {
+            if cfg!(target_os = "macos") {
+                ui.add_space(SIDE_INSET);
+            } else {
                 output.rects.close = window_buttons(ui, maximized);
                 ui.add_space(ui.spacing().item_spacing.x * 2.0);
             }
