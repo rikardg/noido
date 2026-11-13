@@ -849,6 +849,11 @@ impl Shell {
                 builder = builder.with_active(false);
             }
             ctx.show_viewport_deferred(id, builder, move |ui, _class| {
+                // egui does not hand out the window, so each pass gives
+                // the windows that have none yet their toolbar; the first
+                // pass after a window is made does it.
+                #[cfg(target_os = "macos")]
+                noido_macos::unify_title_bars();
                 // On the first frame the window is up, in front. Not to a
                 // window gone meanwhile: eframe would make it again.
                 if let Some(to) = lock(&hand_focus).take()

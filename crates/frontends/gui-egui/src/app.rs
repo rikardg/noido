@@ -7404,6 +7404,41 @@ pub(crate) mod tests {
         assert!(!filled_with(&h, palette.title_bar).is_empty());
     }
 
+    /// The bar AppKit makes for a unified toolbar: 52 pt, the window
+    /// buttons centred in it and ending 73 pt in; the first control
+    /// keeps a 15 pt gap after them, and the menu mirrors them on the
+    /// right.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_title_bar_is_appkits_unified_bar() {
+        let h = Harness::new();
+        let toggle = h.app.bar.sidebar;
+        assert_eq!(toggle.left(), 88.0, "{toggle:?}");
+        assert_eq!(toggle.center().y, 26.0, "{toggle:?}");
+        assert_eq!(h.app.bar.search.center().y, 26.0, "{:?}", h.app.bar.search);
+        let pages = h.app.last_scroll.unwrap().inner;
+        assert!(pages.top() >= 52.0, "{pages:?}");
+        // The menu's glyph, 8 pt inside its button, as far from the right
+        // edge as the window buttons are from the left.
+        let menu = h.app.bar.menu;
+        assert_eq!(h.size.x - (menu.right() - 8.0), 19.0, "{menu:?}");
+        assert_eq!(menu.center().y, 26.0, "{menu:?}");
+    }
+
+    /// In fullscreen there are no window buttons: the first control's
+    /// glyph is as far from the left edge as the menu's from the right.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_fullscreen_title_bar_keeps_its_sides() {
+        let mut h = Harness::new();
+        h.fullscreen = true;
+        h.frames(2, vec![]);
+        let toggle = h.app.bar.sidebar;
+        assert_eq!(toggle.left() + 8.0, 19.0, "{toggle:?}");
+        let menu = h.app.bar.menu;
+        assert_eq!(h.size.x - (menu.right() - 8.0), 19.0, "{menu:?}");
+    }
+
     #[test]
     fn the_menu_scrolls_when_the_window_is_short() {
         let mut h = Harness::new();
