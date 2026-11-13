@@ -176,6 +176,11 @@ pub struct NoidoApp {
     search_state: Search,
     /// Where the title bar's parts were drawn last frame.
     bar: titlebar::Rects,
+    /// Esc is down, by noido's count; see `fresh_escape`.
+    escape_down: bool,
+    /// Whether the window was fullscreen when `escape_down` was last
+    /// looked at.
+    escape_fullscreen: Option<bool>,
     /// Brings new versions of the document when its file changes.
     watcher: Option<Watcher>,
     /// Re-reads the OS theme while the app runs.
@@ -335,6 +340,8 @@ impl NoidoApp {
             sidebar_opened_by_search: false,
             search_state: Search::new(),
             bar: titlebar::Rects::default(),
+            escape_down: false,
+            escape_fullscreen: None,
             watcher: None,
             theme_live: None,
             activation: None,
@@ -1063,7 +1070,40 @@ impl NoidoApp {
         self.settings_page.is_some() || self.info_page.is_some()
     }
 
+    /// Whether a plain Esc went down this frame from up, by noido's own
+    /// count of it: egui keeps a key down until its release, and the Esc
+    /// that leaves fullscreen loses its release on the way out, so egui
+    /// would take the next one for a repeat. Entering or leaving
+    /// fullscreen, or the window losing focus, lets go of it.
+    fn fresh_escape(&mut self, ctx: &egui::Context) -> bool {
+        ctx.input(|i| {
+            let fullscreen = i.viewport().fullscreen;
+            if fullscreen != self.escape_fullscreen || !i.focused {
+                self.escape_fullscreen = fullscreen;
+                self.escape_down = false;
+            }
+            let mut fresh = false;
+            for event in &i.events {
+                if let egui::Event::Key {
+                    key: egui::Key::Escape,
+                    pressed,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    if *pressed {
+                        fresh |= !self.escape_down && modifiers.is_none();
+                    }
+                    self.escape_down = *pressed;
+                }
+            }
+            fresh
+        })
+    }
+
     fn handle_input(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>) {
+        // Counted whatever has the keys, so no release goes unseen.
+        let fresh = self.fresh_escape(ctx);
         // The settings and info pages are modal: the document doesn't move
         // behind them.
         if self.page_open() {
@@ -1140,12 +1180,26 @@ impl NoidoApp {
                 self.apply(ctx, parent, action);
             }
         }
-        // Esc on the pages clears the selection; in a field it's the
-        // field's. egui drops focus on Esc before this, so it's the last
+        // Esc on the pages clears the selection or, with nothing selected,
+        // leaves fullscreen; in a field it's the field's. egui drops focus on Esc before this, so it's the last
         // frame's focus that tells. Backspace and Delete remove the
         // highlight being edited.
         if !editing && !self.select.widget_focused && !egui::Popup::is_any_open(ctx) {
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                // With nothing else for it to do, it leaves fullscreen. A
+                // dialog takes Esc itself: this isn't reached while one is
+                // open. Only a plain Esc, pressed afresh (a held one clears
+                // the selection and stops there), and not mid-drag, where
+                // the window would shrink under the pointer.
+                let selected = self.select.selection.is_some() || self.select.editing.is_some();
+                let (fullscreen, pressing) = ctx.input(|i| {
+                    let fullscreen = i.viewport().fullscreen.unwrap_or(false);
+                    (fullscreen, i.pointer.any_down())
+                });
+                let dragging = pressing || self.select.drag.is_some();
+                if fullscreen && fresh && !selected && !dragging {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                }
                 self.select.clear();
             }
             let delete = ctx
@@ -3452,15 +3506,18 @@ pub(crate) mod tests {
             }
         }
 
+        /// Presses `key` and lets go of it, in one frame, as a tap does:
+        /// pressed again with no release between, egui takes it for a
+        /// repeat.
         fn press(&mut self, key: egui::Key, modifiers: Modifiers) {
-            let event = Event::Key {
+            let event = |pressed| Event::Key {
                 key,
                 physical_key: None,
-                pressed: true,
+                pressed,
                 repeat: false,
                 modifiers,
             };
-            self.frames(1, vec![event]);
+            self.frames(1, vec![event(true), event(false)]);
         }
 
         /// Presses the primary button at `at`, moves it by `by`, releases.
@@ -3832,6 +3889,194 @@ pub(crate) mod tests {
             .count();
         assert_eq!(asked, 1, "asked {asked} times");
         assert_eq!(h.app.shrink, None, "the request is dropped");
+    }
+
+    /// How many times the app has asked to leave fullscreen.
+    fn fullscreen_left(h: &Harness) -> usize {
+        h.commands
+            .iter()
+            .filter(|command| **command == egui::ViewportCommand::Fullscreen(false))
+            .count()
+    }
+
+    fn fullscreen_harness() -> Harness {
+        let mut h = Harness::new();
+        h.fullscreen = true;
+        h.frames(2, vec![]);
+        h
+    }
+
+    #[test]
+    fn esc_leaves_fullscreen() {
+        let mut h = fullscreen_harness();
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(fullscreen_left(&h), 1);
+    }
+
+    #[test]
+    fn esc_out_of_fullscreen_leaves_nothing() {
+        let mut h = Harness::new();
+        h.frames(2, vec![]);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(fullscreen_left(&h), 0);
+    }
+
+    #[test]
+    fn esc_clears_a_selection_before_it_leaves_fullscreen() {
+        let mut h = fullscreen_harness();
+        let at = |char| noido_core::Spot::At(noido_core::Caret { page: 0, char });
+        h.app.select.selection = Some(noido_core::Selection {
+            anchor: at(0),
+            focus: at(3),
+        });
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(h.app.select.selection, None);
+        assert_eq!(fullscreen_left(&h), 0);
+        h.frames(1, vec![]);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(fullscreen_left(&h), 1);
+    }
+
+    /// The field's Escs come first: one clears the search, one lets go of
+    /// the field; the one after leaves fullscreen.
+    #[test]
+    fn esc_in_the_search_field_stays_in_fullscreen() {
+        let mut h = fullscreen_harness();
+        h.press(egui::Key::F, Modifiers::COMMAND);
+        h.frames(2, vec![]);
+        h.typed("cat");
+        h.frames(2, vec![]);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.search.is_empty(), "the search is cleared");
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(fullscreen_left(&h), 0);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(fullscreen_left(&h), 1);
+    }
+
+    /// The Esc that leaves fullscreen loses its release on the way out,
+    /// so egui takes the next Esc for a repeat. Back in fullscreen, the
+    /// first Esc still leaves.
+    #[test]
+    fn esc_leaves_fullscreen_again_after_a_lost_release() {
+        let mut h = fullscreen_harness();
+        let down = Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        h.frames(1, vec![down.clone()]);
+        assert_eq!(fullscreen_left(&h), 1);
+        h.frames(2, vec![]);
+        assert!(!h.fullscreen);
+        h.fullscreen = true;
+        h.frames(2, vec![]);
+        h.frames(1, vec![down]);
+        assert_eq!(fullscreen_left(&h), 2);
+    }
+
+    /// A held Esc does one thing: its repeats don't go on to leave.
+    #[test]
+    fn a_held_esc_clears_a_selection_and_stays_in_fullscreen() {
+        let mut h = fullscreen_harness();
+        let at = |char| noido_core::Spot::At(noido_core::Caret { page: 0, char });
+        h.app.select.selection = Some(noido_core::Selection {
+            anchor: at(0),
+            focus: at(3),
+        });
+        let down = |repeat| Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        };
+        h.frames(1, vec![down(false)]);
+        assert_eq!(h.app.select.selection, None);
+        h.frames(1, vec![down(true)]);
+        h.frames(1, vec![down(true)]);
+        assert_eq!(fullscreen_left(&h), 0);
+    }
+
+    #[test]
+    fn esc_with_a_modifier_stays_in_fullscreen() {
+        let mut h = fullscreen_harness();
+        for modifiers in [Modifiers::SHIFT, Modifiers::COMMAND, Modifiers::ALT] {
+            h.press(egui::Key::Escape, modifiers);
+        }
+        assert_eq!(fullscreen_left(&h), 0);
+    }
+
+    /// Mid-drag the window would shrink under the pointer.
+    #[test]
+    fn esc_while_the_button_is_down_stays_in_fullscreen() {
+        let mut h = fullscreen_harness();
+        let at = page_point(&h);
+        h.frames(1, vec![Event::PointerMoved(at)]);
+        h.frames(
+            1,
+            vec![Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(fullscreen_left(&h), 0);
+    }
+
+    #[test]
+    fn esc_stops_editing_a_highlight_before_it_leaves_fullscreen() {
+        let mut h = fullscreen_harness();
+        h.app.select.editing = Some(0);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(h.app.select.editing, None);
+        assert_eq!(fullscreen_left(&h), 0);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(fullscreen_left(&h), 1);
+    }
+
+    /// A button focused with Tab: Esc lets go of it first.
+    #[test]
+    fn esc_lets_go_of_a_focused_button_before_it_leaves_fullscreen() {
+        let mut h = fullscreen_harness();
+        h.press(egui::Key::Tab, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(
+            h.ctx.memory(|m| m.focused().is_some()),
+            "Tab focused nothing"
+        );
+        assert!(!h.ctx.text_edit_focused(), "a field, not a button");
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(fullscreen_left(&h), 0);
+        h.frames(1, vec![]);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(fullscreen_left(&h), 1);
+    }
+
+    #[test]
+    fn esc_closing_the_menu_stays_in_fullscreen() {
+        let mut h = fullscreen_harness();
+        h.click(h.app.bar.menu.center());
+        h.frames(2, vec![]);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(fullscreen_left(&h), 0);
+    }
+
+    #[test]
+    fn esc_closing_document_info_stays_in_fullscreen() {
+        let mut h = with_info_source(b"Info Title");
+        h.fullscreen = true;
+        show_info(&mut h);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(fullscreen_left(&h), 0);
     }
 
     #[test]
