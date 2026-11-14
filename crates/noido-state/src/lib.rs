@@ -14,8 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
 use noido_core::{
-    Caret, DocPoint, Highlight, HighlightColour, Highlights, History, Pins, SIDEBAR_DEFAULT_WIDTH,
-    SidebarState, SidebarTab, ViewState, ZoomMode,
+    Caret, DocPoint, Highlight, HighlightColour, Highlights, History, PageTransform,
+    PageTransforms, Pins, Rotation, SIDEBAR_DEFAULT_WIDTH, SidebarState, SidebarTab, ViewState,
+    ZoomMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -116,6 +117,8 @@ pub struct DocState {
     pub highlights: Vec<Highlight>,
     pub pins: Pins,
     pub pagelet: Option<Pagelet>,
+    /// How the reader turns pages.
+    pub transforms: PageTransforms,
 }
 
 /// `noido` under the `XDG_STATE_HOME` value if it is an absolute path;
@@ -455,6 +458,17 @@ struct Entry {
     // Absent from files written before the pagelet was remembered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pagelet: Option<StoredPagelet>,
+    // Absent from files written before pages could be turned. Written
+    // last: an array of tables ends the file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pages: Vec<StoredPage>,
+}
+
+/// The TOML form of a page's transform: its rotation in degrees.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+struct StoredPage {
+    page: usize,
+    rotation: u16,
 }
 
 /// The TOML form of the pagelet's place.
@@ -596,6 +610,14 @@ impl Entry {
                 width: pagelet.width,
                 page: pagelet.page,
             }),
+            pages: doc
+                .transforms
+                .iter()
+                .map(|(page, transform)| StoredPage {
+                    page,
+                    rotation: transform.rotation.degrees(),
+                })
+                .collect(),
         }
     }
 
@@ -632,6 +654,11 @@ impl Entry {
                 width: pagelet.width,
                 page: pagelet.page,
             }),
+            // Angles other than a quarter turn are dropped.
+            transforms: PageTransforms::from_records(self.pages.iter().filter_map(|stored| {
+                let rotation = Rotation::from_degrees(stored.rotation)?;
+                Some((stored.page, PageTransform { rotation }))
+            })),
         }
     }
 }

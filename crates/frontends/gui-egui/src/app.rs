@@ -967,6 +967,7 @@ impl NoidoApp {
                 page: self.pin_preview.as_ref().map(|preview| preview.page),
                 ..pagelet
             }),
+            transforms: noido_core::PageTransforms::default(),
         })
     }
 
@@ -4598,6 +4599,7 @@ pub(crate) mod tests {
             highlights: Vec::new(),
             pins: Pins::default(),
             pagelet: None,
+            transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
@@ -4661,6 +4663,7 @@ pub(crate) mod tests {
             highlights: Vec::new(),
             pins: Pins::default(),
             pagelet: None,
+            transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
             app.with_settings(None, settings).with_persistence(
@@ -4715,6 +4718,7 @@ pub(crate) mod tests {
             highlights: Vec::new(),
             pins: Pins::default(),
             pagelet: None,
+            transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
             app.with_settings(None, settings).with_persistence(
@@ -5070,6 +5074,7 @@ pub(crate) mod tests {
             highlights: Vec::new(),
             pins: Pins::default(),
             pagelet: None,
+            transforms: noido_core::PageTransforms::default(),
         };
         let mut h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(state))
@@ -8735,6 +8740,7 @@ pub(crate) mod tests {
             highlights: Vec::new(),
             pins: Pins::from_sorted([2, 7]),
             pagelet: None,
+            transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
@@ -9397,6 +9403,7 @@ pub(crate) mod tests {
                 width: 360.0,
                 page: Some(2),
             }),
+            transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
@@ -9436,6 +9443,7 @@ pub(crate) mod tests {
                 width: 360.0,
                 page: Some(2),
             }),
+            transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
@@ -9476,6 +9484,7 @@ pub(crate) mod tests {
                 width: 360.0,
                 page: Some(9),
             }),
+            transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
@@ -9514,6 +9523,7 @@ pub(crate) mod tests {
                 width: 360.0,
                 page: None,
             }),
+            transforms: noido_core::PageTransforms::default(),
         };
         let mut h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
@@ -12440,6 +12450,7 @@ pub(crate) mod tests {
             highlights: Vec::new(),
             pins: Pins::default(),
             pagelet: None,
+            transforms: noido_core::PageTransforms::default(),
         }
     }
 
