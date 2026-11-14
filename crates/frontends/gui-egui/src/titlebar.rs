@@ -270,6 +270,11 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
     output
 }
 
+/// The mark beside a checked menu entry. Not the heavy ✔: SF Pro has
+/// none, so egui fell back to its own emoji font, whose thin ✔ shows grey
+/// whatever its colour. SF Pro has ✓, drawn in the labels' own face.
+pub(crate) const MARK: &str = "✓";
+
 fn menu_entries(
     ui: &mut egui::Ui,
     bar: &Bar,
@@ -282,6 +287,9 @@ fn menu_entries(
         Platform::Other
     };
     let text = ui.visuals().widgets.inactive.fg_stroke.color;
+    // The labels' colour made solid: macOS draws its labels in 85% white
+    // or black, and the thin mark in the same grey all but disappears.
+    let check = text.to_opaque();
     for (i, section) in menu().iter().enumerate() {
         if i > 0 {
             ui.separator();
@@ -296,7 +304,8 @@ fn menu_entries(
                 Some(Check::SelectTool) => bar.select_tool,
                 None => false,
             };
-            let mark = RichText::new("✔").color(if checked { text } else { Color32::TRANSPARENT });
+            let mark =
+                RichText::new(MARK).color(if checked { check } else { Color32::TRANSPARENT });
             let label = RichText::new(entry.label).color(text);
             let shortcut = bar
                 .keymap
@@ -330,7 +339,7 @@ fn recent_submenu(
     let text = ui.visuals().widgets.inactive.fg_stroke.color;
     // The same invisible mark the other entries have, so the labels line
     // up.
-    let mark = RichText::new("✔").color(Color32::TRANSPARENT);
+    let mark = RichText::new(MARK).color(Color32::TRANSPARENT);
     let entries = noido_core::recent(bar.recent);
     let room = label_room(ui, &mark);
     let width_of = width_of(ui);

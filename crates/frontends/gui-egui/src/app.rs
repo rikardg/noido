@@ -3275,6 +3275,19 @@ pub(crate) mod tests {
         &app.recent
     }
 
+    /// The colour a text shape is painted in: its first section's, else
+    /// the override, else the fallback.
+    fn text_shape_color(t: &egui::epaint::TextShape) -> Color32 {
+        t.galley
+            .job
+            .sections
+            .first()
+            .map(|section| section.format.color)
+            .filter(|colour| *colour != Color32::PLACEHOLDER)
+            .or(t.override_text_color)
+            .unwrap_or(t.fallback_color)
+    }
+
     /// Runs the app headlessly in egui, one frame per call.
     struct Harness {
         ctx: egui::Context,
@@ -3592,16 +3605,7 @@ pub(crate) mod tests {
         fn text_color(&self, text: &str) -> Option<Color32> {
             fn find(shape: &egui::Shape, text: &str) -> Option<Color32> {
                 match shape {
-                    egui::Shape::Text(t) if t.galley.text() == text => {
-                        let span = t
-                            .galley
-                            .job
-                            .sections
-                            .first()
-                            .map(|section| section.format.color)
-                            .filter(|colour| *colour != Color32::PLACEHOLDER);
-                        Some(span.or(t.override_text_color).unwrap_or(t.fallback_color))
-                    }
+                    egui::Shape::Text(t) if t.galley.text() == text => Some(text_shape_color(t)),
                     egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| find(s, text)),
                     _ => None,
                 }
@@ -5115,6 +5119,69 @@ pub(crate) mod tests {
             (recent.left() - open.left()).abs() < 0.5,
             "{open:?} and {recent:?} do not line up"
         );
+    }
+
+    /// The colours of every checkmark the last frame painted, the hidden
+    /// ones left out.
+    fn shown_checkmarks(h: &Harness) -> Vec<Color32> {
+        fn collect(shape: &egui::Shape, into: &mut Vec<Color32>) {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text() == crate::titlebar::MARK => {
+                    let colour = text_shape_color(t);
+                    if colour.a() > 0 {
+                        into.push(colour);
+                    }
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, into)),
+                _ => {}
+            }
+        }
+        let mut marks = Vec::new();
+        h.shapes.iter().for_each(|c| collect(&c.shape, &mut marks));
+        marks
+    }
+
+    /// How light `colour` shows on a dark fill. On a light one it says
+    /// nothing, since a translucent colour lets the fill through.
+    fn brightness(colour: Color32) -> u32 {
+        u32::from(colour.r()) + u32::from(colour.g()) + u32::from(colour.b())
+    }
+
+    /// The menu on the macOS theme in `mode`: the "Continuous" label's
+    /// colour and the checked marks'.
+    fn menu_colours(mode: egui::ThemePreference) -> (Color32, Vec<Color32>) {
+        let mut h = Harness::new();
+        crate::theme::install_preset(&h.ctx, "macos-tahoe");
+        h.ctx.set_theme(mode);
+        h.frames(2, vec![]);
+        open_menu(&mut h);
+        let label = h.text_color("Continuous").expect("no Continuous");
+        let marks = shown_checkmarks(&h);
+        assert!(!marks.is_empty(), "Continuous is not checked");
+        (label, marks)
+    }
+
+    #[test]
+    fn a_checked_mark_is_the_label_colour_made_solid_in_either_mode() {
+        for mode in [egui::ThemePreference::Dark, egui::ThemePreference::Light] {
+            let (label, marks) = menu_colours(mode);
+            for mark in marks {
+                assert_eq!(mark, label.to_opaque(), "{mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_checked_mark_is_lighter_than_the_labels_in_dark_mode() {
+        // macOS draws its menu labels in 85% white; the thin mark in the
+        // same grey all but disappears.
+        let (label, marks) = menu_colours(egui::ThemePreference::Dark);
+        for mark in marks {
+            assert!(
+                brightness(mark) > brightness(label),
+                "mark {mark:?} is not lighter than {label:?}"
+            );
+        }
     }
 
     #[test]
