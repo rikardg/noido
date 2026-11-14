@@ -64,9 +64,6 @@ when it is fixed.
   egui-wgpu's texture limit today; use
   `min(MAX_RENDER_SIDE, ctx.input(|i| i.max_texture_side))` so another backend
   cannot exceed its limit. (`crates/frontends/gui-egui/src/app.rs`)
-- **Downscaled capped pages alias.** Very tall pages rendered at the 8192 cap
-  and shown smaller use linear filtering without mipmaps. Rare; revisit with
-  tiled rendering.
 
 
 - **Viewport size lags the window by one frame.** On resize the content is
@@ -185,23 +182,10 @@ when it is fixed.
   on GNOME that triggers a remote-desktop permission prompt.
 
 - Vim key layer (zathura-style), with key sequences and counts.
-- Tiled rendering, LRU eviction, prefetch priorities. Would also lift the
-  zoom limit: `MAX_ZOOM` is 400% because a page render is capped at
-  `MAX_RENDER_SIDE` (8192 px, about 500% for Letter on a 2× display) and
-  memory grows with the square of the zoom. Above a pixel budget: a capped
-  full-page backdrop plus visible tiles via `render_tile`'s `PixelRect`,
-  keyed by (page, scale, column, row).
-- Memory budget for full renders in megabytes instead of a spread count
-  (`PREFETCH_BUDGET` 10, `KEEP` 8 today): a page is ~6 MB at 900 pt fit
-  width but ~27 MB maximised and ~48 MB at 400 %, so 17 kept spreads can
-  reach hundreds of MB. Evict farthest first past a limit.
 - Softer-looking thumbnails: at 120 px they look blocky/blurry when
   stretched; 240 px was tried and judged not worth it. Ideas: a smoother
   upscale (e.g. bicubic or a blur pass, in a shader or on the CPU before
   upload), mipmapped sampling, or a fade from thumbnail to full render.
-- Several full-render threads, each with its own `Document`, sharing the
-  priority queue, so one slow page (150–900 ms for art-heavy books) doesn't
-  hold up the next. Only if renders still feel slow after the priority fix.
 - **Title bar on macOS, checked on a Mac:** the traffic-light inset (76
   points), centring the traffic lights in our taller bar (an empty
   `NSToolbar`, via `objc2`), translucency (`window-vibrancy`), and reading
