@@ -8,11 +8,13 @@ mod links;
 mod properties;
 mod text;
 mod thumbnails;
+mod transformed;
 
 pub use links::{FLASH_BAR_HEIGHT, LinkReply, Linker};
 pub use properties::read_properties;
 pub use text::{MAX_HITS, SearchUpdate, TextSearcher};
 pub use thumbnails::{Thumbnail, Thumbnailer};
+pub use transformed::{Transformed, Transforms, open_transformed};
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Receiver, Sender};
