@@ -52,6 +52,16 @@ impl History {
         Some(to)
     }
 
+    /// Applies `f` to every entry on `page`, Back's and Forward's: for a
+    /// page that changed shape, so they keep pointing at the same spot.
+    pub fn map_points(&mut self, page: usize, f: impl Fn(DocPoint) -> DocPoint) {
+        for entry in self.back.iter_mut().chain(self.forward.iter_mut()) {
+            if entry.page == page {
+                *entry = f(*entry);
+            }
+        }
+    }
+
     pub fn back_entries(&self) -> &[DocPoint] {
         &self.back
     }
@@ -63,6 +73,22 @@ impl History {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn map_points_touches_only_that_page() {
+        let at = |page, x, y| DocPoint { page, x, y };
+        let mut history = History::from_parts(
+            vec![at(1, 1.0, 2.0), at(2, 3.0, 4.0)],
+            vec![at(1, 5.0, 6.0)],
+        );
+        history.map_points(1, |p| DocPoint {
+            x: p.y,
+            y: p.x,
+            ..p
+        });
+        assert_eq!(history.back_entries(), &[at(1, 2.0, 1.0), at(2, 3.0, 4.0)]);
+        assert_eq!(history.forward_entries(), &[at(1, 6.0, 5.0)]);
+    }
+
     use super::*;
     use crate::DocPoint;
 
