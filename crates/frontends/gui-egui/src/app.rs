@@ -142,6 +142,8 @@ pub struct NoidoApp {
     /// A link clicked in the pagelet, followed at the start of the next
     /// frame so the view's scroll takes the jump.
     clicked_target: Option<noido_engine::LinkTarget>,
+    /// The page a right-click on the pages opened the turn menu for.
+    menu_page: Option<usize>,
     /// Pages to turn, and how, in order: turned at the start of the next
     /// frame, after egui's scrolling is taken in, which would undo the
     /// view keeping its place.
@@ -330,6 +332,7 @@ impl NoidoApp {
             pagelet: None,
             pending_pagelet: None,
             clicked_target: None,
+            menu_page: None,
             pending_rotations: Vec::new(),
             pin_preview: None,
             searched_away: false,
@@ -866,8 +869,6 @@ impl NoidoApp {
 
     /// Turns `page` to `rotation`, from the page as the PDF shows it, at
     /// the start of the next frame.
-    // Until the menu that turns pages calls it.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_rotation(&mut self, page: usize, rotation: noido_core::Rotation) {
         self.pending_rotations.push((page, rotation));
     }
@@ -1636,6 +1637,29 @@ impl NoidoApp {
             vec2(layout.content_width(), layout.content_height()),
             Sense::CLICK,
         );
+        // A right-click on a page (not the desk or a gap) opens the turn
+        // menu for that page; the page is kept while the menu is open.
+        if response.secondary_clicked() {
+            self.menu_page = response.interact_pointer_pos().and_then(|pos| {
+                let (x, y) = (pos.x - content.min.x, pos.y - content.min.y);
+                let p = layout.doc_point(x, y)?;
+                let size = layout.page_size(p.page)?;
+                ((0.0..=size.width).contains(&p.x) && (0.0..=size.height).contains(&p.y))
+                    .then_some(p.page)
+            });
+        }
+        let mut turn = None;
+        if let Some(page) = self.menu_page {
+            let current = self.transforms.get(page).rotation;
+            let menu = response.context_menu(|ui| {
+                if let Some(rotation) = crate::rotation_menu::rotation_menu(ui, current) {
+                    turn = Some((page, rotation));
+                }
+            });
+            if menu.is_none() {
+                self.menu_page = None;
+            }
+        }
         // Not over a scroll bar, the sidebar or a popup.
         self.select.pages_hovered = response.hovered();
 
@@ -2000,6 +2024,9 @@ impl NoidoApp {
             } else {
                 self.screen_edge = None;
             }
+        }
+        if let Some((page, rotation)) = turn {
+            self.set_rotation(page, rotation);
         }
     }
 
@@ -2922,8 +2949,12 @@ impl NoidoApp {
                 current_entry,
                 pins: &self.pins,
                 preview: self.pin_preview.as_ref().map(|preview| preview.page),
+                transforms: &self.transforms,
             };
             let output = self.sidebar_view.show(ui, &mut self.sidebar, &mut input);
+            if let Some((page, rotation)) = output.rotate {
+                self.set_rotation(page, rotation);
+            }
             if let Some(page) = output.clicked {
                 self.leave_here();
                 self.view.go_to_page(page);
@@ -15996,6 +16027,160 @@ pub(crate) mod tests {
         assert_eq!(h.app.transforms.get(1).rotation, Rotation::R90);
         assert_eq!(h.app.transforms.get(5).rotation, Rotation::R0);
         assert_eq!(h.app.view.layout().page_size(1), Some(letter_turned()));
+    }
+
+    // ---- The rotation menu ----
+
+    impl Harness {
+        /// Presses and releases the secondary button at `at`.
+        fn right_click(&mut self, at: egui::Pos2) {
+            let modifiers = self.modifiers;
+            let button = |pressed| Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Secondary,
+                pressed,
+                modifiers,
+            };
+            self.frames(1, vec![Event::PointerMoved(at)]);
+            self.frames(1, vec![button(true)]);
+            self.frames(1, vec![button(false)]);
+            self.frames(1, vec![]);
+        }
+    }
+
+    const ANGLES: [&str; 4] = ["0°", "90°", "180°", "270°"];
+
+    fn offers_angles(h: &Harness) -> bool {
+        let texts = h.texts();
+        ANGLES.iter().all(|a| texts.iter().any(|t| t == a))
+    }
+
+    /// Whether the check mark beside `angle` is drawn in a visible colour.
+    fn checked(h: &Harness, angle: &str) -> bool {
+        fn marks(shape: &egui::Shape, out: &mut Vec<(Rect, Color32)>) {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text() == "✔" => {
+                    let colour = t
+                        .galley
+                        .job
+                        .sections
+                        .first()
+                        .map(|section| section.format.color)
+                        .filter(|colour| *colour != Color32::PLACEHOLDER)
+                        .or(t.override_text_color)
+                        .unwrap_or(t.fallback_color);
+                    out.push((Rect::from_min_size(t.pos, t.galley.size()), colour));
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| marks(s, out)),
+                _ => {}
+            }
+        }
+        let label = h.text_rect(angle).unwrap();
+        let mut all = Vec::new();
+        h.shapes.iter().for_each(|c| marks(&c.shape, &mut all));
+        all.iter()
+            .find(|(rect, _)| (rect.center().y - label.center().y).abs() < label.height() / 2.0)
+            .is_some_and(|(_, colour)| colour.a() > 0)
+    }
+
+    #[test]
+    fn right_click_on_a_page_offers_four_angles() {
+        let mut h = Harness::new();
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        assert!(offers_angles(&h), "{:?}", h.texts());
+    }
+
+    #[test]
+    fn choosing_an_angle_turns_the_page_under_the_pointer() {
+        let mut h = Harness::new();
+        h.press(egui::Key::D, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.view.dual());
+        // Page 0 alone, then 1|2: the right-hand page of the second spread.
+        let at = screen_pos(&h, 2, 306.0, 300.0);
+        h.right_click(at);
+        h.click_text("90°");
+        h.frames(2, vec![]);
+        assert_eq!(h.app.transforms.get(2).rotation, Rotation::R90);
+        assert_eq!(h.app.transforms.get(1).rotation, Rotation::R0);
+    }
+
+    #[test]
+    fn the_current_angle_is_checked() {
+        let mut h = Harness::new();
+        h.app.set_rotation(0, Rotation::R180);
+        h.frames(2, vec![]);
+        h.right_click(screen_pos(&h, 0, 300.0, 300.0));
+        assert!(checked(&h, "180°"));
+        assert!(!checked(&h, "0°"));
+        assert!(!checked(&h, "90°"));
+    }
+
+    #[test]
+    fn angles_are_absolute() {
+        let mut h = Harness::new();
+        let pick = |h: &mut Harness, angle: &str| {
+            let at = screen_pos(h, 0, 200.0, 200.0);
+            h.right_click(at);
+            h.click_text(angle);
+            h.frames(2, vec![]);
+        };
+        pick(&mut h, "90°");
+        assert_eq!(h.app.transforms.get(0).rotation, Rotation::R90);
+        pick(&mut h, "90°");
+        assert_eq!(h.app.transforms.get(0).rotation, Rotation::R90);
+        pick(&mut h, "180°");
+        assert_eq!(h.app.transforms.get(0).rotation, Rotation::R180);
+        pick(&mut h, "0°");
+        assert_eq!(h.app.transforms.get(0).rotation, Rotation::R0);
+    }
+
+    fn drawn_card(h: &Harness, page: usize) -> Rect {
+        h.app
+            .sidebar_view
+            .drawn()
+            .iter()
+            .find(|(p, _)| *p == page)
+            .map(|(_, rect)| *rect)
+            .unwrap_or_else(|| panic!("page {page} not drawn in the sidebar"))
+    }
+
+    #[test]
+    fn right_click_on_a_thumbnail_turns_that_page() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        let before = h.centre();
+        h.right_click(drawn_card(&h, 2).center());
+        assert!(offers_angles(&h), "{:?}", h.texts());
+        h.click_text("270°");
+        h.frames(2, vec![]);
+        assert_eq!(h.app.transforms.get(2).rotation, Rotation::R270);
+        assert_eq!(h.centre().page, before.page);
+    }
+
+    #[test]
+    fn right_click_on_a_pin_turns_that_page() {
+        let mut h = pinned_on(&[4]);
+        h.frames(2, vec![]);
+        let before = h.centre();
+        h.right_click(drawn_card(&h, 4).center());
+        assert!(offers_angles(&h), "{:?}", h.texts());
+        h.click_text("90°");
+        h.frames(2, vec![]);
+        assert_eq!(h.app.transforms.get(4).rotation, Rotation::R90);
+        assert_eq!(h.centre().page, before.page);
+    }
+
+    #[test]
+    fn right_click_off_the_pages_opens_no_menu() {
+        let mut h = Harness::new();
+        // Left of page 0, in the desk beside it.
+        let page = screen_pos(&h, 0, 0.0, 300.0);
+        h.right_click(page - vec2(6.0, 0.0));
+        assert!(!h.texts().iter().any(|t| t == "90°"), "{:?}", h.texts());
+        // In the gap between pages 0 and 1.
+        let below = screen_pos(&h, 0, 306.0, 792.0);
+        h.right_click(below + vec2(0.0, 6.0));
+        assert!(!h.texts().iter().any(|t| t == "90°"), "{:?}", h.texts());
     }
 
     #[test]

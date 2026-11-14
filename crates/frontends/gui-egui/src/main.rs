@@ -15,6 +15,7 @@ mod interrupt;
 mod links;
 mod load;
 mod open;
+mod rotation_menu;
 mod search;
 mod select;
 mod settings;
