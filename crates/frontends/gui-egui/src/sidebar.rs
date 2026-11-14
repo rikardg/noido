@@ -948,11 +948,9 @@ impl SidebarView {
                 clicked = Some(page);
             }
             let current = input.transforms.get(page).rotation;
-            thumb.context_menu(|ui| {
-                if let Some(rotation) = crate::rotation_menu::rotation_menu(ui, current) {
-                    rotate = Some((page, rotation));
-                }
-            });
+            if let Some(Some(rotation)) = crate::rotation_menu::on(&thumb, current) {
+                rotate = Some((page, rotation));
+            }
             let current = input.highlighted.contains(&page);
             let painter = ui.painter();
             if current {

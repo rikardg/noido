@@ -1651,13 +1651,9 @@ impl NoidoApp {
         let mut turn = None;
         if let Some(page) = self.menu_page {
             let current = self.transforms.get(page).rotation;
-            let menu = response.context_menu(|ui| {
-                if let Some(rotation) = crate::rotation_menu::rotation_menu(ui, current) {
-                    turn = Some((page, rotation));
-                }
-            });
-            if menu.is_none() {
-                self.menu_page = None;
+            match crate::rotation_menu::on(&response, current) {
+                None => self.menu_page = None,
+                Some(chosen) => turn = chosen.map(|rotation| (page, rotation)),
             }
         }
         // Not over a scroll bar, the sidebar or a popup.
@@ -16086,6 +16082,32 @@ pub(crate) mod tests {
             let label = h.text_color("0°").expect("no 0°");
             assert_eq!(shown_checkmarks(&h), vec![label.to_opaque()], "{mode:?}");
         }
+    }
+
+    #[test]
+    fn the_rotation_menu_is_headed_rotation() {
+        let mut h = Harness::new();
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        let heading = h.text_rect("Rotation").expect("no heading");
+        let first = h.text_rect("0°").unwrap();
+        assert!(heading.max.y <= first.min.y, "{heading:?} above {first:?}");
+        // A heading, not an entry: clicking it turns nothing and leaves
+        // the menu open.
+        h.click(heading.center());
+        h.frames(2, vec![]);
+        assert_eq!(h.app.transforms.get(0).rotation, Rotation::R0);
+        assert!(offers_angles(&h), "{:?}", h.texts());
+    }
+
+    #[test]
+    fn a_click_outside_closes_the_rotation_menu() {
+        let mut h = Harness::new();
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        assert!(offers_angles(&h));
+        h.click(screen_pos(&h, 0, 500.0, 700.0));
+        h.frames(2, vec![]);
+        assert!(!offers_angles(&h), "{:?}", h.texts());
+        assert_eq!(h.app.transforms.get(0).rotation, Rotation::R0);
     }
 
     #[test]
