@@ -372,10 +372,27 @@ impl View {
     /// shape to the same spot on the new one. Fit modes refit; the view
     /// does not move to another page or spread.
     pub fn set_page_size(&mut self, page: usize, size: Size, remap: impl Fn(DocPoint) -> DocPoint) {
-        let anchor = self
-            .place()
-            .map(|p| if p.page == page { remap(p) } else { p });
-        self.layout.set_page_size(page, size);
+        self.set_page_sizes(&[(page, size)], |_, p| remap(p));
+    }
+
+    /// Gives several pages new sizes at once, re-arranging once. As
+    /// [`View::set_page_size`], with `remap` told which page the point it
+    /// carries is on; it is called only for the page the view is on.
+    pub fn set_page_sizes(
+        &mut self,
+        sizes: &[(usize, Size)],
+        remap: impl Fn(usize, DocPoint) -> DocPoint,
+    ) {
+        let anchor = self.place().map(|p| {
+            if sizes.iter().any(|&(page, _)| page == p.page) {
+                remap(p.page, p)
+            } else {
+                p
+            }
+        });
+        for &(page, size) in sizes {
+            self.layout.set_page_size(page, size);
+        }
         match anchor {
             Some(point) => {
                 self.pending = Some(point);
@@ -1077,6 +1094,32 @@ mod tests {
             y: 400.0,
         });
         view
+    }
+
+    #[test]
+    fn several_pages_change_at_once_and_the_view_stays() {
+        let mut view = mixed_view();
+        let before = view.place().unwrap();
+        let half = |p: usize| (p, size(p_w(p) / 2.0, p_h(p) / 2.0));
+        fn p_w(p: usize) -> f32 {
+            if p.is_multiple_of(3) { 842.0 } else { 612.0 }
+        }
+        fn p_h(p: usize) -> f32 {
+            if p.is_multiple_of(3) { 595.0 } else { 792.0 }
+        }
+        let sizes: Vec<_> = (0..5).map(half).collect();
+        view.set_page_sizes(&sizes, |page, p| {
+            assert_eq!(page, 2, "only points on the viewed page are remapped");
+            DocPoint {
+                x: p.x / 2.0,
+                y: p.y / 2.0,
+                ..p
+            }
+        });
+        let after = view.place().unwrap();
+        assert_eq!(after.page, before.page);
+        assert_near((after.x, after.y), (before.x / 2.0, before.y / 2.0), 0.5);
+        assert_eq!(view.layout().page_size(3), Some(size(421.0, 297.5)));
     }
 
     #[test]
