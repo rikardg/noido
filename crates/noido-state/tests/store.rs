@@ -386,6 +386,97 @@ fn no_rotations_write_no_pages_table() {
     assert!(!text.contains("[[pages]]"), "{text}");
 }
 
+fn scaling_on() -> PageTransforms {
+    let mut transforms = PageTransforms::from_records([(2, turned(Rotation::R90))]);
+    transforms.set_scale_to_fit(true);
+    transforms
+}
+
+fn written(dir: &TempDir, key: &DocKey) -> String {
+    fs::read_to_string(docs(dir).join(format!("{}.toml", key.hex()))).unwrap()
+}
+
+#[test]
+fn scale_to_fit_round_trips() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        transforms: scaling_on(),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    assert!(written(&dir, &key).contains("scale_to_fit = true"));
+    let transforms = loaded(&store, &key).unwrap().transforms;
+    assert!(transforms.scale_to_fit());
+    assert_eq!(transforms, saved.transforms);
+}
+
+#[test]
+fn scale_to_fit_without_rotations_round_trips() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let mut transforms = PageTransforms::default();
+    transforms.set_scale_to_fit(true);
+    let saved = DocState {
+        transforms,
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    let text = written(&dir, &key);
+    assert!(text.contains("scale_to_fit = true"), "{text}");
+    assert!(!text.contains("[[pages]]"), "{text}");
+    let transforms = loaded(&store, &key).unwrap().transforms;
+    assert!(transforms.scale_to_fit());
+    assert_eq!(transforms, saved.transforms);
+}
+
+#[test]
+fn files_without_the_key_load_with_scale_to_fit_off() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    write_old_entry(&dir, &key);
+    assert!(!loaded(&store, &key).unwrap().transforms.scale_to_fit());
+}
+
+#[test]
+fn scale_to_fit_off_writes_no_key() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(3)).unwrap();
+    assert!(!written(&dir, &key).contains("scale_to_fit"));
+}
+
+#[test]
+fn scales_are_not_written() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let scaled = |rotation| PageTransform {
+        rotation,
+        scale: 0.5,
+    };
+    let saved = DocState {
+        transforms: PageTransforms::from_records([
+            (1, scaled(Rotation::R0)),
+            (4, scaled(Rotation::R90)),
+        ]),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    let text = written(&dir, &key);
+    assert_eq!(text.matches("[[pages]]").count(), 1, "{text}");
+    assert!(text.contains("page = 4"), "{text}");
+    assert!(!text.contains("scale = 0.5"), "{text}");
+    assert_eq!(
+        loaded(&store, &key).unwrap().transforms,
+        PageTransforms::from_records([(4, turned(Rotation::R90))])
+    );
+}
+
 #[test]
 fn odd_angles_are_dropped_on_load() {
     let dir = TempDir::new().unwrap();
