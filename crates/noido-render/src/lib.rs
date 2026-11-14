@@ -228,6 +228,9 @@ fn open(
     transforms: &Transforms,
 ) -> Result<(Transformed, DocumentInfo), EngineError> {
     let document = open_transformed(engine, bytes, transforms)?;
+    if transforms.scale_to_fit() {
+        transforms.refit(&document.engine_sizes()?);
+    }
     let page_sizes = (0..document.page_count())
         .map(|page| document.page_size(page))
         .collect::<Result<_, _>>()?;

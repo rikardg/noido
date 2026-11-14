@@ -100,6 +100,9 @@ outline-empty.pdf: one page; /Outlines has no /First
 
 outline-deep.pdf: one page; 70 outline items, each the only child of the one
   before
+
+mixed-sizes.pdf: four blank pages: three of 595x842 pt and one of 1190x1684 pt
+  (twice the size, so scale to fit shrinks it to half)
 """
 
 from pathlib import Path
@@ -257,6 +260,20 @@ def black() -> bytes:
             b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 90"
             b" /Contents 4 0 R >>",
+        ]
+    )
+
+
+def mixed_sizes() -> bytes:
+    page = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %d %d] >>"
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R] /Count 4 >>",
+            page % (595, 842),
+            page % (595, 842),
+            page % (595, 842),
+            page % (1190, 1684),
         ]
     )
 
@@ -424,6 +441,7 @@ if __name__ == "__main__":
     (here / "links.pdf").write_bytes(links())
     (here / "properties.pdf").write_bytes(properties())
     (here / "black.pdf").write_bytes(black())
+    (here / "mixed-sizes.pdf").write_bytes(mixed_sizes())
     (here / "tiling.pdf").write_bytes(tiling())
     (here / "type3.pdf").write_bytes(type3())
     (here / "shared-names.pdf").write_bytes(shared_names())
