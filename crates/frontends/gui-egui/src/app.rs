@@ -884,8 +884,13 @@ impl NoidoApp {
             return;
         };
         let unturned = old.size(shown);
-        self.transforms
-            .set(page, noido_core::PageTransform { rotation });
+        self.transforms.set(
+            page,
+            noido_core::PageTransform {
+                rotation,
+                ..noido_core::PageTransform::default()
+            },
+        );
         let remap = move |p: noido_core::DocPoint| {
             let q = noido_core::Rotation::remap(
                 noido_engine::Point { x: p.x, y: p.y },
@@ -15969,7 +15974,10 @@ pub(crate) mod tests {
     #[test]
     fn a_document_opens_with_its_saved_turns_as_document_open_does() {
         let dir = tempfile::TempDir::new().unwrap();
-        let turn = |rotation| PageTransform { rotation };
+        let turn = |rotation| PageTransform {
+            rotation,
+            ..PageTransform::default()
+        };
         let mut state = Harness::new().app.doc_state().unwrap();
         state.transforms = PageTransforms::from_records([(2, turn(Rotation::R90))]);
         // A spot on page 2 as it shows turned: 792 wide, 612 high.
@@ -15993,7 +16001,10 @@ pub(crate) mod tests {
     #[test]
     fn restored_rotations_past_the_end_are_dropped() {
         let dir = tempfile::TempDir::new().unwrap();
-        let turn = |rotation| PageTransform { rotation };
+        let turn = |rotation| PageTransform {
+            rotation,
+            ..PageTransform::default()
+        };
         let state = DocState {
             transforms: PageTransforms::from_records([
                 (1, turn(Rotation::R180)),

@@ -337,7 +337,10 @@ fn duplicate_pins_are_dropped_on_load() {
 }
 
 fn turned(rotation: Rotation) -> PageTransform {
-    PageTransform { rotation }
+    PageTransform {
+        rotation,
+        ..PageTransform::default()
+    }
 }
 
 #[test]

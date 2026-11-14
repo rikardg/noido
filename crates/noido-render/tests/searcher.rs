@@ -473,6 +473,7 @@ fn forgotten_text_is_read_again_turned() {
         0,
         PageTransform {
             rotation: Rotation::R90,
+            ..PageTransform::default()
         },
     );
     searcher.forget(0);

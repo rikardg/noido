@@ -21,11 +21,17 @@ fn plain(name: &str) -> Box<dyn Document> {
 }
 
 fn turned(name: &str, pages: &[(usize, Rotation)]) -> Transformed {
-    let transforms = Transforms::new(PageTransforms::from_records(
-        pages
-            .iter()
-            .map(|&(page, rotation)| (page, PageTransform { rotation })),
-    ));
+    let transforms = Transforms::new(PageTransforms::from_records(pages.iter().map(
+        |&(page, rotation)| {
+            (
+                page,
+                PageTransform {
+                    rotation,
+                    ..PageTransform::default()
+                },
+            )
+        },
+    )));
     open_transformed(&HayroEngine, bytes(name), &transforms).unwrap()
 }
 
@@ -199,6 +205,7 @@ fn changes_apply_to_the_next_call() {
         0,
         PageTransform {
             rotation: Rotation::R270,
+            ..PageTransform::default()
         },
     );
     assert_eq!(doc.page_size(0).unwrap(), size(792.0, 612.0));

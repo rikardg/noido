@@ -303,6 +303,7 @@ fn thumbnail_refresh_renders_again_with_its_stamp() {
         1,
         PageTransform {
             rotation: Rotation::R90,
+            ..PageTransform::default()
         },
     );
     thumbnailer.refresh(1);
