@@ -34,6 +34,24 @@ pub enum SearchUpdate {
         text: Arc<PageText>,
         transform: PageTransform,
     },
+    /// The document's counts, once every page is counted.
+    Counts(Counted),
+}
+
+/// What the text thread has counted: the pages that went into the totals,
+/// and how many pages there are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counted {
+    pub pages: usize,
+    pub counted: usize,
+    pub total: noido_text::Counts,
+}
+
+impl Counted {
+    /// Whether every page has been counted.
+    pub fn done(&self) -> bool {
+        self.counted >= self.pages
+    }
 }
 
 enum Command {
@@ -46,6 +64,7 @@ enum Command {
     Cancel,
     Text(usize),
     Forget(usize),
+    Count,
 }
 
 /// Handle to the text thread. Dropping it stops the thread after its
@@ -121,6 +140,13 @@ impl TextSearcher {
         let _ = self.commands.send(Command::Text(page));
     }
 
+    /// Counts the document's words and characters, every page's text read
+    /// for it if it is not read yet, answered with one
+    /// [`SearchUpdate::Counts`] once every page is counted.
+    pub fn count(&self) {
+        let _ = self.commands.send(Command::Count);
+    }
+
     /// Drops `page`'s text, so it is read again when next needed: after
     /// the page was turned.
     pub fn forget(&self, page: usize) {
@@ -153,6 +179,12 @@ struct Worker<'a> {
     requests: VecDeque<usize>,
     /// Extract every page when idle.
     extract: bool,
+    /// Each page's counts, once counted.
+    counts: Vec<Option<noido_text::Counts>>,
+    /// Count every page's text.
+    counting: bool,
+    /// The walk's one report has gone out.
+    reported: bool,
     job: Option<Job>,
 }
 
@@ -169,6 +201,9 @@ impl<'a> Worker<'a> {
             texts: (0..document.page_count()).map(|_| None).collect(),
             requests: VecDeque::new(),
             extract: false,
+            counts: (0..document.page_count()).map(|_| None).collect(),
+            counting: false,
+            reported: false,
             job: None,
         }
     }
@@ -204,6 +239,7 @@ impl<'a> Worker<'a> {
         !self.requests.is_empty()
             || self.job.is_some()
             || (self.extract && self.texts.iter().any(Option::is_none))
+            || (self.counting && self.counts.iter().any(Option::is_none))
     }
 
     fn apply(&mut self, command: Command) {
@@ -241,6 +277,18 @@ impl<'a> Worker<'a> {
                 if let Some(text) = self.texts.get_mut(page) {
                     *text = None;
                 }
+                // The counts stay: the text is read again for a reshape,
+                // which does not change what the page says.
+            }
+            Command::Count => {
+                self.extract = true;
+                self.counting = true;
+                self.reported = false;
+                // Pages whose text is read already — every page for a reader
+                // who searched first — are counted here, so the answer is
+                // there the moment the page opens; the rest are counted as
+                // they are read.
+                let _ = self.finish_counts();
             }
         }
     }
@@ -262,7 +310,7 @@ impl<'a> Worker<'a> {
             if let Some(page) = self.texts.iter().position(Option::is_none) {
                 self.text(page);
             }
-            return true;
+            return self.finish_counts();
         };
         let count = self.texts.len();
         let page = (job.from_page + job.searched) % count;
@@ -310,6 +358,61 @@ impl<'a> Worker<'a> {
                 (transform, Arc::new(text))
             })
             .1
+    }
+
+    /// Counts `page`'s text, unless it is counted already.
+    fn count_page(&mut self, page: usize) {
+        if self.counts[page].is_some() {
+            return;
+        }
+        // Owned before `self.counts` is written: `self.text` borrows.
+        let counts = noido_text::Counts::of(self.text(page).text());
+        self.counts[page] = Some(counts);
+    }
+
+    /// Counts every page whose text is read but whose counts are not.
+    fn count_missing(&mut self) {
+        for page in 0..self.counts.len() {
+            if self.texts[page].is_some() {
+                self.count_page(page);
+            }
+        }
+    }
+
+    /// Counts every page whose text is read, and sends the document's counts
+    /// once, when nothing is left to count. A page counted already keeps its
+    /// counts: a reshape re-reads its text and changes nothing it says.
+    fn finish_counts(&mut self) -> bool {
+        if !self.counting {
+            return true;
+        }
+        self.count_missing();
+        if self.reported || !self.counted() {
+            return true;
+        }
+        self.reported = true;
+        self.report_counts()
+    }
+
+    /// Whether every page is counted.
+    fn counted(&self) -> bool {
+        self.counts.iter().all(Option::is_some)
+    }
+
+    /// Sends the document's counts; false once nobody listens.
+    fn report_counts(&self) -> bool {
+        let counted = Counted {
+            pages: self.counts.len(),
+            counted: self.counts.iter().filter(|c| c.is_some()).count(),
+            total: self.counts.iter().flatten().fold(
+                noido_text::Counts::default(),
+                |mut total, &counts| {
+                    total += counts;
+                    total
+                },
+            ),
+        };
+        self.send(SearchUpdate::Counts(counted))
     }
 
     fn send(&self, update: SearchUpdate) -> bool {
