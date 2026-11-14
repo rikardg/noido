@@ -1265,6 +1265,7 @@ dependencies = [
  "hayro",
  "noido-engine",
  "roxmltree 0.21.2",
+ "self_cell",
 ]
 
 [[package]]

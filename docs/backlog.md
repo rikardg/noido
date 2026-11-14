@@ -185,14 +185,6 @@ when it is fixed.
   on GNOME that triggers a remote-desktop permission prompt.
 
 - Vim key layer (zathura-style), with key sequences and counts.
-- hayro render cache reused across renders. Deferred to tiling (2026-10-27):
-  measured on `../testfiles/` at scales 1.5 and 2, one shared cache saves
-  only 1–11% per full-page render (2–5% typical), 14–17% at scale 0.2. It
-  holds fonts, glyph outlines and colour spaces; decoded images are not
-  cached in hayro 0.8, so scans gain nothing. Small tiles would gain more.
-  About 30–40 lines in `engine-hayro`: `self_cell` (already in `Cargo.lock`)
-  holding `Pdf` + `RenderCache` (`#[not_covariant]`); `Document` isn't
-  `Send`, so the cache's `Rc` is fine.
 - Tiled rendering, LRU eviction, prefetch priorities. Would also lift the
   zoom limit: `MAX_ZOOM` is 400% because a page render is capped at
   `MAX_RENDER_SIDE` (8192 px, about 500% for Letter on a 2× display) and
