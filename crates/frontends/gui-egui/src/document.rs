@@ -100,29 +100,38 @@ pub fn open(
         (store.clone(), slot, restored)
     });
 
+    // The reader's turns, from the start: the threads hand out pages turned.
+    let transforms = noido_render::Transforms::new(
+        session
+            .as_ref()
+            .and_then(|(_, _, restored)| restored.as_ref())
+            .map(|state| state.transforms.clone())
+            .unwrap_or_default(),
+    );
+
     // Shares the document bytes with the renderer; opens it in the background.
     let thumbnailer = Thumbnailer::start(
         Arc::new(HayroEngine),
         bytes.clone(),
-        noido_render::Transforms::default(),
+        transforms.clone(),
         waker(ctx, viewport),
     );
     let sidebar_renderer = Renderer::start_background(
         Arc::new(HayroEngine),
         bytes.clone(),
-        noido_render::Transforms::default(),
+        transforms.clone(),
         waker(ctx, viewport),
     );
     let searcher = TextSearcher::start(
         Arc::new(HayroEngine),
         bytes.clone(),
-        noido_render::Transforms::default(),
+        transforms.clone(),
         waker(ctx, viewport),
     );
     let linker = Linker::start(
         Arc::new(HayroEngine),
         bytes.clone(),
-        noido_render::Transforms::default(),
+        transforms.clone(),
         waker(ctx, viewport),
     );
     let source = info::Source {
@@ -135,7 +144,7 @@ pub fn open(
     let (renderer, info) = Renderer::start(
         Arc::new(HayroEngine),
         bytes,
-        noido_render::Transforms::default(),
+        transforms.clone(),
         waker(ctx, viewport),
     )
     .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -144,6 +153,7 @@ pub fn open(
         path,
         key,
         Arc::new(HayroEngine),
+        transforms.clone(),
         shared_waker(ctx, viewport),
     )
     .inspect_err(|e| eprintln!("noido: cannot watch {}: {e}", path.display()))
@@ -156,6 +166,7 @@ pub fn open(
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
     let slot = session.as_ref().map(|(_, slot, _)| slot.clone());
     let app = NoidoApp::new(renderer, info)
+        .with_transforms(transforms)
         .with_name(name.clone())
         .with_link_path(canonical)
         .with_thumbnails(thumbnailer)

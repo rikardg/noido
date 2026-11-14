@@ -38,6 +38,13 @@ impl Texts {
         }
     }
 
+    /// Forgets `page`'s text, so it is asked for again: the page turned.
+    pub fn forget(&mut self, page: usize) {
+        if let Some(slot) = self.pages.get_mut(page) {
+            *slot = Slot::Unasked;
+        }
+    }
+
     pub fn insert(&mut self, page: usize, text: Arc<PageText>) {
         if let Some(slot) = self.pages.get_mut(page) {
             *slot = Slot::Known(text);

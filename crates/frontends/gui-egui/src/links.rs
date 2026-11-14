@@ -3,7 +3,7 @@
 
 use noido_core::{OutlineTree, PageNumbers};
 use noido_engine::{Destination, Link, Rect};
-use noido_render::{LinkReply, Linker};
+use noido_render::{LinkReply, Linker, Transforms};
 
 enum PageLinks {
     Unasked,
@@ -109,16 +109,36 @@ impl Links {
         (elapsed < FLASH_SECONDS).then(|| (page, area, (1.0 - elapsed / FLASH_SECONDS) as f32))
     }
 
+    /// Forgets every page's links and asks for the outline again: a page
+    /// turned, and links anywhere may point into it.
+    pub fn forget_pages(&mut self) {
+        for state in &mut self.pages {
+            *state = PageLinks::Unasked;
+        }
+        if let Some(linker) = &self.linker {
+            linker.request_outline();
+        }
+    }
+
     /// Takes in what the links thread sent; a flash starts at `now`. Gives
-    /// the answer for the name asked for, once it comes.
-    pub fn receive(&mut self, now: f64) -> Option<Named> {
+    /// the answer for the name asked for, once it comes. Links read before
+    /// their page last turned (`transforms` says how it is now) are
+    /// dropped.
+    pub fn receive(&mut self, now: f64, transforms: &Transforms) -> Option<Named> {
         let Some(linker) = &self.linker else {
             return None;
         };
         let mut answer = None;
         while let Some(reply) = linker.try_recv() {
             match reply {
-                LinkReply::Links { page, links, .. } => {
+                LinkReply::Links {
+                    page,
+                    links,
+                    transform,
+                } => {
+                    if transform != transforms.get(page) {
+                        continue;
+                    }
                     if let Some(state) = self.pages.get_mut(page) {
                         *state = PageLinks::Known(links);
                     }
@@ -254,7 +274,7 @@ mod tests {
     fn answer(links: &mut Links) -> Option<Named> {
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(1) {
-            if let Some(named) = links.receive(0.0) {
+            if let Some(named) = links.receive(0.0, &Transforms::default()) {
                 return Some(named);
             }
             std::thread::sleep(Duration::from_millis(5));
