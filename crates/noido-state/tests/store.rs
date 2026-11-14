@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use noido_core::{
-    Caret, DocPoint, Highlight, HighlightColour, History, Pins, SidebarState, SidebarTab,
-    ViewState, ZoomMode,
+    Caret, DocPoint, Highlight, HighlightColour, History, PageTransform, PageTransforms, Pins,
+    Rotation, SidebarState, SidebarTab, ViewState, ZoomMode,
 };
 use noido_state::{DocKey, DocState, Frame, Pagelet, Slot, Store};
 use tempfile::TempDir;
@@ -29,6 +29,7 @@ fn state(page: usize) -> DocState {
         highlights: Vec::new(),
         pins: Pins::default(),
         pagelet: None,
+        transforms: PageTransforms::default(),
     }
 }
 
@@ -333,6 +334,86 @@ fn duplicate_pins_are_dropped_on_load() {
     )
     .unwrap();
     assert_eq!(loaded(&store, &key).unwrap().pins.pages(), [2, 7]);
+}
+
+fn turned(rotation: Rotation) -> PageTransform {
+    PageTransform { rotation }
+}
+
+#[test]
+fn rotations_round_trip() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        transforms: PageTransforms::from_records([
+            (3, turned(Rotation::R90)),
+            (0, turned(Rotation::R270)),
+            (8, turned(Rotation::R180)),
+        ]),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    assert_eq!(loaded(&store, &key).unwrap().transforms, saved.transforms);
+}
+
+#[test]
+fn rotations_are_written_as_a_pages_table() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        transforms: PageTransforms::from_records([(3, turned(Rotation::R90))]),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    let text = fs::read_to_string(docs(&dir).join(format!("{}.toml", key.hex()))).unwrap();
+    assert!(text.contains("[[pages]]"), "{text}");
+    assert!(text.contains("page = 3"), "{text}");
+    assert!(text.contains("rotation = 90"), "{text}");
+}
+
+#[test]
+fn no_rotations_write_no_pages_table() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(3)).unwrap();
+    let text = fs::read_to_string(docs(&dir).join(format!("{}.toml", key.hex()))).unwrap();
+    assert!(!text.contains("[[pages]]"), "{text}");
+}
+
+#[test]
+fn odd_angles_are_dropped_on_load() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(3)).unwrap();
+    let file = docs(&dir).join(format!("{}.toml", key.hex()));
+    fs::write(
+        &file,
+        format!(
+            "{}\n[[pages]]\npage = 1\nrotation = 45\n\n[[pages]]\npage = 2\nrotation = 0\n\n[[pages]]\npage = 4\nrotation = 270\n",
+            fs::read_to_string(&file).unwrap()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        loaded(&store, &key).unwrap().transforms,
+        PageTransforms::from_records([(4, turned(Rotation::R270))])
+    );
+}
+
+#[test]
+fn files_without_pages_load_without_transforms() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    write_old_entry(&dir, &key);
+    assert_eq!(
+        loaded(&store, &key).unwrap().transforms,
+        PageTransforms::default()
+    );
 }
 
 #[test]
