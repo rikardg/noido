@@ -334,8 +334,6 @@ when it is fixed.
   RSS including the 30 MB file), above the spec's 10–20 MB estimate for
   600 pages. `u32` indices in `CharInfo` and the folded forms' maps would
   halve it.
-- **No test assembles a rotated page's real glyphs into `PageText`.** The
-  engine test checks glyph origins only; add one in `noido-render/tests`.
 
 ## Search UI (review minors, 2026-10-25)
 

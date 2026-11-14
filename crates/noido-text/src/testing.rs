@@ -50,3 +50,20 @@ pub fn page(lines: &[&str]) -> Vec<Glyph> {
         .flat_map(|(i, text)| line(text, 72.0, 100.0 + i as f32 * 14.0, 10.0))
         .collect()
 }
+
+/// `glyphs` turned by `r` about the origin, as a page turned by `r` would
+/// hand them out (up to where the page sits).
+pub fn turned(glyphs: Vec<Glyph>, r: noido_engine::Rotation) -> Vec<Glyph> {
+    let zero = noido_engine::Size {
+        width: 0.0,
+        height: 0.0,
+    };
+    glyphs
+        .into_iter()
+        .map(|g| Glyph {
+            origin: r.point(g.origin, zero),
+            quad: r.quad(g.quad, zero),
+            ..g
+        })
+        .collect()
+}
