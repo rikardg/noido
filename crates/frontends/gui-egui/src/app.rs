@@ -111,6 +111,8 @@ pub struct Incoming {
 
 pub struct NoidoApp {
     renderer: Renderer,
+    /// How the reader turns pages, shared with every thread's document.
+    transforms: noido_render::Transforms,
     view: View,
     tracker: RenderTracker,
     textures: HashMap<usize, PageImage>,
@@ -140,6 +142,10 @@ pub struct NoidoApp {
     /// A link clicked in the pagelet, followed at the start of the next
     /// frame so the view's scroll takes the jump.
     clicked_target: Option<noido_engine::LinkTarget>,
+    /// Pages to turn, and how, in order: turned at the start of the next
+    /// frame, after egui's scrolling is taken in, which would undo the
+    /// view keeping its place.
+    pending_rotations: Vec<(usize, noido_core::Rotation)>,
     /// A hit was jumped to since the reader last moved: later hits, of this
     /// search or a new one, add no history entry.
     searched_away: bool,
@@ -308,6 +314,7 @@ impl NoidoApp {
         let page_count = info.page_sizes.len();
         Self {
             renderer,
+            transforms: noido_render::Transforms::default(),
             view: View::new(info.page_sizes),
             tracker: RenderTracker::new(page_count),
             textures: HashMap::new(),
@@ -323,6 +330,7 @@ impl NoidoApp {
             pagelet: None,
             pending_pagelet: None,
             clicked_target: None,
+            pending_rotations: Vec::new(),
             pin_preview: None,
             searched_away: false,
             thumbnails: None,
@@ -397,6 +405,13 @@ impl NoidoApp {
         self
     }
 
+    /// Shows pages with `transforms`, the ones its threads were started
+    /// with.
+    pub fn with_transforms(mut self, transforms: noido_render::Transforms) -> Self {
+        self.transforms = transforms;
+        self
+    }
+
     /// Reads the document's info from `source` when asked.
     pub fn with_source(mut self, source: info::Source) -> Self {
         self.source = Some(source);
@@ -466,6 +481,10 @@ impl NoidoApp {
         }
         let keep = window_keep(page_count, thumbnails.sent.unwrap_or(0), THUMBNAIL_BUDGET);
         while let Some(thumbnail) = thumbnails.thumbnailer.try_recv() {
+            // Made before the page last turned.
+            if thumbnail.transform != self.transforms.get(thumbnail.page) {
+                continue;
+            }
             match thumbnail.result {
                 Ok(image) if keep.contains(&thumbnail.page) => {
                     let name = format!("thumbnail-{}", thumbnail.page);
@@ -845,6 +864,73 @@ impl NoidoApp {
         }
     }
 
+    /// Turns `page` to `rotation`, from the page as the PDF shows it, at
+    /// the start of the next frame.
+    // Until the menu that turns pages calls it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_rotation(&mut self, page: usize, rotation: noido_core::Rotation) {
+        self.pending_rotations.push((page, rotation));
+    }
+
+    /// Turns `page` to `rotation` now. The view keeps its place; what was
+    /// read or drawn from the page's old shape is read and drawn again.
+    fn turn_page(&mut self, page: usize, rotation: noido_core::Rotation) {
+        let old = self.transforms.get(page).rotation;
+        if old == rotation {
+            return;
+        }
+        let Some(shown) = self.view.layout().page_size(page) else {
+            return;
+        };
+        let unturned = old.size(shown);
+        self.transforms
+            .set(page, noido_core::PageTransform { rotation });
+        let remap = move |p: noido_core::DocPoint| {
+            let q = noido_core::Rotation::remap(
+                noido_engine::Point { x: p.x, y: p.y },
+                old,
+                rotation,
+                unturned,
+            );
+            noido_core::DocPoint {
+                x: q.x,
+                y: q.y,
+                ..p
+            }
+        };
+        self.view
+            .set_page_size(page, rotation.size(unturned), remap);
+        self.history.map_points(page, remap);
+        let page_count = self.view.layout().page_count();
+        // Every page is asked for anew: a fit's scale may have changed.
+        self.tracker = RenderTracker::new(page_count);
+        self.textures.remove(&page);
+        if let Some(thumbnails) = &mut self.thumbnails {
+            thumbnails.textures.remove(&page);
+            thumbnails.thumbnailer.refresh(page);
+        }
+        self.sidebar_view.page_turned(page, page_count);
+        self.texts.forget(page);
+        self.search_state.forget(page);
+        // Only the turned page's hits moved; the search runs again only for
+        // them, and keeps the reader's current hit.
+        if !self.search_state.hits.on_page(page).is_empty() {
+            let from = self.view.centre_page().unwrap_or(0);
+            self.search_state.rerun_keeping(from);
+        }
+        self.links.forget_pages();
+        // The pagelet on the page opens again in the page's new shape, at
+        // its place and width.
+        if self
+            .pin_preview
+            .as_ref()
+            .is_some_and(|preview| preview.page == page)
+        {
+            self.close_pagelet();
+            self.pending_pagelet = Some(page);
+        }
+    }
+
     /// Shows `reload`, a new version of the document, at the same place.
     fn reload(&mut self, reload: Reload, ctx: &egui::Context) {
         let current = self.view.state();
@@ -861,6 +947,7 @@ impl NoidoApp {
         }
         let page_count = view.layout().page_count();
         self.pins.retain_below(page_count);
+        self.transforms.retain_below(page_count);
         if self
             .pin_preview
             .as_ref()
@@ -933,6 +1020,14 @@ impl NoidoApp {
         restored: Option<DocState>,
     ) -> Self {
         if let Some(state) = &restored {
+            // Before the view: its saved place is on the pages as turned.
+            let page_count = self.view.layout().page_count();
+            for (page, transform) in state.transforms.iter() {
+                if page < page_count {
+                    self.turn_page(page, transform.rotation);
+                }
+            }
+            self.transforms.retain_below(page_count);
             self.view.restore(&state.view);
             self.sidebar = state.sidebar;
             self.history = state.history.clone();
@@ -967,7 +1062,7 @@ impl NoidoApp {
                 page: self.pin_preview.as_ref().map(|preview| preview.page),
                 ..pagelet
             }),
-            transforms: noido_core::PageTransforms::default(),
+            transforms: self.transforms.snapshot(),
         })
     }
 
@@ -1497,6 +1592,10 @@ impl NoidoApp {
         let now = ctx.input(|i| i.time);
         self.fades.forget_finished(now);
         while let Some(rendered) = self.renderer.try_recv() {
+            // Made before the page last turned.
+            if rendered.transform != self.transforms.get(rendered.page) {
+                continue;
+            }
             match rendered.result {
                 Ok(image) => {
                     let name = format!("page-{}", rendered.page);
@@ -2731,12 +2830,15 @@ impl NoidoApp {
         }
         self.receive_renders(&ctx);
         let lowres = self.thumbnails.as_ref().map(|t| &t.textures);
-        self.sidebar_view.receive(&ctx, lowres);
+        self.sidebar_view.receive(&ctx, lowres, &self.transforms);
         self.sync_from_egui();
+        for (page, rotation) in std::mem::take(&mut self.pending_rotations) {
+            self.turn_page(page, rotation);
+        }
         self.receive_reload(&ctx);
         // After a reload, so an answer about the old version is dropped; and
         // after egui's scrolling is taken in, which would undo a jump.
-        if let Some(named) = self.links.receive(ctx.input(|i| i.time)) {
+        if let Some(named) = self.links.receive(ctx.input(|i| i.time), &self.transforms) {
             self.arrive_at_named(named);
         }
         // A different outline: an entry clicked in the old one means nothing.
@@ -2768,8 +2870,11 @@ impl NoidoApp {
         }
         self.title_bar(ui, parent);
         self.update_search(&ctx);
-        for (page, text) in self.search_state.take_texts() {
-            self.texts.insert(page, text);
+        for (page, text, transform) in self.search_state.take_texts() {
+            // Read before the page last turned.
+            if transform == self.transforms.get(page) {
+                self.texts.insert(page, text);
+            }
         }
         if let Some(mut pending) = self.select.copy_pending {
             // Placed like the selection, so an end placed when its page's
@@ -3369,10 +3474,21 @@ pub(crate) mod tests {
             preset: &str,
             setup: impl FnOnce(NoidoApp) -> NoidoApp,
         ) -> Self {
+            Self::build_turned(engine, preset, noido_render::Transforms::default(), setup)
+        }
+
+        /// A harness whose threads start with `transforms` already set, as
+        /// `document::open` starts them for a document with saved turns.
+        fn build_turned(
+            engine: Arc<dyn PdfEngine>,
+            preset: &str,
+            transforms: noido_render::Transforms,
+            setup: impl FnOnce(NoidoApp) -> NoidoApp,
+        ) -> Self {
             let (renderer, info) = Renderer::start(
                 engine,
                 Arc::new(Vec::new()),
-                noido_render::Transforms::default(),
+                transforms.clone(),
                 Box::new(|| {}),
             )
             .unwrap();
@@ -3384,7 +3500,8 @@ pub(crate) mod tests {
             let (reloads, watcher) = crate::watch::Watcher::fake();
             let mut harness = Self {
                 ctx,
-                app: setup(NoidoApp::new(renderer, info)).with_watcher(watcher),
+                app: setup(NoidoApp::new(renderer, info).with_transforms(transforms))
+                    .with_watcher(watcher),
                 size: vec2(900.0, 1000.0),
                 time: 0.0,
                 shapes: vec![],
@@ -3490,32 +3607,32 @@ pub(crate) mod tests {
             let (renderer, info) = Renderer::start(
                 engine.clone(),
                 bytes.clone(),
-                noido_render::Transforms::default(),
+                self.app.transforms.clone(),
                 Box::new(|| {}),
             )
             .unwrap();
             let thumbnailer = Thumbnailer::start(
                 engine.clone(),
                 bytes.clone(),
-                noido_render::Transforms::default(),
+                self.app.transforms.clone(),
                 Box::new(|| {}),
             );
             let sidebar = Renderer::start_background(
                 engine.clone(),
                 bytes.clone(),
-                noido_render::Transforms::default(),
+                self.app.transforms.clone(),
                 Box::new(|| {}),
             );
             let linker = noido_render::Linker::start(
                 engine.clone(),
                 bytes.clone(),
-                noido_render::Transforms::default(),
+                self.app.transforms.clone(),
                 Box::new(|| {}),
             );
             let searcher = TextSearcher::start(
                 engine,
                 bytes.clone(),
-                noido_render::Transforms::default(),
+                self.app.transforms.clone(),
                 Box::new(|| {}),
             );
             let reload = crate::watch::Reload {
@@ -3543,32 +3660,32 @@ pub(crate) mod tests {
             let (renderer, info) = Renderer::start(
                 engine.clone(),
                 bytes.clone(),
-                noido_render::Transforms::default(),
+                self.app.transforms.clone(),
                 Box::new(|| {}),
             )
             .unwrap();
             let thumbnailer = Thumbnailer::start(
                 engine.clone(),
                 bytes.clone(),
-                noido_render::Transforms::default(),
+                self.app.transforms.clone(),
                 Box::new(|| {}),
             );
             let sidebar = Renderer::start_background(
                 Arc::new(sidebar),
                 bytes.clone(),
-                noido_render::Transforms::default(),
+                self.app.transforms.clone(),
                 Box::new(|| {}),
             );
             let linker = noido_render::Linker::start(
                 engine.clone(),
                 bytes.clone(),
-                noido_render::Transforms::default(),
+                self.app.transforms.clone(),
                 Box::new(|| {}),
             );
             let searcher = TextSearcher::start(
                 engine,
                 bytes.clone(),
-                noido_render::Transforms::default(),
+                self.app.transforms.clone(),
                 Box::new(|| {}),
             );
             self.reloads.put(crate::watch::Reload {
@@ -15623,5 +15740,277 @@ pub(crate) mod tests {
         let drawn = outline_rows(&h).len();
         assert!(drawn > 0 && drawn < 100, "{drawn}");
         assert_eq!(h.app.links.outline.as_ref().unwrap().rows().len(), 100_000);
+    }
+
+    // ---- Turning a page ----
+
+    use noido_core::{PageTransform, PageTransforms, Rotation};
+
+    fn letter_turned() -> Size {
+        Size {
+            width: 792.0,
+            height: 612.0,
+        }
+    }
+
+    #[test]
+    fn set_rotation_turns_the_page_and_keeps_the_view() {
+        let mut h = Harness::new();
+        // Mid-document: at the top, the view stays at the top instead.
+        for _ in 0..4 {
+            h.press(egui::Key::PageDown, Modifiers::NONE);
+        }
+        h.frames(30, vec![]);
+        let before = h.centre();
+        assert!(before.page >= 2, "{before:?}");
+        h.app.set_rotation(5, Rotation::R90);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.view.layout().page_size(5), Some(letter_turned()));
+        assert_eq!(h.app.transforms.get(5).rotation, Rotation::R90);
+        let after = h.centre();
+        assert_eq!(after.page, before.page);
+        assert!((after.y - before.y).abs() < 1.0, "{before:?} vs {after:?}");
+    }
+
+    /// One Letter page whose renders are as large as asked, each waiting
+    /// for a token from the gate.
+    #[derive(Clone)]
+    struct SizedGated(Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>);
+
+    impl PdfEngine for SizedGated {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(self.clone()))
+        }
+    }
+
+    impl Document for SizedGated {
+        fn page_count(&self) -> usize {
+            1
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument.page_size(page)
+        }
+        fn render_tile(
+            &self,
+            _: usize,
+            _: f32,
+            tile: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            let _ = self.0.lock().unwrap().recv();
+            let pixels = vec![255; tile.width as usize * tile.height as usize * 4];
+            Ok(Rgba8Image::from_premultiplied(tile.width, tile.height, pixels).unwrap())
+        }
+    }
+
+    #[test]
+    fn a_stale_render_is_not_shown() {
+        let (gate, tokens) = std::sync::mpsc::channel();
+        let engine = SizedGated(Arc::new(std::sync::Mutex::new(tokens)));
+        let mut h = Harness::build_with(Arc::new(engine), |app| app);
+        // The upright render is under way, waiting for its token.
+        h.app.set_rotation(0, Rotation::R90);
+        h.frames(2, vec![]);
+        gate.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        h.frames(2, vec![]);
+        assert!(!h.app.textures.contains_key(&0), "the upright render shown");
+        gate.send(()).unwrap();
+        h.until(|h| h.app.textures.contains_key(&0));
+        let [w, h_] = h.app.textures[&0].texture.size();
+        assert!(w > h_, "{w}×{h_}");
+    }
+
+    #[test]
+    fn rotating_a_page_redoes_the_search() {
+        let engine = TextEngine::new(&[&["Hello World"], &["nothing"]]);
+        let searcher = engine.clone();
+        let mut h = Harness::build_with(Arc::new(engine), move |app| {
+            let transforms = app.transforms.clone();
+            app.with_searcher(TextSearcher::start(
+                Arc::new(searcher),
+                Arc::new(Vec::new()),
+                transforms,
+                Box::new(|| {}),
+            ))
+        });
+        search_for(&mut h, "World");
+        let rect = |h: &Harness| h.app.search_state.hits.on_page(0)[0].text.rects[0];
+        let wide = rect(&h);
+        assert!(wide.width > wide.height, "{wide:?}");
+        h.app.set_rotation(0, Rotation::R90);
+        h.until(|h| {
+            h.app.search_state.finished()
+                && !h.app.search_state.hits.on_page(0).is_empty()
+                && rect(h).height > rect(h).width
+        });
+        let tall = rect(&h);
+        assert!(tall.height > tall.width, "{tall:?}");
+    }
+
+    /// A harness searching `pages` with a text thread that shares the
+    /// app's turns, after a search for `query` has finished.
+    fn turned_search(pages: &[&[&str]], query: &str) -> Harness {
+        let engine = TextEngine::new(pages);
+        let searcher = engine.clone();
+        let mut h = Harness::build_with(Arc::new(engine), move |app| {
+            let transforms = app.transforms.clone();
+            app.with_searcher(TextSearcher::start(
+                Arc::new(searcher),
+                Arc::new(Vec::new()),
+                transforms,
+                Box::new(|| {}),
+            ))
+        });
+        search_for(&mut h, query);
+        h
+    }
+
+    #[test]
+    fn turning_a_page_without_hits_leaves_the_search_alone() {
+        let mut h = turned_search(&[&["cat"], &["dog"], &["cat"]], "cat");
+        h.app.search_state.hits.set_current(Some(1));
+        let generation = h.app.search_state.generation();
+        h.app.set_rotation(1, Rotation::R90);
+        h.frames(4, vec![]);
+        assert_eq!(h.app.search_state.generation(), generation);
+        assert_eq!(h.app.search_state.hits.current(), Some(1));
+    }
+
+    #[test]
+    fn turning_a_page_with_hits_keeps_the_current_hit() {
+        // Each hit in turn, so one is not where a plain re-run would land.
+        for current in 0..3 {
+            let mut h = turned_search(&[&["cat"], &["cat"], &["cat"]], "cat");
+            h.app.search_state.hits.set_current(Some(current));
+            h.app.set_rotation(1, Rotation::R90);
+            h.frames(2, vec![]);
+            h.until(|h| h.app.search_state.finished() && h.app.search_state.hits.len() == 3);
+            let kept = h.app.search_state.hits.current();
+            let page = kept
+                .and_then(|i| h.app.search_state.hits.get(i))
+                .map(|hit| hit.page);
+            assert_eq!(page, Some(current), "current {kept:?}");
+        }
+    }
+
+    #[test]
+    fn links_into_a_rotated_page_land_on_the_content() {
+        let engine = link_engine();
+        let linker = engine.clone();
+        let mut h = Harness::build_with(Arc::new(engine), move |app| {
+            let transforms = app.transforms.clone();
+            app.with_linker(noido_render::Linker::start(
+                Arc::new(linker),
+                Arc::new(Vec::new()),
+                transforms,
+                Box::new(|| {}),
+            ))
+        });
+        // Page 0's links are known before page 5 turns.
+        let at = screen_pos(&h, 0, 100.0, 96.0);
+        hover_link(&mut h, at);
+        h.app.set_rotation(5, Rotation::R90);
+        h.frames(2, vec![]);
+        click_link(&mut h, 0, 100.0, 96.0);
+        // (72, 300) on the upright page is (492, 72) once turned.
+        let target = screen_pos(&h, 5, 492.0, 72.0);
+        let centre = h.app.last_scroll.unwrap().inner.center();
+        assert!(
+            (target.y - centre.y).abs() < 1.0,
+            "{target:?} vs {centre:?}"
+        );
+    }
+
+    #[test]
+    fn rotations_are_saved_and_restored() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = Harness::new();
+        h.app.set_rotation(2, Rotation::R90);
+        h.frames(1, vec![]);
+        let state = h.app.doc_state().unwrap();
+        assert_eq!(state.transforms.get(2).rotation, Rotation::R90);
+        let restored = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(state))
+        });
+        assert_eq!(restored.app.transforms.get(2).rotation, Rotation::R90);
+        assert_eq!(
+            restored.app.view.layout().page_size(2),
+            Some(letter_turned())
+        );
+    }
+
+    #[test]
+    fn a_document_opens_with_its_saved_turns_as_document_open_does() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let turn = |rotation| PageTransform { rotation };
+        let mut state = Harness::new().app.doc_state().unwrap();
+        state.transforms = PageTransforms::from_records([(2, turn(Rotation::R90))]);
+        // A spot on page 2 as it shows turned: 792 wide, 612 high.
+        state.view.centre = noido_core::DocPoint {
+            page: 2,
+            x: 396.0,
+            y: 500.0,
+        };
+        let transforms = noido_render::Transforms::new(state.transforms.clone());
+        let h = Harness::build_turned(Arc::new(BlankEngine), "adwaita", transforms, |app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(state))
+        });
+        assert_eq!(h.app.view.layout().page_size(2), Some(letter_turned()));
+        assert_eq!(h.app.transforms.get(2).rotation, Rotation::R90);
+        // The saved centre is already on the turned page: not turned again.
+        let centre = h.centre();
+        assert_eq!(centre.page, 2);
+        assert!((centre.y - 500.0).abs() < 1.0, "{centre:?}");
+    }
+
+    #[test]
+    fn restored_rotations_past_the_end_are_dropped() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let turn = |rotation| PageTransform { rotation };
+        let state = DocState {
+            transforms: PageTransforms::from_records([
+                (1, turn(Rotation::R180)),
+                (40, turn(Rotation::R90)),
+            ]),
+            ..Harness::new().app.doc_state().unwrap()
+        };
+        let h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(state))
+        });
+        assert_eq!(
+            h.app.transforms.snapshot(),
+            PageTransforms::from_records([(1, turn(Rotation::R180))])
+        );
+    }
+
+    #[test]
+    fn reload_keeps_rotations_and_drops_those_past_the_end() {
+        let mut h = Harness::new();
+        h.app.set_rotation(1, Rotation::R90);
+        h.app.set_rotation(5, Rotation::R270);
+        h.frames(1, vec![]);
+        let four = TextEngine::new(&[&["a"], &["b"], &["c"], &["d"]]);
+        h.reload(Arc::new(four), recompiled_key());
+        h.frames(2, vec![]);
+        assert_eq!(h.app.view.layout().page_count(), 4);
+        assert_eq!(h.app.transforms.get(1).rotation, Rotation::R90);
+        assert_eq!(h.app.transforms.get(5).rotation, Rotation::R0);
+        assert_eq!(h.app.view.layout().page_size(1), Some(letter_turned()));
+    }
+
+    #[test]
+    fn the_pagelet_takes_the_turned_shape_of_its_page() {
+        let mut h = pinned_on(&[4]);
+        open_pagelet(&mut h, 4);
+        let upright = h.app.pagelet_page_rect().unwrap();
+        assert!(upright.height() > upright.width(), "{upright:?}");
+        h.app.set_rotation(4, Rotation::R90);
+        h.frames(4, vec![]);
+        assert!(pagelet_on(&h, 4));
+        let turned = h.app.pagelet_page_rect().unwrap();
+        assert!(turned.width() > turned.height(), "{turned:?}");
+        // The panel itself turns, not just the page inside the old box.
+        let panel = h.app.pin_preview.as_ref().unwrap().rect;
+        assert!(panel.width() > panel.height(), "{panel:?}");
     }
 }

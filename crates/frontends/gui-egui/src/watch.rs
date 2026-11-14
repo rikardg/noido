@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use noido_engine::{PdfBytes, PdfEngine};
-use noido_render::{DocumentInfo, Linker, Renderer, TextSearcher, Thumbnailer};
+use noido_render::{DocumentInfo, Linker, Renderer, TextSearcher, Thumbnailer, Transforms};
 use noido_state::DocKey;
 use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode};
@@ -93,6 +93,7 @@ impl Debounce {
 /// document without pages, which a file cut short mid-write can open as.
 fn open_new(
     engine: &Arc<dyn PdfEngine>,
+    transforms: &Transforms,
     path: &Path,
     current: &DocKey,
     waker: &Waker,
@@ -109,7 +110,7 @@ fn open_new(
     let (renderer, info) = Renderer::start(
         engine.clone(),
         bytes.clone(),
-        noido_render::Transforms::default(),
+        transforms.clone(),
         boxed(waker),
     )
     .ok()?;
@@ -119,25 +120,25 @@ fn open_new(
     let thumbnailer = Thumbnailer::start(
         engine.clone(),
         bytes.clone(),
-        noido_render::Transforms::default(),
+        transforms.clone(),
         boxed(waker),
     );
     let sidebar = Renderer::start_background(
         engine.clone(),
         bytes.clone(),
-        noido_render::Transforms::default(),
+        transforms.clone(),
         boxed(waker),
     );
     let linker = Linker::start(
         engine.clone(),
         bytes.clone(),
-        noido_render::Transforms::default(),
+        transforms.clone(),
         boxed(waker),
     );
     let searcher = TextSearcher::start(
         engine.clone(),
         bytes.clone(),
-        noido_render::Transforms::default(),
+        transforms.clone(),
         boxed(waker),
     );
     Some(Reload {
@@ -161,11 +162,13 @@ pub struct Watcher {
 
 impl Watcher {
     /// Watches `path`, whose shown version is `current`. New versions are
-    /// opened with `engine`; `waker` is called when one is ready.
+    /// opened with `engine`, shown with the reader's `transforms`; `waker`
+    /// is called when one is ready.
     pub fn start(
         path: &Path,
         current: DocKey,
         engine: Arc<dyn PdfEngine>,
+        transforms: Transforms,
         waker: Waker,
     ) -> Result<Watcher, String> {
         let path = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
@@ -190,7 +193,9 @@ impl Watcher {
         thread::Builder::new()
             .name("noido-watch".into())
             .spawn(move || {
-                run(&path, current, &engine, &waker, &events, &shared, concerns);
+                let open =
+                    |current: &DocKey| open_new(&engine, &transforms, &path, current, &waker);
+                run(current, open, &waker, &events, &shared, concerns);
             })
             .map_err(|e| e.to_string())?;
         Ok(Watcher {
@@ -217,9 +222,8 @@ impl Watcher {
 
 /// The watching thread: ends when the watcher or the app goes away.
 fn run(
-    path: &Path,
     mut current: DocKey,
-    engine: &Arc<dyn PdfEngine>,
+    open: impl Fn(&DocKey) -> Option<Reload>,
     waker: &Waker,
     events: &Receiver<notify::Result<Event>>,
     newest: &Weak<Mutex<Option<Reload>>>,
@@ -238,7 +242,7 @@ fn run(
             Err(RecvTimeoutError::Disconnected) => return,
         }
         if debounce.fire(Instant::now())
-            && let Some(reload) = open_new(engine, path, &current, waker)
+            && let Some(reload) = open(&current)
         {
             current = reload.key.clone();
             // The app has gone.
@@ -354,7 +358,16 @@ mod tests {
         let path = dir.path().join("a.pdf");
         fs::write(&path, b"four").unwrap();
         let current = DocKey::new(b"four", &path);
-        assert!(open_new(&engine(), &path, &current, &no_waker()).is_none());
+        assert!(
+            open_new(
+                &engine(),
+                &Transforms::default(),
+                &path,
+                &current,
+                &no_waker()
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -362,7 +375,16 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("a.pdf");
         let current = DocKey::new(b"four", &path);
-        assert!(open_new(&engine(), &path, &current, &no_waker()).is_none());
+        assert!(
+            open_new(
+                &engine(),
+                &Transforms::default(),
+                &path,
+                &current,
+                &no_waker()
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -371,7 +393,16 @@ mod tests {
         let path = dir.path().join("a.pdf");
         fs::write(&path, b"bad pdf").unwrap();
         let current = DocKey::new(b"four", &path);
-        assert!(open_new(&engine(), &path, &current, &no_waker()).is_none());
+        assert!(
+            open_new(
+                &engine(),
+                &Transforms::default(),
+                &path,
+                &current,
+                &no_waker()
+            )
+            .is_none()
+        );
     }
 
     /// While the window is hidden, versions wait unshown: only the newest
@@ -384,7 +415,16 @@ mod tests {
         let newest = Newest::default();
         for bytes in [&b"three"[..], b"four!!"] {
             fs::write(&path, bytes).unwrap();
-            newest.put(open_new(&engine(), &path, &current, &no_waker()).unwrap());
+            newest.put(
+                open_new(
+                    &engine(),
+                    &Transforms::default(),
+                    &path,
+                    &current,
+                    &no_waker(),
+                )
+                .unwrap(),
+            );
         }
         assert_eq!(newest.take().unwrap().info.page_sizes.len(), 6);
         assert!(newest.take().is_none());
@@ -397,7 +437,16 @@ mod tests {
         let path = dir.path().join("a.pdf");
         fs::write(&path, b"none yet").unwrap();
         let current = DocKey::new(b"four", &path);
-        assert!(open_new(&engine(), &path, &current, &no_waker()).is_none());
+        assert!(
+            open_new(
+                &engine(),
+                &Transforms::default(),
+                &path,
+                &current,
+                &no_waker()
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -406,7 +455,14 @@ mod tests {
         let path = dir.path().join("a.pdf");
         fs::write(&path, b"seven!!").unwrap();
         let current = DocKey::new(b"four", &path);
-        let reload = open_new(&engine(), &path, &current, &no_waker()).unwrap();
+        let reload = open_new(
+            &engine(),
+            &Transforms::default(),
+            &path,
+            &current,
+            &no_waker(),
+        )
+        .unwrap();
         assert_ne!(reload.key.hex(), current.hex());
         assert_eq!(reload.key.hex(), DocKey::new(b"seven!!", &path).hex());
         assert_eq!(reload.info.page_sizes.len(), 7);
@@ -435,8 +491,14 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("a.pdf");
         fs::write(&path, b"one").unwrap();
-        let watcher =
-            Watcher::start(&path, DocKey::new(b"one", &path), engine(), no_waker()).unwrap();
+        let watcher = Watcher::start(
+            &path,
+            DocKey::new(b"one", &path),
+            engine(),
+            Transforms::default(),
+            no_waker(),
+        )
+        .unwrap();
 
         write_by_rename(&path, b"two!");
         let reload = next_reload(&watcher, Duration::from_secs(5)).expect("rename over");

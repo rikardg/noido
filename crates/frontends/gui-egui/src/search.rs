@@ -5,6 +5,7 @@ use eframe::egui::Color32;
 use noido_core::Hits;
 use std::sync::Arc;
 
+use noido_core::PageTransform;
 use noido_render::{SearchUpdate, TextSearcher};
 use noido_text::PageText;
 
@@ -33,6 +34,14 @@ pub enum First {
     Select,
     /// Nothing: done, or the reader moved first.
     Done,
+    /// Make this hit current again when it arrives, without moving: the
+    /// query was re-run after a page turned. `at_hit` is restored with it.
+    Keep {
+        page: usize,
+        start: usize,
+        end: usize,
+        at_hit: bool,
+    },
 }
 
 /// What the app should do with a hit that arrived.
@@ -64,7 +73,7 @@ pub struct Search {
     /// that hit rather than from the view.
     pub at_hit: bool,
     /// Pages' text that arrived, for [`Search::take_texts`].
-    texts: Vec<(usize, Arc<PageText>)>,
+    texts: Vec<(usize, Arc<PageText>, PageTransform)>,
 }
 
 impl Search {
@@ -152,6 +161,27 @@ impl Search {
         self.start(0, First::Done);
     }
 
+    /// Re-runs the search, if any, from `from_page`, keeping the current
+    /// hit current once it is found again: a page turned, and its hits'
+    /// places with it, but not which characters they are.
+    pub fn rerun_keeping(&mut self, from_page: usize) {
+        if self.searched.is_none() {
+            return;
+        }
+        let at_hit = self.at_hit;
+        let keep = self
+            .hits
+            .current()
+            .and_then(|index| self.hits.get(index))
+            .map(|hit| First::Keep {
+                page: hit.page,
+                start: hit.text.range.start,
+                end: hit.text.range.end,
+                at_hit,
+            });
+        self.start(from_page, keep.unwrap_or(First::Done));
+    }
+
     /// Re-runs the search, if any, with the text thread of a new version.
     pub fn rerun(&mut self, from_page: usize) {
         if self.searched.is_some() {
@@ -176,6 +206,25 @@ impl Search {
                         continue;
                     }
                     self.hits.add_page(page, hits);
+                    if let First::Keep {
+                        page: kept,
+                        start,
+                        end,
+                        at_hit,
+                    } = self.first
+                    {
+                        if kept == page {
+                            let same = |hit: &noido_core::Hit| {
+                                hit.page == kept && hit.text.range == (start..end)
+                            };
+                            if let Some(index) = self.hits.first_where(same) {
+                                self.hits.set_current(Some(index));
+                                self.at_hit = at_hit;
+                            }
+                            self.first = First::Done;
+                        }
+                        continue;
+                    }
                     let Some(index) = self.hits.first_on(page) else {
                         continue;
                     };
@@ -184,7 +233,7 @@ impl Search {
                     arrived = match std::mem::replace(&mut self.first, First::Done) {
                         First::Jump => Some(Arrived::Jump),
                         First::Select => Some(Arrived::Selected),
-                        First::Done => continue,
+                        First::Done | First::Keep { .. } => continue,
                     };
                     self.hits.set_current(Some(index));
                 }
@@ -194,7 +243,11 @@ impl Search {
                 } if generation == self.generation && self.searched.is_some() => {
                     self.done = Some(cut_short);
                 }
-                SearchUpdate::Text { page, text, .. } => self.texts.push((page, text)),
+                SearchUpdate::Text {
+                    page,
+                    text,
+                    transform,
+                } => self.texts.push((page, text, transform)),
                 _ => {}
             }
         }
@@ -209,8 +262,16 @@ impl Search {
         }
     }
 
-    /// The pages' text that arrived since last asked.
-    pub fn take_texts(&mut self) -> Vec<(usize, Arc<PageText>)> {
+    /// Has the text thread read `page`'s text again: the page turned.
+    pub fn forget(&self, page: usize) {
+        if let Some(searcher) = &self.searcher {
+            searcher.forget(page);
+        }
+    }
+
+    /// The pages' text that arrived since last asked, each with the
+    /// transform its page had when read.
+    pub fn take_texts(&mut self) -> Vec<(usize, Arc<PageText>, PageTransform)> {
         std::mem::take(&mut self.texts)
     }
 

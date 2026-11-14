@@ -324,7 +324,14 @@ impl SidebarView {
     }
 
     /// Takes in sharp renders; those over a `lowres` thumbnail fade in.
-    pub fn receive(&mut self, ctx: &egui::Context, lowres: Option<&HashMap<usize, PageImage>>) {
+    /// One made before its page last turned (`transforms` says how it is
+    /// now) is dropped.
+    pub fn receive(
+        &mut self,
+        ctx: &egui::Context,
+        lowres: Option<&HashMap<usize, PageImage>>,
+        transforms: &noido_render::Transforms,
+    ) {
         let Some(renderer) = &self.renderer else {
             return;
         };
@@ -334,6 +341,9 @@ impl SidebarView {
             // Scrolled away or closed meanwhile: the tracker has forgotten
             // the page, so it is asked for again when it comes back.
             if !(self.kept.contains(&rendered.page) || self.pinned_kept.contains(&rendered.page)) {
+                continue;
+            }
+            if rendered.transform != transforms.get(rendered.page) {
                 continue;
             }
             match rendered.result {
@@ -356,6 +366,13 @@ impl SidebarView {
                 }
             }
         }
+    }
+
+    /// `page` turned: its sharp render goes, and pages are asked for anew
+    /// (their sizes, and so their scales, may have changed too).
+    pub fn page_turned(&mut self, page: usize, page_count: usize) {
+        self.sharp.remove(&page);
+        self.tracker = RenderTracker::new(page_count);
     }
 
     /// Renders with `renderer` from now on, for a new version of the
