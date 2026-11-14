@@ -5,20 +5,25 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
+use noido_core::PageTransform;
 use noido_core::{Direction, THUMBNAIL_BUDGET, thumbnail_scale, window_keep, window_order};
 use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, Rgba8Image};
+
+use crate::{Transformed, Transforms, open_transformed};
 
 pub struct Thumbnail {
     pub page: usize,
     /// The scale it was rendered at.
     pub scale: f32,
+    /// The page's transform when it was rendered.
+    pub transform: PageTransform,
     pub result: Result<Rgba8Image, EngineError>,
 }
 
 /// Handle to the thumbnail thread. Dropping it stops the thread after its
 /// current page.
 pub struct Thumbnailer {
-    focus: Sender<(usize, Direction)>,
+    focus: Sender<Message>,
     results: Receiver<Thumbnail>,
 }
 
@@ -29,6 +34,7 @@ impl Thumbnailer {
     pub fn start(
         engine: Arc<dyn PdfEngine>,
         bytes: PdfBytes,
+        transforms: Transforms,
         waker: Box<dyn Fn() + Send>,
     ) -> Thumbnailer {
         let (focus, focus_rx) = mpsc::channel();
@@ -37,8 +43,8 @@ impl Thumbnailer {
         let _ = thread::Builder::new()
             .name("noido-thumbnails".into())
             .spawn(move || {
-                if let Ok(document) = engine.open(bytes) {
-                    run(document.as_ref(), &focus_rx, &result_tx, &*waker);
+                if let Ok(document) = open_transformed(engine.as_ref(), bytes, &transforms) {
+                    run(&document, &focus_rx, &result_tx, &*waker);
                 }
             });
         Thumbnailer { focus, results }
@@ -47,7 +53,12 @@ impl Thumbnailer {
     /// The page the reader is at and the direction they last moved in.
     pub fn set_focus(&self, page: usize, direction: Direction) {
         // A send error means the thread is gone; there is nothing to report to.
-        let _ = self.focus.send((page, direction));
+        let _ = self.focus.send(Message::Focus(page, direction));
+    }
+
+    /// Renders `page` again, if it is near the focus: after it was turned.
+    pub fn refresh(&self, page: usize) {
+        let _ = self.focus.send(Message::Refresh(page));
     }
 
     pub fn try_recv(&self) -> Option<Thumbnail> {
@@ -55,16 +66,29 @@ impl Thumbnailer {
     }
 }
 
+/// What the thumbnail thread is told.
+enum Message {
+    /// The page the reader is at and the direction they last moved in.
+    Focus(usize, Direction),
+    /// Render this page again.
+    Refresh(usize),
+}
+
 fn run(
-    document: &dyn Document,
-    focus_rx: &Receiver<(usize, Direction)>,
+    document: &Transformed,
+    messages: &Receiver<Message>,
     results: &Sender<Thumbnail>,
     waker: &dyn Fn(),
 ) {
     let count = document.page_count();
     let mut delivered = vec![false; count];
-    let Ok(mut focus) = focus_rx.recv() else {
-        return;
+    // Waits for the first focus; refreshes before it change nothing.
+    let mut focus = loop {
+        match messages.recv() {
+            Ok(Message::Focus(page, direction)) => break (page, direction),
+            Ok(Message::Refresh(_)) => {}
+            Err(_) => return,
+        }
     };
     loop {
         let (page, direction) = focus;
@@ -74,9 +98,20 @@ fn run(
         for page in window_order(count, page, direction, THUMBNAIL_BUDGET) {
             // The frontend drops thumbnails for every focus it sends, so each
             // one, not just the newest, must make the thread forget them too.
-            for focus in focus_rx.try_iter() {
-                forget_outside(&mut delivered, focus.0);
-                newer = Some(focus);
+            // A refresh starts the window over, so the page is drawn again.
+            for message in messages.try_iter() {
+                match message {
+                    Message::Focus(page, direction) => {
+                        forget_outside(&mut delivered, page);
+                        newer = Some((page, direction));
+                    }
+                    Message::Refresh(page) => {
+                        if let Some(done) = delivered.get_mut(page) {
+                            *done = false;
+                        }
+                        newer = newer.or(Some(focus));
+                    }
+                }
             }
             if newer.is_some() {
                 break;
@@ -84,6 +119,8 @@ fn run(
             if delivered[page] {
                 continue;
             }
+            // Read before the render, so a turn under way stamps it old.
+            let transform = document.transform(page);
             let (scale, result) = crate::caught(|| {
                 let size = document.page_size(page)?;
                 let scale = thumbnail_scale(size);
@@ -94,6 +131,7 @@ fn run(
                 .send(Thumbnail {
                     page,
                     scale,
+                    transform,
                     result,
                 })
                 .is_err()
@@ -106,8 +144,14 @@ fn run(
 
         focus = match newer {
             Some(newer) => newer,
-            None => match focus_rx.recv() {
-                Ok(newer) => newer,
+            None => match messages.recv() {
+                Ok(Message::Focus(page, direction)) => (page, direction),
+                Ok(Message::Refresh(page)) => {
+                    if let Some(done) = delivered.get_mut(page) {
+                        *done = false;
+                    }
+                    focus
+                }
                 Err(_) => return,
             },
         };

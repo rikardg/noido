@@ -12,7 +12,12 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let path = args.get(1).expect("usage: search_text <file.pdf> <query>…");
     let bytes = Arc::new(std::fs::read(path).expect("read file"));
-    let mut searcher = TextSearcher::start(Arc::new(HayroEngine), bytes, Box::new(|| {}));
+    let mut searcher = TextSearcher::start(
+        Arc::new(HayroEngine),
+        bytes,
+        noido_render::Transforms::default(),
+        Box::new(|| {}),
+    );
     for query in &args[2..] {
         let start = Instant::now();
         let generation = searcher.search(query, 0);

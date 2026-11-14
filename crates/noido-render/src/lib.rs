@@ -21,7 +21,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use noido_core::Keep;
+use noido_core::{Keep, PageTransform};
 use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, Rgba8Image, Size};
 
 /// Runs `f`, reporting a panic as an [`EngineError`] rather than letting it
@@ -83,6 +83,8 @@ pub struct RenderRequest {
 pub struct RenderedPage {
     pub page: usize,
     pub scale: f32,
+    /// The page's transform when it was rendered.
+    pub transform: PageTransform,
     pub result: Result<Rgba8Image, EngineError>,
 }
 
@@ -105,10 +107,11 @@ impl Renderer {
     pub fn start(
         engine: Arc<dyn PdfEngine>,
         bytes: PdfBytes,
+        transforms: Transforms,
         waker: Box<dyn Fn() + Send>,
     ) -> Result<(Renderer, DocumentInfo), EngineError> {
         let (opened_tx, opened_rx) = mpsc::sync_channel(1);
-        let renderer = Self::spawn(engine, bytes, waker, Some(opened_tx))
+        let renderer = Self::spawn(engine, bytes, transforms, waker, Some(opened_tx))
             .map_err(|e| EngineError::Open(format!("cannot start render thread: {e}")))?;
         let info = opened_rx
             .recv()
@@ -122,9 +125,10 @@ impl Renderer {
     pub fn start_background(
         engine: Arc<dyn PdfEngine>,
         bytes: PdfBytes,
+        transforms: Transforms,
         waker: Box<dyn Fn() + Send>,
     ) -> Renderer {
-        match Self::spawn(engine, bytes, waker, None) {
+        match Self::spawn(engine, bytes, transforms, waker, None) {
             Ok(renderer) => renderer,
             // Without a thread nothing is rendered, as when opening fails.
             Err(_) => {
@@ -144,6 +148,7 @@ impl Renderer {
     fn spawn(
         engine: Arc<dyn PdfEngine>,
         bytes: PdfBytes,
+        transforms: Transforms,
         waker: Box<dyn Fn() + Send>,
         opened: Option<mpsc::SyncSender<Result<DocumentInfo, EngineError>>>,
     ) -> std::io::Result<Renderer> {
@@ -157,7 +162,7 @@ impl Renderer {
         thread::Builder::new()
             .name("noido-render".into())
             .spawn(move || {
-                let document = match open(engine.as_ref(), bytes) {
+                let document = match open(engine.as_ref(), bytes, &transforms) {
                     Ok((document, info)) => {
                         if let Some(opened) = opened {
                             let _ = opened.send(Ok(info));
@@ -172,7 +177,7 @@ impl Renderer {
                     }
                 };
                 run(
-                    document.as_ref(),
+                    &document,
                     &job_rx,
                     &result_tx,
                     &thread_keep,
@@ -220,8 +225,9 @@ impl Renderer {
 fn open(
     engine: &dyn PdfEngine,
     bytes: PdfBytes,
-) -> Result<(Box<dyn Document>, DocumentInfo), EngineError> {
-    let document = engine.open(bytes)?;
+    transforms: &Transforms,
+) -> Result<(Transformed, DocumentInfo), EngineError> {
+    let document = open_transformed(engine, bytes, transforms)?;
     let page_sizes = (0..document.page_count())
         .map(|page| document.page_size(page))
         .collect::<Result<_, _>>()?;
@@ -241,7 +247,7 @@ pub(crate) fn render_whole(
 }
 
 fn run(
-    document: &dyn Document,
+    document: &Transformed,
     jobs: &Receiver<RenderRequest>,
     results: &Sender<RenderedPage>,
     keep: &Mutex<Keep>,
@@ -276,6 +282,8 @@ fn run(
         if !keep.lock().unwrap().contains(page) {
             continue;
         }
+        // Read before the render, so a turn under way stamps it old.
+        let transform = document.transform(page);
         let result = caught(|| {
             document
                 .page_size(page)
@@ -285,6 +293,7 @@ fn run(
             .send(RenderedPage {
                 page,
                 scale,
+                transform,
                 result,
             })
             .is_err()

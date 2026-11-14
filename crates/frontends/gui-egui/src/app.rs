@@ -3279,8 +3279,13 @@ pub(crate) mod tests {
 
     /// An app on [`BlankEngine`], for tests outside this module.
     pub(crate) fn blank_app() -> NoidoApp {
-        let (renderer, info) =
-            Renderer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {})).unwrap();
+        let (renderer, info) = Renderer::start(
+            Arc::new(BlankEngine),
+            Arc::new(Vec::new()),
+            noido_render::Transforms::default(),
+            Box::new(|| {}),
+        )
+        .unwrap();
         NoidoApp::new(renderer, info)
     }
 
@@ -3364,8 +3369,13 @@ pub(crate) mod tests {
             preset: &str,
             setup: impl FnOnce(NoidoApp) -> NoidoApp,
         ) -> Self {
-            let (renderer, info) =
-                Renderer::start(engine, Arc::new(Vec::new()), Box::new(|| {})).unwrap();
+            let (renderer, info) = Renderer::start(
+                engine,
+                Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            )
+            .unwrap();
             let ctx = egui::Context::default();
             crate::theme::install_preset(&ctx, preset);
             ctx.set_theme(egui::ThemePreference::Dark);
@@ -3477,14 +3487,37 @@ pub(crate) mod tests {
         /// and identified by `key`, and runs a frame.
         fn reload(&mut self, engine: Arc<dyn PdfEngine>, key: DocKey) {
             let bytes = Arc::new(b"new version".to_vec());
-            let (renderer, info) =
-                Renderer::start(engine.clone(), bytes.clone(), Box::new(|| {})).unwrap();
-            let thumbnailer = Thumbnailer::start(engine.clone(), bytes.clone(), Box::new(|| {}));
-            let sidebar =
-                Renderer::start_background(engine.clone(), bytes.clone(), Box::new(|| {}));
-            let linker =
-                noido_render::Linker::start(engine.clone(), bytes.clone(), Box::new(|| {}));
-            let searcher = TextSearcher::start(engine, bytes.clone(), Box::new(|| {}));
+            let (renderer, info) = Renderer::start(
+                engine.clone(),
+                bytes.clone(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            )
+            .unwrap();
+            let thumbnailer = Thumbnailer::start(
+                engine.clone(),
+                bytes.clone(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
+            let sidebar = Renderer::start_background(
+                engine.clone(),
+                bytes.clone(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
+            let linker = noido_render::Linker::start(
+                engine.clone(),
+                bytes.clone(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
+            let searcher = TextSearcher::start(
+                engine,
+                bytes.clone(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
             let reload = crate::watch::Reload {
                 renderer,
                 thumbnailer,
@@ -3507,14 +3540,37 @@ pub(crate) mod tests {
             key: DocKey,
         ) {
             let bytes = Arc::new(Vec::new());
-            let (renderer, info) =
-                Renderer::start(engine.clone(), bytes.clone(), Box::new(|| {})).unwrap();
-            let thumbnailer = Thumbnailer::start(engine.clone(), bytes.clone(), Box::new(|| {}));
-            let sidebar =
-                Renderer::start_background(Arc::new(sidebar), bytes.clone(), Box::new(|| {}));
-            let linker =
-                noido_render::Linker::start(engine.clone(), bytes.clone(), Box::new(|| {}));
-            let searcher = TextSearcher::start(engine, bytes.clone(), Box::new(|| {}));
+            let (renderer, info) = Renderer::start(
+                engine.clone(),
+                bytes.clone(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            )
+            .unwrap();
+            let thumbnailer = Thumbnailer::start(
+                engine.clone(),
+                bytes.clone(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
+            let sidebar = Renderer::start_background(
+                Arc::new(sidebar),
+                bytes.clone(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
+            let linker = noido_render::Linker::start(
+                engine.clone(),
+                bytes.clone(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
+            let searcher = TextSearcher::start(
+                engine,
+                bytes.clone(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
             self.reloads.put(crate::watch::Reload {
                 renderer,
                 thumbnailer,
@@ -6603,8 +6659,12 @@ pub(crate) mod tests {
     #[test]
     fn page_image_prefers_full_render() {
         let mut h = Harness::build(|app| {
-            let thumbnailer =
-                Thumbnailer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}));
+            let thumbnailer = Thumbnailer::start(
+                Arc::new(BlankEngine),
+                Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
             app.with_thumbnails(thumbnailer)
         });
         let full = blank_texture(&h.ctx, "full");
@@ -6631,8 +6691,12 @@ pub(crate) mod tests {
         let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
         let engine = Arc::new(GatedEngine(Arc::new(std::sync::Mutex::new(gate_rx))));
         let mut h = Harness::build_with(engine, |app| {
-            let thumbnailer =
-                Thumbnailer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}));
+            let thumbnailer = Thumbnailer::start(
+                Arc::new(BlankEngine),
+                Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
             app.with_thumbnails(thumbnailer)
         });
         for _ in 0..10 {
@@ -6693,8 +6757,12 @@ pub(crate) mod tests {
         let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
         let engine = Arc::new(GatedEngine(Arc::new(std::sync::Mutex::new(gate_rx))));
         let mut h = Harness::build_with(engine, |app| {
-            let thumbnailer =
-                Thumbnailer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}));
+            let thumbnailer = Thumbnailer::start(
+                Arc::new(BlankEngine),
+                Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
             app.with_thumbnails(thumbnailer)
         });
         let has_thumbnail =
@@ -6730,7 +6798,12 @@ pub(crate) mod tests {
         let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
         let gated = Arc::new(GatedEngine(Arc::new(std::sync::Mutex::new(gate_rx))));
         let mut h = Harness::build(|app| {
-            let thumbnailer = Thumbnailer::start(gated, Arc::new(Vec::new()), Box::new(|| {}));
+            let thumbnailer = Thumbnailer::start(
+                gated,
+                Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
             app.with_thumbnails(thumbnailer)
         });
         h.until(|h| h.app.textures.contains_key(&0));
@@ -6747,8 +6820,12 @@ pub(crate) mod tests {
     #[test]
     fn rerender_does_not_fade() {
         let mut h = Harness::build(|app| {
-            let thumbnailer =
-                Thumbnailer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}));
+            let thumbnailer = Thumbnailer::start(
+                Arc::new(BlankEngine),
+                Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
             app.with_thumbnails(thumbnailer)
         });
         h.until(|h| {
@@ -7179,8 +7256,12 @@ pub(crate) mod tests {
     #[test]
     fn failed_thumbnail_drops_old_one() {
         let mut h = Harness::build(|app| {
-            let thumbnailer =
-                Thumbnailer::start(Arc::new(BlankEngine), Arc::new(Vec::new()), Box::new(|| {}));
+            let thumbnailer = Thumbnailer::start(
+                Arc::new(BlankEngine),
+                Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
             app.with_thumbnails(thumbnailer)
         });
         let has_thumbnail =
@@ -7233,8 +7314,12 @@ pub(crate) mod tests {
     /// A harness with the sidebar open, its sharp thumbnails from `engine`.
     fn with_sidebar(engine: RecordingEngine) -> Harness {
         let mut h = Harness::build(|app| {
-            let renderer =
-                Renderer::start_background(Arc::new(engine), Arc::new(Vec::new()), Box::new(|| {}));
+            let renderer = Renderer::start_background(
+                Arc::new(engine),
+                Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
             app.with_sidebar_renderer(renderer)
         });
         h.press(egui::Key::F9, Modifiers::NONE);
@@ -7447,11 +7532,13 @@ pub(crate) mod tests {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
             let sidebar = Renderer::start_background(
                 Arc::new(BlankEngine),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
             app.with_thumbnails(thumbnailer)
@@ -7587,9 +7674,15 @@ pub(crate) mod tests {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
-            let sidebar = Renderer::start_background(engine, Arc::new(Vec::new()), Box::new(|| {}));
+            let sidebar = Renderer::start_background(
+                engine,
+                Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
             app.with_thumbnails(thumbnailer)
                 .with_sidebar_renderer(sidebar)
         });
@@ -8057,6 +8150,7 @@ pub(crate) mod tests {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
             app.with_thumbnails(thumbnailer)
@@ -8246,6 +8340,7 @@ pub(crate) mod tests {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
             app.with_thumbnails(thumbnailer)
@@ -8278,9 +8373,15 @@ pub(crate) mod tests {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
-            let sidebar = Renderer::start_background(gated, Arc::new(Vec::new()), Box::new(|| {}));
+            let sidebar = Renderer::start_background(
+                gated,
+                Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
             app.with_thumbnails(thumbnailer)
                 .with_sidebar_renderer(sidebar)
         });
@@ -8317,11 +8418,13 @@ pub(crate) mod tests {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
             let sidebar = Renderer::start_background(
                 Arc::new(BlankEngine),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
             app.with_thumbnails(thumbnailer)
@@ -8861,9 +8964,15 @@ pub(crate) mod tests {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
-            let sidebar = Renderer::start_background(engine, Arc::new(Vec::new()), Box::new(|| {}));
+            let sidebar = Renderer::start_background(
+                engine,
+                Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            );
             app.with_thumbnails(thumbnailer)
                 .with_sidebar_renderer(sidebar)
         });
@@ -9114,6 +9223,7 @@ pub(crate) mod tests {
             app.with_thumbnails(Thumbnailer::start(
                 Arc::new(UnopenableEngine),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
         });
@@ -9173,6 +9283,7 @@ pub(crate) mod tests {
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
         });
@@ -9969,6 +10080,7 @@ pub(crate) mod tests {
             app.with_thumbnails(Thumbnailer::start(
                 engine,
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
         });
@@ -10054,6 +10166,7 @@ pub(crate) mod tests {
             let renderer = Renderer::start_background(
                 Arc::new(SlowEngine),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
             app.with_sidebar_renderer(renderer)
@@ -10741,6 +10854,7 @@ pub(crate) mod tests {
             app.with_searcher(TextSearcher::start(
                 Arc::new(searcher),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
         })
@@ -11822,6 +11936,7 @@ pub(crate) mod tests {
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
         })
@@ -12239,11 +12354,13 @@ pub(crate) mod tests {
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
             .with_searcher(TextSearcher::start(
                 Arc::new(searcher),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
         });
@@ -12531,6 +12648,7 @@ pub(crate) mod tests {
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
             .opening_at(Some(target))
@@ -12564,6 +12682,7 @@ pub(crate) mod tests {
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
             .opening_at(Some(Target::Named("sec".into())))
@@ -12609,6 +12728,7 @@ pub(crate) mod tests {
                 app.with_linker(noido_render::Linker::start(
                     Arc::new(linker),
                     Arc::new(Vec::new()),
+                    noido_render::Transforms::default(),
                     Box::new(|| {}),
                 ))
                 .with_activation(activation)
@@ -13135,11 +13255,13 @@ pub(crate) mod tests {
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
             .with_searcher(TextSearcher::start(
                 Arc::new(searcher),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
         });
@@ -14800,6 +14922,7 @@ pub(crate) mod tests {
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
                 Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
         })
