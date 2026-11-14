@@ -90,7 +90,14 @@ pub struct RenderedPage {
 
 #[derive(Clone, Debug)]
 pub struct DocumentInfo {
+    /// Each page as shown: turned and scaled by `transforms`.
     pub page_sizes: Vec<Size>,
+    /// Each page as the engine has it: unturned and unscaled.
+    pub engine_sizes: Vec<Size>,
+    /// The transforms the document was opened with, fitted to its pages
+    /// when scale to fit is on. The shared transforms are the app's to
+    /// write; opening does not touch them.
+    pub transforms: noido_core::PageTransforms,
 }
 
 /// Handle to the render thread. Dropping it stops the thread after its current job.
@@ -228,13 +235,22 @@ fn open(
     transforms: &Transforms,
 ) -> Result<(Transformed, DocumentInfo), EngineError> {
     let document = open_transformed(engine, bytes, transforms)?;
-    if transforms.scale_to_fit() {
-        transforms.refit(&document.engine_sizes()?);
-    }
-    let page_sizes = (0..document.page_count())
-        .map(|page| document.page_size(page))
-        .collect::<Result<_, _>>()?;
-    Ok((document, DocumentInfo { page_sizes }))
+    let engine_sizes = document.engine_sizes()?;
+    let mut fitted = transforms.snapshot();
+    fitted.refit(&engine_sizes);
+    let page_sizes = engine_sizes
+        .iter()
+        .enumerate()
+        .map(|(page, &size)| fitted.get(page).size(size))
+        .collect();
+    Ok((
+        document,
+        DocumentInfo {
+            page_sizes,
+            engine_sizes,
+            transforms: fitted,
+        },
+    ))
 }
 
 /// `page`, of `size`, rendered at about `scale`: stretched to the nearest

@@ -299,10 +299,12 @@ mod tests {
         fn page_count(&self) -> usize {
             self.0
         }
-        fn page_size(&self, _page: usize) -> Result<Size, EngineError> {
+        /// Page 0 is twice the size of the others.
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            let side = if page == 0 { 200.0 } else { 100.0 };
             Ok(Size {
-                width: 100.0,
-                height: 100.0,
+                width: side,
+                height: side,
             })
         }
         fn render_tile(&self, _: usize, _: f32, _: PixelRect) -> Result<Rgba8Image, EngineError> {
@@ -447,6 +449,48 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// Opening a version that is then dropped leaves the shown document's
+    /// transforms as they were.
+    #[test]
+    fn a_dropped_version_leaves_the_shared_transforms() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("a.pdf");
+        fs::write(&path, b"none yet").unwrap();
+        let current = DocKey::new(b"four", &path);
+        let mut shown = noido_core::PageTransforms::default();
+        shown.set_scale_to_fit(true);
+        shown.set(
+            1,
+            noido_core::PageTransform {
+                scale: 0.5,
+                ..Default::default()
+            },
+        );
+        let transforms = Transforms::new(shown.clone());
+        assert!(open_new(&engine(), &transforms, &path, &current, &no_waker()).is_none());
+        assert_eq!(transforms.snapshot(), shown);
+    }
+
+    /// A good version carries its fitted transforms; the shown ones wait
+    /// for the app.
+    #[test]
+    fn a_reload_carries_its_fit_and_leaves_the_shared_transforms() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("a.pdf");
+        fs::write(&path, b"seven!!").unwrap();
+        let current = DocKey::new(b"four", &path);
+        let transforms = Transforms::default();
+        transforms.set_scale_to_fit(true);
+        let reload = open_new(&engine(), &transforms, &path, &current, &no_waker()).unwrap();
+        assert_eq!(reload.info.engine_sizes.len(), 7);
+        assert!(reload.info.transforms.scale_to_fit());
+        // The big first page is fitted in the reload's transforms...
+        assert_eq!(reload.info.transforms.get(0).scale, 0.5);
+        assert_eq!(reload.info.page_sizes[0].width, 100.0);
+        // ...and the shared ones are left as they were.
+        assert_eq!(transforms.snapshot().iter().count(), 0);
     }
 
     #[test]

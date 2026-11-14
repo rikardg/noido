@@ -42,6 +42,11 @@ impl Transforms {
         self.0.write().unwrap().set_scale_to_fit(on);
     }
 
+    /// Replaces every page's transform and the toggle.
+    pub fn replace(&self, transforms: PageTransforms) {
+        *self.0.write().unwrap() = transforms;
+    }
+
     /// Sets every page's scale from the engine's (unturned) page sizes.
     pub fn refit(&self, engine_sizes: &[Size]) {
         self.0.write().unwrap().refit(engine_sizes);
