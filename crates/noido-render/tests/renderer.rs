@@ -469,3 +469,38 @@ fn renderer_reports_turned_sizes_and_stamps() {
     let image = rendered.result.unwrap();
     assert!(image.width() > image.height());
 }
+
+#[test]
+fn start_with_scale_to_fit_reports_fitted_sizes() {
+    let bytes: PdfBytes = Arc::new(
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/mixed-sizes.pdf"
+        ))
+        .unwrap(),
+    );
+    let transforms = noido_render::Transforms::default();
+    transforms.set_scale_to_fit(true);
+    let (_renderer, info) = Renderer::start(
+        Arc::new(HayroEngine),
+        bytes.clone(),
+        transforms.clone(),
+        no_waker(),
+    )
+    .unwrap();
+    let a4 = Size {
+        width: 595.0,
+        height: 842.0,
+    };
+    assert_eq!(info.page_sizes, vec![a4; 4]);
+    assert_eq!(transforms.get(3).scale, 0.5);
+
+    let (_renderer, info) = Renderer::start(
+        Arc::new(HayroEngine),
+        bytes,
+        noido_render::Transforms::default(),
+        no_waker(),
+    )
+    .unwrap();
+    assert_eq!(info.page_sizes[3].width, 1190.0);
+}

@@ -33,6 +33,20 @@ impl Transforms {
         self.0.read().unwrap().clone()
     }
 
+    /// Whether the document is scaled to fit.
+    pub fn scale_to_fit(&self) -> bool {
+        self.0.read().unwrap().scale_to_fit()
+    }
+
+    pub fn set_scale_to_fit(&self, on: bool) {
+        self.0.write().unwrap().set_scale_to_fit(on);
+    }
+
+    /// Sets every page's scale from the engine's (unturned) page sizes.
+    pub fn refit(&self, engine_sizes: &[Size]) {
+        self.0.write().unwrap().refit(engine_sizes);
+    }
+
     /// Drops transforms at or past `page_count`.
     pub fn retain_below(&self, page_count: usize) {
         self.0.write().unwrap().retain_below(page_count);
@@ -64,15 +78,22 @@ impl Transformed {
         self.transforms.get(page)
     }
 
-    /// A destination as shown: its point turned with the page it is on.
-    /// Each turned coordinate comes from one unturned one, so a missing
-    /// coordinate leaves the one it turns into missing.
+    /// The inner document's page sizes: unturned and unscaled.
+    pub fn engine_sizes(&self) -> Result<Vec<Size>, EngineError> {
+        (0..self.inner.page_count())
+            .map(|page| self.inner.page_size(page))
+            .collect()
+    }
+
+    /// A destination as shown: its point turned and scaled with the page
+    /// it is on. Each shown coordinate comes from one engine one, so a
+    /// missing coordinate leaves the one it becomes missing.
     fn destination(&self, target: Destination) -> Destination {
-        let rotation = self.transform(target.page).rotation;
+        let transform = self.transform(target.page);
         let Ok(size) = self.inner.page_size(target.page) else {
             return target;
         };
-        let p = rotation.point(
+        let p = transform.point(
             Point {
                 x: target.x.unwrap_or(f32::NAN),
                 y: target.y.unwrap_or(f32::NAN),
@@ -114,7 +135,7 @@ impl Document for Transformed {
 
     fn page_size(&self, page: usize) -> Result<Size, EngineError> {
         let size = self.inner.page_size(page)?;
-        Ok(self.transform(page).rotation.size(size))
+        Ok(self.transform(page).size(size))
     }
 
     fn render_tile(
@@ -123,7 +144,11 @@ impl Document for Transformed {
         scale: f32,
         rect: PixelRect,
     ) -> Result<Rgba8Image, EngineError> {
-        let rotation = self.transform(page).rotation;
+        let transform = self.transform(page);
+        let rotation = transform.rotation;
+        // The shown page at `scale` is the turned page at `scale` times
+        // the page's own scale.
+        let scale = scale * transform.scale;
         if rotation == noido_core::Rotation::R0 {
             return self.inner.render_tile(page, scale, rect);
         }
@@ -166,16 +191,17 @@ impl Document for Transformed {
 
     fn text(&self, page: usize) -> Result<Vec<Glyph>, EngineError> {
         let glyphs = self.inner.text(page)?;
-        let rotation = self.transform(page).rotation;
-        if rotation == noido_core::Rotation::R0 {
+        let transform = self.transform(page);
+        if transform.is_identity() {
             return Ok(glyphs);
         }
         let size = self.inner.page_size(page)?;
         Ok(glyphs
             .into_iter()
             .map(|g| Glyph {
-                origin: rotation.point(g.origin, size),
-                quad: rotation.quad(g.quad, size),
+                origin: transform.point(g.origin, size),
+                quad: transform.quad(g.quad, size),
+                size: g.size * transform.scale,
                 ..g
             })
             .collect())
@@ -183,7 +209,7 @@ impl Document for Transformed {
 
     fn links(&self, page: usize) -> Result<Vec<Link>, EngineError> {
         let links = self.inner.links(page)?;
-        let rotation = self.transform(page).rotation;
+        let transform = self.transform(page);
         let size = self.inner.page_size(page)?;
         Ok(links
             .into_iter()
@@ -191,7 +217,7 @@ impl Document for Transformed {
                 areas: link
                     .areas
                     .into_iter()
-                    .map(|a| rotation.rect(a, size))
+                    .map(|a| transform.rect(a, size))
                     .collect(),
                 target: self.link_target(link.target),
             })
