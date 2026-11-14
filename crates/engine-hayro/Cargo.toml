@@ -12,6 +12,7 @@ publish.workspace = true
 noido-engine.workspace = true
 hayro.workspace = true
 roxmltree.workspace = true
+self_cell.workspace = true
 
 [lints]
 workspace = true

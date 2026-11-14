@@ -33,7 +33,9 @@ use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, Rgba8Image, Size}
 pub(crate) fn caught<T>(f: impl FnOnce() -> Result<T, EngineError>) -> Result<T, EngineError> {
     // The engine is not `UnwindSafe`, and does not need to be: nothing reads
     // state a half-finished render left behind. The parse is only read, and
-    // each render builds its own cache.
+    // a render that panics takes its render cache down with it: the engine
+    // puts the cache back only when the render ends normally, so the next
+    // render starts a fresh one.
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(result) => result,
         Err(payload) => Err(EngineError::Render(format!(

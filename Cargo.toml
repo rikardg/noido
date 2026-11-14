@@ -29,6 +29,7 @@ noido-settings = { path = "crates/noido-settings" }
 noido-state = { path = "crates/noido-state" }
 noido-text = { path = "crates/noido-text" }
 noido-macos = { path = "crates/noido-macos" }
+self_cell = "1"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false }
 objc2-app-kit = { version = "0.3", default-features = false }
