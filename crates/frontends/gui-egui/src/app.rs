@@ -113,6 +113,11 @@ pub struct NoidoApp {
     renderer: Renderer,
     /// How the reader turns pages, shared with every thread's document.
     transforms: noido_render::Transforms,
+    /// Each page as the engine has it: unturned and unscaled.
+    engine_sizes: Vec<noido_engine::Size>,
+    /// The transforms the document opened with, fitted, until the shared
+    /// ones take them in [`NoidoApp::with_transforms`].
+    opened_with: Option<noido_core::PageTransforms>,
     view: View,
     tracker: RenderTracker,
     textures: HashMap<usize, PageImage>,
@@ -317,6 +322,8 @@ impl NoidoApp {
         Self {
             renderer,
             transforms: noido_render::Transforms::default(),
+            engine_sizes: info.engine_sizes,
+            opened_with: Some(info.transforms),
             view: View::new(info.page_sizes),
             tracker: RenderTracker::new(page_count),
             textures: HashMap::new(),
@@ -409,8 +416,14 @@ impl NoidoApp {
     }
 
     /// Shows pages with `transforms`, the ones its threads were started
-    /// with.
+    /// with. Writes the opened document's fit into them, so it must be
+    /// called before anything is asked of the threads.
     pub fn with_transforms(mut self, transforms: noido_render::Transforms) -> Self {
+        // Opening leaves the shared transforms alone; they take the fit
+        // here, before any thread is asked for anything.
+        if let Some(opened_with) = self.opened_with.take() {
+            transforms.replace(opened_with);
+        }
         self.transforms = transforms;
         self
     }
@@ -875,28 +888,57 @@ impl NoidoApp {
 
     /// Turns `page` to `rotation` now. The view keeps its place; what was
     /// read or drawn from the page's old shape is read and drawn again.
+    /// With scale to fit on, every page is fitted again.
     fn turn_page(&mut self, page: usize, rotation: noido_core::Rotation) {
-        let old = self.transforms.get(page).rotation;
-        if old == rotation {
+        if self.transforms.get(page).rotation == rotation {
             return;
         }
-        let Some(shown) = self.view.layout().page_size(page) else {
+        let engine_sizes = self.engine_sizes();
+        let mut new = self.transforms.snapshot();
+        let mut transform = new.get(page);
+        transform.rotation = rotation;
+        new.set(page, transform);
+        new.refit(&engine_sizes);
+        self.reshape(new, &engine_sizes);
+    }
+
+    /// Turns scale to fit on or off, and fits every page (or restores
+    /// their sizes).
+    fn toggle_scale_to_fit(&mut self) {
+        let engine_sizes = self.engine_sizes();
+        let mut new = self.transforms.snapshot();
+        new.set_scale_to_fit(!new.scale_to_fit());
+        new.refit(&engine_sizes);
+        self.reshape(new, &engine_sizes);
+    }
+
+    /// Each page's size as the engine has it: unturned and unscaled.
+    fn engine_sizes(&self) -> Vec<noido_engine::Size> {
+        self.engine_sizes.clone()
+    }
+
+    /// Moves the pages from the transforms they have to `new`, whose
+    /// pages' `engine_sizes` are given. The view keeps its place and is
+    /// arranged once; what was read or drawn from a changed page's old
+    /// shape is read and drawn again.
+    fn reshape(&mut self, new: noido_core::PageTransforms, engine_sizes: &[noido_engine::Size]) {
+        let old = self.transforms.snapshot();
+        let changed: Vec<usize> = (0..engine_sizes.len())
+            .filter(|&page| old.get(page) != new.get(page))
+            .collect();
+        self.transforms.set_scale_to_fit(new.scale_to_fit());
+        if changed.is_empty() {
             return;
-        };
-        let unturned = old.size(shown);
-        self.transforms.set(
-            page,
-            noido_core::PageTransform {
-                rotation,
-                ..noido_core::PageTransform::default()
-            },
-        );
-        let remap = move |p: noido_core::DocPoint| {
-            let q = noido_core::Rotation::remap(
+        }
+        for &page in &changed {
+            self.transforms.set(page, new.get(page));
+        }
+        let remap = |page: usize, p: noido_core::DocPoint| {
+            let q = noido_core::PageTransform::remap(
                 noido_engine::Point { x: p.x, y: p.y },
-                old,
-                rotation,
-                unturned,
+                old.get(page),
+                new.get(page),
+                engine_sizes[page],
             );
             noido_core::DocPoint {
                 x: q.x,
@@ -904,33 +946,43 @@ impl NoidoApp {
                 ..p
             }
         };
-        self.view
-            .set_page_size(page, rotation.size(unturned), remap);
-        self.history.map_points(page, remap);
+        let sizes: Vec<_> = changed
+            .iter()
+            .map(|&page| (page, new.get(page).size(engine_sizes[page])))
+            .collect();
+        self.view.set_page_sizes(&sizes, remap);
+        for &page in &changed {
+            self.history.map_points(page, |p| remap(page, p));
+        }
         let page_count = self.view.layout().page_count();
         // Every page is asked for anew: a fit's scale may have changed.
         self.tracker = RenderTracker::new(page_count);
-        self.textures.remove(&page);
-        if let Some(thumbnails) = &mut self.thumbnails {
-            thumbnails.textures.remove(&page);
-            thumbnails.thumbnailer.refresh(page);
+        let mut hits_moved = false;
+        for &page in &changed {
+            self.textures.remove(&page);
+            if let Some(thumbnails) = &mut self.thumbnails {
+                thumbnails.textures.remove(&page);
+                thumbnails.thumbnailer.refresh(page);
+            }
+            self.sidebar_view.page_turned(page, page_count);
+            self.texts.forget(page);
+            self.search_state.forget(page);
+            hits_moved |= !self.search_state.hits.on_page(page).is_empty();
         }
-        self.sidebar_view.page_turned(page, page_count);
-        self.texts.forget(page);
-        self.search_state.forget(page);
-        // Only the turned page's hits moved; the search runs again only for
-        // them, and keeps the reader's current hit.
-        if !self.search_state.hits.on_page(page).is_empty() {
+        // Only the changed pages' hits moved; the search runs again only
+        // for them, and keeps the reader's current hit.
+        if hits_moved {
             let from = self.view.centre_page().unwrap_or(0);
             self.search_state.rerun_keeping(from);
         }
         self.links.forget_pages();
-        // The pagelet on the page opens again in the page's new shape, at
-        // its place and width.
-        if self
+        // The pagelet on a changed page opens again in the page's new
+        // shape, at its place and width.
+        if let Some(page) = self
             .pin_preview
             .as_ref()
-            .is_some_and(|preview| preview.page == page)
+            .map(|preview| preview.page)
+            .filter(|page| changed.contains(page))
         {
             self.close_pagelet();
             self.pending_pagelet = Some(page);
@@ -945,15 +997,28 @@ impl NoidoApp {
             _ => current,
         };
         let (width, height) = self.view.viewport_size();
-        let mut view = View::new(reload.info.page_sizes);
+        // The shared transforms take the new version's fit now that it is
+        // the shown one, and not before.
+        let page_count = reload.info.engine_sizes.len();
+        let mut fitted = self.transforms.snapshot();
+        fitted.retain_below(page_count);
+        fitted.refit(&reload.info.engine_sizes);
+        let page_sizes = reload
+            .info
+            .engine_sizes
+            .iter()
+            .enumerate()
+            .map(|(page, &size)| fitted.get(page).size(size))
+            .collect();
+        self.transforms.replace(fitted);
+        self.engine_sizes = reload.info.engine_sizes;
+        let mut view = View::new(page_sizes);
         view.set_viewport_size(width, height);
         if let Some(state) = &state {
             // Clamps to the last page when pages were lost.
             view.restore(state);
         }
-        let page_count = view.layout().page_count();
         self.pins.retain_below(page_count);
-        self.transforms.retain_below(page_count);
         if self
             .pin_preview
             .as_ref()
@@ -1028,11 +1093,12 @@ impl NoidoApp {
         if let Some(state) = &restored {
             // Before the view: its saved place is on the pages as turned.
             let page_count = self.view.layout().page_count();
-            for (page, transform) in state.transforms.iter() {
-                if page < page_count {
-                    self.turn_page(page, transform.rotation);
-                }
-            }
+            let mut saved = state.transforms.clone();
+            saved.retain_below(page_count);
+            // The file keeps the turns and the toggle, not the scales.
+            let engine_sizes = self.engine_sizes();
+            saved.refit(&engine_sizes);
+            self.reshape(saved, &engine_sizes);
             self.transforms.retain_below(page_count);
             self.view.restore(&state.view);
             self.sidebar = state.sidebar;
@@ -1390,6 +1456,7 @@ impl NoidoApp {
             dual: self.view.dual(),
             odd_left: self.view.odd_left(),
             gapless: self.view.gapless(),
+            scale_to_fit: self.transforms.scale_to_fit(),
             select_tool: self.select.tool,
             keymap: &self.keymap,
             counter: self.search_state.counter(),
@@ -1444,6 +1511,7 @@ impl NoidoApp {
     /// window, for dialogs that ask for it.
     fn apply(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>, action: Action) {
         match action {
+            Action::ToggleScaleToFit => self.toggle_scale_to_fit(),
             Action::ToggleSidebar => {
                 self.sidebar.open = !self.sidebar.open;
                 self.sidebar_opened_by_search = false;
@@ -10819,6 +10887,8 @@ pub(crate) mod tests {
         labels: Arc<Vec<Option<String>>>,
         /// The outline.
         outline: Arc<Vec<noido_engine::OutlineEntry>>,
+        /// Each page's size; Letter where none is given.
+        sizes: Arc<Vec<Size>>,
     }
 
     impl TextEngine {
@@ -10838,7 +10908,13 @@ pub(crate) mod tests {
                 named: Arc::default(),
                 labels: Arc::default(),
                 outline: Arc::default(),
+                sizes: Arc::default(),
             }
+        }
+
+        fn with_sizes(mut self, sizes: Vec<Size>) -> TextEngine {
+            self.sizes = Arc::new(sizes);
+            self
         }
 
         fn with_outline(mut self, outline: Vec<noido_engine::OutlineEntry>) -> TextEngine {
@@ -10914,7 +10990,10 @@ pub(crate) mod tests {
             self.pages.len()
         }
         fn page_size(&self, page: usize) -> Result<Size, EngineError> {
-            BlankDocument.page_size(page)
+            match self.sizes.get(page) {
+                Some(&size) => Ok(size),
+                None => BlankDocument.page_size(page),
+            }
         }
         fn render_tile(
             &self,
@@ -16235,5 +16314,376 @@ pub(crate) mod tests {
         // The panel itself turns, not just the page inside the old box.
         let panel = h.app.pin_preview.as_ref().unwrap().rect;
         assert!(panel.width() > panel.height(), "{panel:?}");
+    }
+
+    // ---- Scale to fit ----
+
+    fn page_of(width: f32, height: f32) -> Size {
+        Size { width, height }
+    }
+
+    /// Five pages with text: 0 to 3 are A4, page 4 is twice as large.
+    fn mixed_engine() -> TextEngine {
+        let mut sizes = vec![page_of(595.0, 842.0); 4];
+        sizes.push(page_of(1190.0, 1684.0));
+        TextEngine::new(&[&["the cat sat"] as &[&str]; 5]).with_sizes(sizes)
+    }
+
+    /// A harness on `engine` whose text thread shares the app's transforms.
+    fn fitting(engine: &TextEngine) -> Harness {
+        let searcher = engine.clone();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), move |app| {
+            let transforms = app.transforms.clone();
+            app.with_searcher(TextSearcher::start(
+                Arc::new(searcher),
+                Arc::new(Vec::new()),
+                transforms,
+                Box::new(|| {}),
+            ))
+        });
+        h.frames(2, vec![]);
+        h
+    }
+
+    fn toggle_scale_to_fit(h: &mut Harness) {
+        h.app.queued.push(Action::ToggleScaleToFit);
+        h.frames(3, vec![]);
+    }
+
+    fn shown(h: &Harness, page: usize) -> Size {
+        h.app.view.layout().page_size(page).unwrap()
+    }
+
+    #[test]
+    fn scale_to_fit_toggles_and_refits_every_page() {
+        let mut h = fitting(&mixed_engine());
+        assert!(!h.app.transforms.scale_to_fit());
+        assert_eq!(shown(&h, 4), page_of(1190.0, 1684.0));
+        toggle_scale_to_fit(&mut h);
+        assert!(h.app.transforms.scale_to_fit());
+        assert_eq!(shown(&h, 4), page_of(595.0, 842.0));
+        assert_eq!(shown(&h, 0), page_of(595.0, 842.0));
+        assert_eq!(h.app.transforms.get(4).scale, 0.5);
+        toggle_scale_to_fit(&mut h);
+        assert!(!h.app.transforms.scale_to_fit());
+        assert_eq!(shown(&h, 4), page_of(1190.0, 1684.0));
+        assert_eq!(h.app.transforms.get(4).scale, 1.0);
+    }
+
+    #[test]
+    fn scale_to_fit_gives_the_ordinary_pages_the_window_width() {
+        let mut h = fitting(&mixed_engine());
+        let width = |h: &Harness, page: usize| {
+            let a = screen_pos(h, page, 0.0, 0.0);
+            let b = screen_pos(h, page, shown(h, page).width, 0.0);
+            b.x - a.x
+        };
+        let before = width(&h, 0);
+        toggle_scale_to_fit(&mut h);
+        // The oversized page no longer sets the zoom.
+        assert!(width(&h, 0) > before * 1.9, "{before} vs {}", width(&h, 0));
+        assert_eq!(shown(&h, 4).width, shown(&h, 0).width);
+    }
+
+    #[test]
+    fn scale_to_fit_keeps_the_view_on_its_page() {
+        for page in [4, 2] {
+            let mut h = fitting(&mixed_engine());
+            h.app.arrival = Some((Target::Page(page), false));
+            h.frames(4, vec![]);
+            let before = h.centre();
+            assert_eq!(
+                before.page,
+                page,
+                "{before:?} {:?} {:?}",
+                h.app.view.offset(),
+                h.app.view.layout().page_rect(page)
+            );
+            let size = shown(&h, page);
+            toggle_scale_to_fit(&mut h);
+            let after = h.centre();
+            assert_eq!(
+                after.page,
+                page,
+                "{before:?} {after:?} {:?} {:?}",
+                h.app.view.offset(),
+                h.app.view.layout().page_rect(page)
+            );
+            let factor = shown(&h, page).width / size.width;
+            assert!(
+                (after.x - before.x * factor).abs() < 1.0,
+                "{before:?} {after:?}"
+            );
+            assert!(
+                (after.y - before.y * factor).abs() < 1.0,
+                "{before:?} {after:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rotating_a_page_refits_while_scale_to_fit_is_on() {
+        let mut h = fitting(&mixed_engine());
+        toggle_scale_to_fit(&mut h);
+        h.app.set_rotation(4, Rotation::R90);
+        h.frames(2, vec![]);
+        // 1684 x 1190 against the box 595 x 842.
+        let size = shown(&h, 4);
+        assert!((size.width - 595.0).abs() < 0.5, "{size:?}");
+        assert!(
+            (size.height - 1190.0 * 595.0 / 1684.0).abs() < 0.5,
+            "{size:?}"
+        );
+        assert_eq!(h.app.transforms.get(4).rotation, Rotation::R90);
+        assert_eq!(shown(&h, 0), page_of(595.0, 842.0));
+    }
+
+    #[test]
+    fn scale_to_fit_is_saved_and_restored() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = fitting(&mixed_engine());
+        toggle_scale_to_fit(&mut h);
+        let state = h.app.doc_state().unwrap();
+        assert!(state.transforms.scale_to_fit());
+        // Reopened with the pages as the engine has them.
+        let restored = Harness::build_with(Arc::new(mixed_engine()), |app| {
+            app.with_persistence(
+                Store::at(dir.path()),
+                test_slot(dir.path()),
+                Some(state.clone()),
+            )
+        });
+        assert!(restored.app.transforms.scale_to_fit());
+        assert_eq!(shown(&restored, 4), page_of(595.0, 842.0));
+        // And as `document::open` starts it: the threads already fit.
+        let transforms = noido_render::Transforms::new(state.transforms.clone());
+        let opened =
+            Harness::build_turned(Arc::new(mixed_engine()), "adwaita", transforms, |app| {
+                app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(state))
+            });
+        assert!(opened.app.transforms.scale_to_fit());
+        assert_eq!(shown(&opened, 4), page_of(595.0, 842.0));
+    }
+
+    /// The state as `document::open` gets it from disk: the file keeps
+    /// the toggle and the turns, never the scales.
+    #[test]
+    fn scale_to_fit_comes_back_from_the_state_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = fitting(&mixed_engine());
+        toggle_scale_to_fit(&mut h);
+        let store = Store::at(dir.path());
+        let slot = test_slot(dir.path());
+        store.save(&slot, &h.app.doc_state().unwrap()).unwrap();
+        let (slot, loaded) = store.load(test_key());
+        let loaded = loaded.unwrap();
+        assert!(loaded.transforms.scale_to_fit());
+        assert_eq!(loaded.transforms.get(4).scale, 1.0);
+        let transforms = noido_render::Transforms::new(loaded.transforms.clone());
+        let opened =
+            Harness::build_turned(Arc::new(mixed_engine()), "adwaita", transforms, |app| {
+                app.with_persistence(store, slot, Some(loaded))
+            });
+        assert!(opened.app.transforms.scale_to_fit());
+        assert_eq!(opened.app.transforms.get(4).scale, 0.5);
+        assert_eq!(shown(&opened, 4), page_of(595.0, 842.0));
+    }
+
+    /// Three pages, the last of size `last`.
+    fn trio_engine(last: Size) -> TextEngine {
+        TextEngine::new(&[&["the cat sat"] as &[&str]; 3]).with_sizes(vec![
+            page_of(595.0, 842.0),
+            page_of(595.0, 842.0),
+            last,
+        ])
+    }
+
+    fn new_version() -> DocKey {
+        DocKey::new(b"new version", std::path::Path::new("/test.pdf"))
+    }
+
+    #[test]
+    fn a_reload_fits_its_own_pages() {
+        let mut h = fitting(&trio_engine(page_of(1190.0, 1684.0)));
+        toggle_scale_to_fit(&mut h);
+        assert_eq!(h.app.transforms.get(2).scale, 0.5);
+        // The new version has no oversized page.
+        h.reload(Arc::new(trio_engine(page_of(595.0, 842.0))), new_version());
+        assert!(h.app.transforms.scale_to_fit());
+        assert_eq!(h.app.transforms.get(2).scale, 1.0);
+        assert_eq!(shown(&h, 2), page_of(595.0, 842.0));
+    }
+
+    #[test]
+    fn a_reload_to_larger_pages_fits_them() {
+        let mut h = fitting(&trio_engine(page_of(595.0, 842.0)));
+        toggle_scale_to_fit(&mut h);
+        h.reload(
+            Arc::new(trio_engine(page_of(1190.0, 1684.0))),
+            new_version(),
+        );
+        assert_eq!(h.app.transforms.get(2).scale, 0.5);
+        assert_eq!(shown(&h, 2), page_of(595.0, 842.0));
+        // Toggling off works from the kept engine sizes.
+        toggle_scale_to_fit(&mut h);
+        assert_eq!(shown(&h, 2), page_of(1190.0, 1684.0));
+    }
+
+    #[test]
+    fn a_highlight_follows_its_text_when_scaled() {
+        let mut h = fitting(&mixed_engine());
+        h.app.highlights.add(Highlight {
+            start: Caret { page: 4, char: 0 },
+            end: Caret { page: 4, char: 7 },
+            colour: HighlightColour::Yellow,
+        });
+        h.app.arrival = Some((Target::Page(4), false));
+        h.frames(4, vec![]);
+        h.until(|h| matches!(h.app.texts.get(4), noido_core::PageTextState::Known(_)));
+        h.frames(3, vec![]);
+        let dark = h.ctx.global_style().visuals.dark_mode;
+        let fill = select::highlight_fill(HighlightColour::Yellow, dark);
+        // "the cat" spans x 72 to 114, about y 90 to 102, on the page.
+        let at = screen_pos(&h, 4, 80.0, 95.0);
+        assert!(filled_with(&h, fill).iter().any(|r| r.contains(at)));
+        toggle_scale_to_fit(&mut h);
+        h.until(|h| matches!(h.app.texts.get(4), noido_core::PageTextState::Known(_)));
+        h.frames(3, vec![]);
+        let at = screen_pos(&h, 4, 40.0, 47.5);
+        let rects = filled_with(&h, fill);
+        assert!(
+            rects.iter().any(|r| r.contains(at)),
+            "not at {at:?}: {rects:?}"
+        );
+        let old = screen_pos(&h, 4, 80.0, 95.0);
+        assert!(!rects.iter().any(|r| r.contains(old)), "still at {old:?}");
+    }
+
+    #[test]
+    fn a_search_hit_is_drawn_at_the_scaled_place() {
+        let mut h = fitting(&mixed_engine());
+        search_for(&mut h, "cat");
+        h.app.arrival = Some((Target::Page(4), false));
+        h.frames(4, vec![]);
+        toggle_scale_to_fit(&mut h);
+        // "cat" is 18 points wide on the page, 9 once halved.
+        h.until(|h| {
+            h.app.search_state.finished()
+                && h.app
+                    .search_state
+                    .hits
+                    .on_page(4)
+                    .first()
+                    .is_some_and(|hit| hit.text.rects[0].width < 12.0)
+        });
+        h.frames(3, vec![]);
+        let warning = h.theme().palette(egui::Theme::Dark).warning;
+        let mut rects = filled(&h, search::highlight_fill(warning));
+        rects.extend(filled(&h, search::current_fill(warning)));
+        // "cat" spans x 96 to 114, y about 90 to 102, on the page.
+        let new = screen_pos(&h, 4, 52.0, 48.0);
+        assert!(rects.iter().any(|r| r.contains(new)), "{new:?}: {rects:?}");
+        let old = screen_pos(&h, 4, 105.0, 96.0);
+        assert!(!rects.iter().any(|r| r.contains(old)), "{old:?}: {rects:?}");
+    }
+
+    /// `engine`'s links thread shares the app's transforms.
+    fn fitted_linking(engine: &TextEngine) -> Harness {
+        let linker = engine.clone();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), move |app| {
+            let transforms = app.transforms.clone();
+            app.with_linker(noido_render::Linker::start(
+                Arc::new(linker),
+                Arc::new(Vec::new()),
+                transforms,
+                Box::new(|| {}),
+            ))
+        });
+        h.frames(2, vec![]);
+        h
+    }
+
+    #[test]
+    fn a_link_area_on_a_scaled_page_is_clicked_at_the_scaled_place() {
+        // On page 4 (twice A4): a link at (72, 90), 60 by 12, to page 1.
+        let engine = mixed_engine().with_links(
+            4,
+            vec![internal(vec![area(72.0, 90.0, 60.0, 12.0)], 1, Some(300.0))],
+        );
+        let mut h = fitted_linking(&engine);
+        toggle_scale_to_fit(&mut h);
+        h.app.arrival = Some((Target::Page(4), false));
+        h.frames(4, vec![]);
+        // Where the area was before scaling is no longer a link.
+        let old = screen_pos(&h, 4, 100.0, 96.0);
+        h.frames(3, vec![Event::PointerMoved(old)]);
+        assert_ne!(h.cursor, egui::CursorIcon::PointingHand);
+        click_link(&mut h, 4, 50.0, 48.0);
+        let target = screen_pos(&h, 1, 72.0, 300.0);
+        let centre = h.app.last_scroll.unwrap().inner.center();
+        assert!(
+            (target.y - centre.y).abs() < 1.0,
+            "{target:?} vs {centre:?}"
+        );
+    }
+
+    #[test]
+    fn a_link_to_a_scaled_page_lands_on_its_content() {
+        let engine = mixed_engine().with_links(
+            0,
+            vec![internal(vec![area(72.0, 90.0, 60.0, 12.0)], 4, Some(300.0))],
+        );
+        let mut h = fitted_linking(&engine);
+        toggle_scale_to_fit(&mut h);
+        // The zoom changed; bring page 0 back to the top.
+        h.app.arrival = Some((Target::Page(0), false));
+        h.frames(4, vec![]);
+        click_link(&mut h, 0, 100.0, 96.0);
+        // (72, 300) on the page is (36, 150) once halved.
+        let target = screen_pos(&h, 4, 36.0, 150.0);
+        let centre = h.app.last_scroll.unwrap().inner.center();
+        assert!(
+            (target.y - centre.y).abs() < 1.0,
+            "{target:?} vs {centre:?}"
+        );
+    }
+
+    #[test]
+    fn a_thumbnail_is_made_again_for_a_scaled_page() {
+        let engine = mixed_engine();
+        let thumbs = engine.clone();
+        let mut h = Harness::build_with(Arc::new(engine), move |app| {
+            let transforms = app.transforms.clone();
+            app.with_thumbnails(Thumbnailer::start(
+                Arc::new(thumbs),
+                Arc::new(Vec::new()),
+                transforms,
+                Box::new(|| {}),
+            ))
+        });
+        let texture = |h: &Harness| {
+            h.app
+                .thumbnails
+                .as_ref()
+                .and_then(|t| t.textures.get(&4))
+                .map(|image| image.texture.id())
+        };
+        h.until(|h| texture(h).is_some());
+        let before = texture(&h).expect("no thumbnail of page 4");
+        toggle_scale_to_fit(&mut h);
+        h.until(|h| texture(h).is_some_and(|id| id != before));
+        assert!(texture(&h).is_some_and(|id| id != before));
+    }
+
+    #[test]
+    fn the_menu_marks_scale_to_fit_once_it_is_on() {
+        let mut h = fitting(&mixed_engine());
+        open_menu(&mut h);
+        assert!(!checked(&h, "Scale to fit"));
+        h.click_text("Scale to fit");
+        h.frames(3, vec![]);
+        assert!(h.app.transforms.scale_to_fit());
+        open_menu(&mut h);
+        assert!(checked(&h, "Scale to fit"));
     }
 }

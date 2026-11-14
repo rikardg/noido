@@ -54,6 +54,7 @@ pub struct Bar<'a> {
     pub dual: bool,
     pub odd_left: bool,
     pub gapless: bool,
+    pub scale_to_fit: bool,
     /// The select tool is on.
     pub select_tool: bool,
     pub keymap: &'a Keymap,
@@ -300,8 +301,7 @@ fn menu_entries(
                 Some(Check::Dual) => bar.dual,
                 Some(Check::OddLeft) => bar.odd_left,
                 Some(Check::Gapless) => bar.gapless,
-                // Placeholder until the frontend wires the value.
-                Some(Check::ScaleToFit) => false,
+                Some(Check::ScaleToFit) => bar.scale_to_fit,
                 Some(Check::Sidebar) => bar.sidebar.open,
                 Some(Check::SelectTool) => bar.select_tool,
                 None => false,

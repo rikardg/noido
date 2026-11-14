@@ -493,7 +493,12 @@ fn start_with_scale_to_fit_reports_fitted_sizes() {
         height: 842.0,
     };
     assert_eq!(info.page_sizes, vec![a4; 4]);
-    assert_eq!(transforms.get(3).scale, 0.5);
+    // The shared transforms are the app's to write; opening leaves them.
+    assert_eq!(transforms.get(3).scale, 1.0);
+    assert!(transforms.scale_to_fit());
+    assert_eq!(info.engine_sizes[3].width, 1190.0);
+    assert_eq!(info.transforms.get(3).scale, 0.5);
+    assert!(info.transforms.scale_to_fit());
 
     let (_renderer, info) = Renderer::start(
         Arc::new(HayroEngine),
