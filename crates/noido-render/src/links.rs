@@ -147,14 +147,13 @@ fn flash_area(document: &dyn Document, target: Destination) -> Option<Rect> {
     if let Some(line) = text.line_near(target.x, target.y) {
         return Some(line);
     }
+    if let Some(bar) = text.bar_across(target.x, target.y, FLASH_BAR_HEIGHT) {
+        return Some(bar);
+    }
+    // No text: across most of the page.
     let y = target.y?;
-    let (left, right) = match text.text_span() {
-        Some(span) => span,
-        None => {
-            let width = document.page_size(target.page).ok()?.width;
-            (width * 0.1, width * 0.9)
-        }
-    };
+    let width = document.page_size(target.page).ok()?.width;
+    let (left, right) = (width * 0.1, width * 0.9);
     Some(Rect {
         x: left,
         y: y - FLASH_BAR_HEIGHT / 2.0,

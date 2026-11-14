@@ -62,7 +62,10 @@ fn piece(page: &PageText, range: Range<usize>) -> String {
             continue;
         }
         if c == '\n' {
-            let step = match (page.line_rect_of(i), page.line_rect_of(i + 1)) {
+            let step = match (
+                page.upright_line_rect_of(i),
+                page.upright_line_rect_of(i + 1),
+            ) {
                 (Some(a), Some(b)) => b.y - a.y,
                 _ => 0.0,
             };

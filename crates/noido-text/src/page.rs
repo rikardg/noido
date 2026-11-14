@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::sync::OnceLock;
 
 pub use noido_engine::Rect;
-use noido_engine::{Glyph, Point};
+use noido_engine::{Glyph, Point, Rotation, Size};
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
@@ -27,8 +27,12 @@ pub struct PageText {
     text: String,
     /// Per character of `text`.
     chars: Vec<CharInfo>,
-    /// Per glyph, its bounds.
+    /// Per glyph, its bounds, in the upright frame: the page turned so its
+    /// text runs left to right. Picking and line geometry work there.
     bounds: Vec<Rect>,
+    /// The turn from the upright frame to the page's: the direction most
+    /// of the page's text runs in.
+    upright: Rotation,
     /// The forms search matches against, built on the first search.
     pub(crate) forms: OnceLock<Forms>,
 }
@@ -50,7 +54,11 @@ struct Cluster {
 
 impl PageText {
     pub fn new(glyphs: Vec<Glyph>) -> PageText {
-        let bounds = glyphs.iter().map(bounds_of).collect();
+        let upright = writing_direction(&glyphs);
+        let bounds = glyphs
+            .iter()
+            .map(|g| upright.inverse().rect(bounds_of(g), ZERO))
+            .collect();
         let clusters = assemble(&glyphs);
         let mut text = String::new();
         let mut chars = Vec::new();
@@ -67,6 +75,7 @@ impl PageText {
             text,
             chars,
             bounds,
+            upright,
             forms: OnceLock::new(),
         }
     }
@@ -89,35 +98,71 @@ impl PageText {
     /// The bounds of the glyph character `char` was drawn with; `None` for
     /// inserted spaces and newlines.
     pub fn glyph_bounds(&self, char: usize) -> Option<Rect> {
-        self.chars[char].glyph.map(|g| self.bounds[g])
+        self.chars[char].glyph.map(|g| self.out(self.bounds[g]))
+    }
+
+    /// `r`, in the upright frame, in the page's.
+    fn out(&self, r: Rect) -> Rect {
+        self.upright.rect(r, ZERO)
+    }
+
+    /// The page's point (`x`, `y`) in the upright frame.
+    fn upright_point(&self, x: f32, y: f32) -> (f32, f32) {
+        let p = self.upright.inverse().point(Point { x, y }, ZERO);
+        (p.x, p.y)
     }
 
     /// The line a link target at (`x`, `y`) names: of the lines starting
     /// no more than [`LINE_TOLERANCE`] above `y` and reaching past `x`, the
     /// one nearest below, by position on the page. Without `y`, the top
     /// line. Missing coordinates don't constrain.
+    ///
+    /// "Above", "below" and "past" go by the way the page's text runs:
+    /// the target and the lines are compared in the upright frame.
     pub fn line_near(&self, x: Option<f32>, y: Option<f32>) -> Option<Rect> {
-        self.line_rects()
+        let (x, y) = self.upright_target(x, y);
+        self.lines()
             .into_iter()
+            .flatten()
             .filter(|r| y.is_none_or(|y| r.y >= y - LINE_TOLERANCE))
             .filter(|r| x.is_none_or(|x| r.x + r.width > x))
             .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)))
+            .map(|r| self.out(r))
     }
 
-    /// The horizontal extent of the page's glyphs: (left, right).
-    pub fn text_span(&self) -> Option<(f32, f32)> {
-        let rects = self.line_rects();
+    /// A bar `thickness` across the page's text, along its lines, at the
+    /// target's place across them (its height, for upright text). `None`
+    /// without text or without that coordinate.
+    pub fn bar_across(&self, x: Option<f32>, y: Option<f32>, thickness: f32) -> Option<Rect> {
+        let (_, y) = self.upright_target(x, y);
+        let y = y?;
+        let rects: Vec<Rect> = self.lines().into_iter().flatten().collect();
         let left = rects.iter().map(|r| r.x).reduce(f32::min)?;
         let right = rects.iter().map(|r| r.x + r.width).reduce(f32::max)?;
-        Some((left, right))
+        Some(self.out(Rect {
+            x: left,
+            y: y - thickness / 2.0,
+            width: right - left,
+            height: thickness,
+        }))
     }
 
-    /// Each line's bounds: the union of its glyphs'.
-    fn line_rects(&self) -> Vec<Rect> {
-        self.lines().into_iter().flatten().collect()
+    /// A target's coordinates in the upright frame. Each comes from one of
+    /// the page's, so a missing one leaves the one it turns into missing.
+    fn upright_target(&self, x: Option<f32>, y: Option<f32>) -> (Option<f32>, Option<f32>) {
+        let p = self.upright.inverse().point(
+            Point {
+                x: x.unwrap_or(f32::NAN),
+                y: y.unwrap_or(f32::NAN),
+            },
+            ZERO,
+        );
+        let known = |v: f32| (!v.is_nan()).then_some(v);
+        (known(p.x), known(p.y))
     }
 
-    /// Each line's bounds by line index; `None` for a line without glyphs.
+    /// Each line's bounds by line index, in the upright frame; `None` for
+    /// a line without glyphs.
     pub(crate) fn lines(&self) -> Vec<Option<Rect>> {
         let mut lines: Vec<Option<Rect>> = Vec::new();
         for info in &self.chars {
@@ -195,6 +240,7 @@ impl PageText {
     /// at that line's start; below its last line, at that line's end.
     /// `None` without glyphs.
     pub fn caret_at(&self, x: f32, y: f32) -> Option<usize> {
+        let (x, y) = self.upright_point(x, y);
         let (line, beyond) = self.line_for(x, y)?;
         let mut after = None;
         for (i, b) in self.glyph_chars(line) {
@@ -218,6 +264,7 @@ impl PageText {
     /// The word at (`x`, `y`): the run of letters, digits, apostrophes and
     /// hyphens around the character there, or that character alone.
     pub fn word_at(&self, x: f32, y: f32) -> Option<Range<usize>> {
+        let (x, y) = self.upright_point(x, y);
         let hit = self.char_at(x, y)?;
         let chars: Vec<char> = self.text.chars().collect();
         let in_word = |c: char| c.is_alphanumeric() || matches!(c, '\'' | '’' | '-');
@@ -239,6 +286,7 @@ impl PageText {
 
     /// The characters of the line nearest (`x`, `y`), without its newline.
     pub fn line_range_at(&self, x: f32, y: f32) -> Option<Range<usize>> {
+        let (x, y) = self.upright_point(x, y);
         let line = self.line_at(x, y)?;
         let start = self.chars.iter().position(|c| c.line == line)?;
         let mut end = self.chars.iter().rposition(|c| c.line == line)? + 1;
@@ -269,7 +317,7 @@ impl PageText {
                 _ => out.push((info.line, b)),
             }
         }
-        out.into_iter().map(|(_, r)| r).collect()
+        out.into_iter().map(|(_, r)| self.out(r)).collect()
     }
 
     /// A zero-width rectangle at `caret`, as tall as its line: at the left
@@ -291,19 +339,26 @@ impl PageText {
         if caret < self.chars.len()
             && let Some(r) = at(caret, false)
         {
-            return Some(r);
+            return Some(self.out(r));
         }
         let before = (0..caret.min(self.chars.len()))
             .rev()
             .find_map(|i| at(i, true));
-        before.or_else(|| (caret..self.chars.len()).find_map(|i| at(i, false)))
+        before
+            .or_else(|| (caret..self.chars.len()).find_map(|i| at(i, false)))
+            .map(|r| self.out(r))
     }
 
     /// The bounds of the line `char` is on; the last line for the caret at
     /// the end.
     pub fn line_rect_of(&self, char: usize) -> Option<Rect> {
+        self.upright_line_rect_of(char).map(|r| self.out(r))
+    }
+
+    /// [`PageText::line_rect_of`] in the upright frame.
+    pub(crate) fn upright_line_rect_of(&self, char: usize) -> Option<Rect> {
         let line = self.chars.get(char).or(self.chars.last())?.line;
-        (*self.lines().get(line)?)?.into()
+        *self.lines().get(line)?
     }
 }
 
@@ -317,6 +372,34 @@ pub(crate) fn union(a: Rect, b: Rect) -> Rect {
         width: right - left,
         height: bottom - top,
     }
+}
+
+const ZERO: Size = Size {
+    width: 0.0,
+    height: 0.0,
+};
+
+/// The turn from upright to the way most of `glyphs` run: each visible
+/// glyph votes with the quarter turn nearest its baseline's direction;
+/// a tie, or no glyphs, is upright.
+fn writing_direction(glyphs: &[Glyph]) -> Rotation {
+    let mut votes = [0usize; 4];
+    for g in glyphs.iter().filter(|g| !g.invisible) {
+        let [start, end, ..] = g.quad.corners;
+        let (dx, dy) = (end.x - start.x, end.y - start.y);
+        let turn = if dx.abs() >= dy.abs() {
+            if dx >= 0.0 { 0 } else { 2 }
+        } else if dy > 0.0 {
+            1
+        } else {
+            3
+        };
+        votes[turn] += 1;
+    }
+    let best = (0..4)
+        .max_by_key(|&i| (votes[i], std::cmp::Reverse(i)))
+        .unwrap_or(0);
+    Rotation::ALL[best]
 }
 
 fn bounds_of(glyph: &Glyph) -> Rect {
@@ -553,7 +636,119 @@ fn columns(lines: &[Option<Rect>]) -> Vec<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{glyph, glyph_along, line, page};
+    use crate::testing::{glyph, glyph_along, line, page, turned};
+    use noido_engine::{Rotation, Size};
+
+    const ZERO: Size = Size {
+        width: 0.0,
+        height: 0.0,
+    };
+
+    /// Points around and on the two lines of `page(&["the cat sat", "on the
+    /// mat"])`: left, right, above, below, between, and on glyphs.
+    const PROBES: [(f32, f32); 10] = [
+        (73.0, 97.0),
+        (76.0, 97.0),
+        (94.0, 97.0),
+        (10.0, 97.0),
+        (500.0, 97.0),
+        (80.0, 20.0),
+        (80.0, 400.0),
+        (90.0, 109.0),
+        (101.0, 111.0),
+        (60.0, 104.0),
+    ];
+
+    fn straight_and_turned(r: Rotation) -> (PageText, PageText) {
+        let glyphs = page(&["the cat sat", "on the mat"]);
+        (
+            PageText::new(glyphs.clone()),
+            PageText::new(turned(glyphs, r)),
+        )
+    }
+
+    fn turn(r: Rotation, (x, y): (f32, f32)) -> noido_engine::Point {
+        r.point(noido_engine::Point { x, y }, ZERO)
+    }
+
+    #[test]
+    fn caret_at_follows_every_direction() {
+        for r in Rotation::ALL {
+            let (straight, turned) = straight_and_turned(r);
+            for p in PROBES {
+                let q = turn(r, p);
+                assert_eq!(
+                    turned.caret_at(q.x, q.y),
+                    straight.caret_at(p.0, p.1),
+                    "{r:?} {p:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn word_and_line_at_follow_every_direction() {
+        for r in Rotation::ALL {
+            let (straight, turned) = straight_and_turned(r);
+            for p in PROBES {
+                let q = turn(r, p);
+                assert_eq!(
+                    turned.word_at(q.x, q.y),
+                    straight.word_at(p.0, p.1),
+                    "{r:?} {p:?}"
+                );
+                assert_eq!(
+                    turned.line_range_at(q.x, q.y),
+                    straight.line_range_at(p.0, p.1),
+                    "{r:?} {p:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rects_follow_every_direction() {
+        for r in Rotation::ALL {
+            let (straight, turned) = straight_and_turned(r);
+            for range in [4..7, 8..15, 0..22] {
+                let want: Vec<Rect> = straight
+                    .rects(range.clone())
+                    .into_iter()
+                    .map(|x| r.rect(x, ZERO))
+                    .collect();
+                assert_eq!(turned.rects(range.clone()), want, "{r:?} {range:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn caret_crosses_the_line_in_every_direction() {
+        for r in Rotation::ALL {
+            let (straight, turned) = straight_and_turned(r);
+            for caret in [0, 4, 11, 12, 22] {
+                assert_eq!(
+                    turned.caret_rect(caret),
+                    straight.caret_rect(caret).map(|x| r.rect(x, ZERO)),
+                    "{r:?} {caret}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn glyph_and_line_bounds_stay_in_the_page_frame() {
+        for r in Rotation::ALL {
+            let (straight, turned) = straight_and_turned(r);
+            assert_eq!(
+                turned.glyph_bounds(4),
+                straight.glyph_bounds(4).map(|x| r.rect(x, ZERO))
+            );
+            assert_eq!(
+                turned.line_rect_of(4),
+                straight.line_rect_of(4).map(|x| r.rect(x, ZERO))
+            );
+        }
+    }
 
     fn text(glyphs: Vec<noido_engine::Glyph>) -> String {
         PageText::new(glyphs).text().to_owned()
@@ -608,14 +803,21 @@ mod tests {
     }
 
     #[test]
-    fn text_span_covers_all_lines() {
+    fn bar_across_covers_all_lines() {
         let page = PageText::new(page(&["ab", "abcd"]));
-        assert_eq!(page.text_span(), Some((72.0, 92.0)));
+        assert_eq!(
+            page.bar_across(None, Some(300.0), 2.0),
+            Some(rect(72.0, 299.0, 20.0, 2.0))
+        );
+        assert_eq!(page.bar_across(Some(72.0), None, 2.0), None);
     }
 
     #[test]
-    fn empty_page_has_no_span() {
-        assert_eq!(PageText::new(Vec::new()).text_span(), None);
+    fn empty_page_has_no_bar() {
+        assert_eq!(
+            PageText::new(Vec::new()).bar_across(None, Some(1.0), 2.0),
+            None
+        );
     }
 
     #[test]
