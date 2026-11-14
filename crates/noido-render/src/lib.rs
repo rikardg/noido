@@ -12,7 +12,7 @@ mod transformed;
 
 pub use links::{FLASH_BAR_HEIGHT, LinkReply, Linker};
 pub use properties::read_properties;
-pub use text::{MAX_HITS, SearchUpdate, TextSearcher};
+pub use text::{Counted, MAX_HITS, SearchUpdate, TextSearcher};
 pub use thumbnails::{Thumbnail, Thumbnailer};
 pub use transformed::{Transformed, Transforms, open_transformed};
 

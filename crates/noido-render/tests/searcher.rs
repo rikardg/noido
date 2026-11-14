@@ -1,11 +1,11 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use noido_engine::{
     Document, EngineError, Glyph, PdfBytes, PdfEngine, PixelRect, Point, Quad, Rgba8Image, Size,
 };
-use noido_render::{MAX_HITS, SearchUpdate, TextSearcher};
+use noido_render::{Counted, MAX_HITS, SearchUpdate, TextSearcher};
 
 /// A document whose pages each hold one line of text.
 #[derive(Clone)]
@@ -17,6 +17,8 @@ struct TextEngine {
     panicking: Option<usize>,
     /// How often `text` was called.
     calls: Arc<AtomicUsize>,
+    /// A text read that waits until the gate opens.
+    gate: Option<Arc<(Mutex<bool>, Condvar)>>,
 }
 
 impl TextEngine {
@@ -26,6 +28,19 @@ impl TextEngine {
             failing: None,
             panicking: None,
             calls: Arc::new(AtomicUsize::new(0)),
+            gate: None,
+        }
+    }
+
+    fn gated(mut self) -> TextEngine {
+        self.gate = Some(Arc::default());
+        self
+    }
+
+    fn open_gate(&self) {
+        if let Some(gate) = &self.gate {
+            *gate.0.lock().unwrap() = true;
+            gate.1.notify_all();
         }
     }
 
@@ -61,6 +76,12 @@ impl Document for TextEngine {
 
     fn text(&self, page: usize) -> Result<Vec<Glyph>, EngineError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(gate) = &self.gate {
+            let mut open = gate.0.lock().unwrap();
+            while !*open {
+                open = gate.1.wait(open).unwrap();
+            }
+        }
         assert_ne!(self.panicking, Some(page), "the text that cannot be read");
         if self.failing == Some(page) {
             return Err(EngineError::Render("broken text".into()));
@@ -149,6 +170,150 @@ fn wait_for(condition: impl Fn() -> bool) {
     }
 }
 
+/// The counts, once they arrive: one report per walk, never a partial one.
+fn until_counted(searcher: &TextSearcher) -> Counted {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        while let Some(update) = searcher.try_recv() {
+            if let SearchUpdate::Counts(counted) = update {
+                assert!(counted.done(), "a partial report: {counted:?}");
+                return counted;
+            }
+        }
+        assert!(Instant::now() < deadline, "counts not complete within 5 s");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn counts_arrive_for_every_page() {
+    let engine = TextEngine::new(&["the cat sat", "a dog"]);
+    let searcher = start(&engine);
+    searcher.count();
+    let counted = until_counted(&searcher);
+    assert_eq!(counted.pages, 2);
+    assert_eq!(counted.counted, 2);
+    assert_eq!(
+        counted.total,
+        noido_text::Counts {
+            words: 5,
+            chars: 16,
+            chars_no_spaces: 13
+        }
+    );
+}
+
+#[test]
+fn reading_starts_only_when_counting_is_asked() {
+    let engine = TextEngine::new(&["a", "b"]);
+    let searcher = start(&engine);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(engine.calls(), 0);
+    searcher.count();
+    wait_for(|| engine.calls() == 2);
+}
+
+#[test]
+fn a_document_already_extracted_is_counted_at_once() {
+    let engine = TextEngine::new(&["a", "b"]);
+    let searcher = start(&engine);
+    searcher.extract();
+    wait_for(|| engine.calls() == 2);
+    searcher.count();
+    let counted = until_counted(&searcher);
+    assert_eq!(counted.counted, 2);
+    assert_eq!(engine.calls(), 2, "the pages were read again");
+}
+
+#[test]
+fn a_page_read_again_keeps_its_counts() {
+    // A reshape re-reads the page's text; it does not change what the page
+    // says, so the counts stay and nothing is reported afresh.
+    let engine = TextEngine::new(&["a b", "c"]);
+    let searcher = start(&engine);
+    searcher.count();
+    until_counted(&searcher);
+    searcher.forget(0);
+    wait_for(|| engine.calls() == 3);
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(searcher.try_recv().is_none(), "reported again");
+}
+
+#[test]
+fn a_page_that_cannot_be_read_is_counted_as_empty() {
+    let mut engine = TextEngine::new(&["a b", "c d"]);
+    engine.failing = Some(1);
+    let searcher = start(&engine);
+    searcher.count();
+    let counted = until_counted(&searcher);
+    assert_eq!(counted.counted, 2);
+    assert_eq!(counted.total.words, 2);
+}
+
+#[test]
+fn a_panicking_page_is_counted_as_empty() {
+    let mut engine = TextEngine::new(&["a b", "c d"]);
+    engine.panicking = Some(1);
+    let searcher = start(&engine);
+    searcher.count();
+    let counted = until_counted(&searcher);
+    assert_eq!(counted.counted, 2);
+    assert_eq!(counted.total.words, 2);
+}
+
+#[test]
+fn a_page_with_no_text_counts_zero() {
+    let engine = TextEngine::new(&["", "a"]);
+    let searcher = start(&engine);
+    searcher.count();
+    let counted = until_counted(&searcher);
+    assert_eq!(
+        counted.total,
+        noido_text::Counts {
+            words: 1,
+            chars: 1,
+            chars_no_spaces: 1
+        }
+    );
+}
+
+#[test]
+fn a_page_boundary_breaks_a_word() {
+    // The hyphen at the foot of page 0 ends its word instead of joining
+    // page 1's first: counts are kept per page.
+    let engine = TextEngine::new(&["statis-", "tics"]);
+    let searcher = start(&engine);
+    searcher.count();
+    let counted = until_counted(&searcher);
+    assert_eq!(counted.total.words, 2);
+    assert_eq!(counted.total.chars, 11);
+}
+
+#[test]
+fn a_page_whose_read_is_asked_for_first_is_counted_too() {
+    // Opening Document info asks for the counts while the visible page's
+    // text — read on open, for picking — is still on its way.
+    let engine = TextEngine::new(&["a b"]).gated();
+    let searcher = start(&engine);
+    searcher.count();
+    searcher.request_text(0);
+    std::thread::sleep(Duration::from_millis(20));
+    engine.open_gate();
+    let counted = until_counted(&searcher);
+    assert_eq!(counted.total.words, 2);
+}
+
+#[test]
+fn a_document_with_no_pages_is_counted_at_once() {
+    let engine = TextEngine::new(&[]);
+    let searcher = start(&engine);
+    searcher.count();
+    let counted = until_counted(&searcher);
+    assert_eq!(counted.pages, 0);
+    assert!(counted.done());
+    assert_eq!(counted.total, noido_text::Counts::default());
+}
+
 #[test]
 fn nothing_extracted_until_asked() {
     let engine = TextEngine::new(&["a", "b", "c"]);
@@ -219,7 +384,7 @@ fn newer_search_drops_older() {
             SearchUpdate::Page { generation, .. } | SearchUpdate::Done { generation, .. } => {
                 *generation
             }
-            SearchUpdate::Text { .. } => continue,
+            SearchUpdate::Text { .. } | SearchUpdate::Counts(_) => continue,
         };
         assert_eq!(generation, second);
     }
