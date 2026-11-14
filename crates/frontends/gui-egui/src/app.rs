@@ -16059,17 +16059,9 @@ pub(crate) mod tests {
     fn checked(h: &Harness, angle: &str) -> bool {
         fn marks(shape: &egui::Shape, out: &mut Vec<(Rect, Color32)>) {
             match shape {
-                egui::Shape::Text(t) if t.galley.text() == "✔" => {
-                    let colour = t
-                        .galley
-                        .job
-                        .sections
-                        .first()
-                        .map(|section| section.format.color)
-                        .filter(|colour| *colour != Color32::PLACEHOLDER)
-                        .or(t.override_text_color)
-                        .unwrap_or(t.fallback_color);
-                    out.push((Rect::from_min_size(t.pos, t.galley.size()), colour));
+                egui::Shape::Text(t) if t.galley.text() == crate::titlebar::MARK => {
+                    let rect = Rect::from_min_size(t.pos, t.galley.size());
+                    out.push((rect, text_shape_color(t)));
                 }
                 egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| marks(s, out)),
                 _ => {}
@@ -16081,6 +16073,19 @@ pub(crate) mod tests {
         all.iter()
             .find(|(rect, _)| (rect.center().y - label.center().y).abs() < label.height() / 2.0)
             .is_some_and(|(_, colour)| colour.a() > 0)
+    }
+
+    #[test]
+    fn the_rotation_menus_mark_is_the_label_colour_made_solid() {
+        for mode in [egui::ThemePreference::Dark, egui::ThemePreference::Light] {
+            let mut h = Harness::new();
+            crate::theme::install_preset(&h.ctx, "macos-tahoe");
+            h.ctx.set_theme(mode);
+            h.frames(2, vec![]);
+            h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+            let label = h.text_color("0°").expect("no 0°");
+            assert_eq!(shown_checkmarks(&h), vec![label.to_opaque()], "{mode:?}");
+        }
     }
 
     #[test]

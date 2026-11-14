@@ -8,10 +8,12 @@ use noido_core::Rotation;
 /// chosen, unless it is `current` (choosing it again changes nothing).
 pub fn rotation_menu(ui: &mut egui::Ui, current: Rotation) -> Option<Rotation> {
     let text = ui.visuals().widgets.inactive.fg_stroke.color;
+    // Solid, as the title bar's menu draws it: see `titlebar::MARK`.
+    let check = text.to_opaque();
     let mut chosen = None;
     for rotation in Rotation::ALL {
-        let mark = RichText::new("✔").color(if rotation == current {
-            text
+        let mark = RichText::new(crate::titlebar::MARK).color(if rotation == current {
+            check
         } else {
             Color32::TRANSPARENT
         });
