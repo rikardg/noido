@@ -21,6 +21,7 @@ mod sidebar;
 mod target;
 mod thumbnails;
 mod tracker;
+mod transforms;
 mod view;
 mod window;
 
@@ -45,5 +46,6 @@ pub use sidebar::*;
 pub use target::*;
 pub use thumbnails::*;
 pub use tracker::*;
+pub use transforms::*;
 pub use view::*;
 pub use window::*;

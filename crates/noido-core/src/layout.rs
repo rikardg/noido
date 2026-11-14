@@ -179,6 +179,13 @@ impl Layout {
         &self.page_sizes
     }
 
+    /// Changes `page`'s size; takes effect at the next [`Layout::arrange`].
+    pub fn set_page_size(&mut self, page: usize, size: Size) {
+        if let Some(s) = self.page_sizes.get_mut(page) {
+            *s = size;
+        }
+    }
+
     pub fn page_size(&self, page: usize) -> Option<Size> {
         self.page_sizes.get(page).copied()
     }

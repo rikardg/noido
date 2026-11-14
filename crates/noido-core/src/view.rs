@@ -366,6 +366,31 @@ impl View {
         self.clamp_offset();
     }
 
+    /// Gives `page` a new size (a turn of it, say) and re-arranges, keeping
+    /// the document point at the viewport centre there. A centre on `page`
+    /// itself goes through `remap` first, which carries a point on the old
+    /// shape to the same spot on the new one. Fit modes refit; the view
+    /// does not move to another page or spread.
+    pub fn set_page_size(&mut self, page: usize, size: Size, remap: impl Fn(DocPoint) -> DocPoint) {
+        let anchor = self
+            .place()
+            .map(|p| if p.page == page { remap(p) } else { p });
+        self.layout.set_page_size(page, size);
+        match anchor {
+            Some(point) => {
+                self.pending = Some(point);
+                if self.viewport.0 > 0.0 && self.viewport.1 > 0.0 {
+                    self.place_pending();
+                }
+            }
+            None => {
+                let scale = self.fit_scale(self.mode);
+                self.layout.arrange(scale, self.viewport.0, self.viewport.1);
+                self.clamp_offset();
+            }
+        }
+    }
+
     /// Takes the old view's edge left by the last PageUp/PageDown, if it
     /// scrolled: its bottom edge going down, its top edge going up.
     pub fn take_screen_edge(&mut self) -> Option<DocPoint> {
@@ -823,6 +848,7 @@ impl View {
 mod tests {
     use super::*;
     use crate::PAGE_GAP;
+    use noido_engine::Rotation;
 
     fn size(width: f32, height: f32) -> Size {
         Size { width, height }
@@ -982,6 +1008,116 @@ mod tests {
         let (cx, cy) = view.layout().content_point(p).unwrap();
         let (ox, oy) = view.offset();
         (cx - ox, cy - oy)
+    }
+
+    fn turn_on(
+        page: usize,
+        unturned: Size,
+        from: Rotation,
+        to: Rotation,
+    ) -> impl Fn(DocPoint) -> DocPoint {
+        move |p: DocPoint| {
+            assert_eq!(p.page, page, "only points on the turned page are remapped");
+            let q = Rotation::remap(noido_engine::Point { x: p.x, y: p.y }, from, to, unturned);
+            DocPoint {
+                page,
+                x: q.x,
+                y: q.y,
+            }
+        }
+    }
+
+    fn no_remap(_: DocPoint) -> DocPoint {
+        panic!("no point on the turned page")
+    }
+
+    #[test]
+    fn turning_a_landscape_page_lifts_fit_width() {
+        let mut view = View::new(vec![
+            size(612.0, 792.0),
+            size(842.0, 595.0),
+            size(612.0, 792.0),
+        ]);
+        view.set_viewport_size(636.0, 800.0);
+        assert_eq!(view.scale(), 612.0 / 842.0);
+        view.set_page_size(1, size(595.0, 842.0), no_remap);
+        assert_eq!(view.scale(), 1.0);
+        assert_eq!(view.layout().page_size(1), Some(size(595.0, 842.0)));
+    }
+
+    #[test]
+    fn turning_the_page_in_view_keeps_its_spot() {
+        let landscape = size(842.0, 595.0);
+        let mut view = View::new(vec![size(612.0, 792.0), landscape, size(612.0, 792.0)]);
+        view.set_viewport_size(636.0, 800.0);
+        view.restore_place(&DocPoint {
+            page: 1,
+            x: 100.0,
+            y: 297.5,
+        });
+        let before = view.place().unwrap();
+        assert_eq!(before.page, 1);
+        let remap = turn_on(1, landscape, Rotation::R0, Rotation::R90);
+        let want = remap(before);
+        view.set_page_size(1, Rotation::R90.size(landscape), remap);
+        let after = view.place().unwrap();
+        assert_eq!(after.page, 1);
+        assert_near((after.x, after.y), (want.x, want.y), 0.5);
+    }
+
+    fn mixed_view() -> View {
+        let landscape = size(842.0, 595.0);
+        let letter = size(612.0, 792.0);
+        let mut view = View::new(vec![landscape, letter, letter, landscape, letter]);
+        view.set_viewport_size(636.0, 800.0);
+        view.restore_place(&DocPoint {
+            page: 2,
+            x: 306.0,
+            y: 400.0,
+        });
+        view
+    }
+
+    #[test]
+    fn turning_a_page_before_the_view_keeps_the_view() {
+        let mut view = mixed_view();
+        let before = view.place().unwrap();
+        view.set_page_size(0, size(595.0, 842.0), no_remap);
+        let after = view.place().unwrap();
+        assert_eq!(after.page, before.page);
+        assert_near((after.x, after.y), (before.x, before.y), 0.5);
+    }
+
+    #[test]
+    fn turning_a_page_after_the_view_keeps_the_view() {
+        let mut view = mixed_view();
+        let before = view.place().unwrap();
+        view.set_page_size(3, size(595.0, 842.0), no_remap);
+        let after = view.place().unwrap();
+        assert_eq!(after.page, before.page);
+        assert_near((after.x, after.y), (before.x, before.y), 0.5);
+    }
+
+    #[test]
+    fn turning_in_a_spread_keeps_the_spread() {
+        let defaults = Defaults {
+            dual: true,
+            continuous: false,
+            ..Defaults::default()
+        };
+        let landscape = size(842.0, 595.0);
+        let mut view = View::with_defaults(vec![landscape; 8], &defaults);
+        view.set_viewport_size(1200.0, 800.0);
+        view.go_to_page(4);
+        let spread = view.current_spread();
+        let pages = view.layout().spread_pages(spread.unwrap());
+        assert_eq!(pages, 4..6);
+        let centre = view.place().unwrap().page;
+        let other = pages.clone().find(|&p| p != centre).unwrap();
+        view.set_page_size(other, size(595.0, 842.0), no_remap);
+        assert_eq!(view.current_spread(), spread);
+        view.set_page_size(0, size(595.0, 842.0), no_remap);
+        assert_eq!(view.current_spread(), spread);
     }
 
     fn assert_near(a: (f32, f32), b: (f32, f32), tolerance: f32) {
