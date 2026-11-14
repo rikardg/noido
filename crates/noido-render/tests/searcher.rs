@@ -103,6 +103,7 @@ fn start(engine: &TextEngine) -> TextSearcher {
     TextSearcher::start(
         Arc::new(engine.clone()),
         Arc::new(Vec::new()),
+        noido_render::Transforms::default(),
         Box::new(|| {}),
     )
 }
@@ -340,6 +341,7 @@ fn wakes_per_update() {
     let mut searcher = TextSearcher::start(
         Arc::new(engine.clone()),
         Arc::new(Vec::new()),
+        noido_render::Transforms::default(),
         Box::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
         }),
@@ -431,4 +433,52 @@ fn text_leaves_out_glyphs_off_the_page() {
         unreachable!()
     };
     assert_eq!(text.text(), "body");
+}
+
+#[test]
+fn forgotten_text_is_read_again_turned() {
+    use noido_core::{PageTransform, Rotation};
+    let bytes: PdfBytes = Arc::new(
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/text.pdf"
+        ))
+        .unwrap(),
+    );
+    let transforms = noido_render::Transforms::default();
+    let searcher = TextSearcher::start(
+        Arc::new(engine_hayro::HayroEngine),
+        bytes,
+        transforms.clone(),
+        Box::new(|| {}),
+    );
+    let text_of = |searcher: &TextSearcher| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline, "no text within 5 s");
+            match searcher.try_recv() {
+                Some(SearchUpdate::Text {
+                    page: 0,
+                    text,
+                    transform,
+                }) => return (text, transform),
+                _ => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
+    };
+    searcher.request_text(0);
+    let (_, transform) = text_of(&searcher);
+    assert_eq!(transform.rotation, Rotation::R0);
+    transforms.set(
+        0,
+        PageTransform {
+            rotation: Rotation::R90,
+        },
+    );
+    searcher.forget(0);
+    searcher.request_text(0);
+    let (text, transform) = text_of(&searcher);
+    assert_eq!(transform.rotation, Rotation::R90);
+    let line = text.line_rect_of(0).unwrap();
+    assert!(line.height > line.width, "{line:?}");
 }

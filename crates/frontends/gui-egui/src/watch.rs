@@ -106,14 +106,40 @@ fn open_new(
         let waker = waker.clone();
         Box::new(move || waker())
     };
-    let (renderer, info) = Renderer::start(engine.clone(), bytes.clone(), boxed(waker)).ok()?;
+    let (renderer, info) = Renderer::start(
+        engine.clone(),
+        bytes.clone(),
+        noido_render::Transforms::default(),
+        boxed(waker),
+    )
+    .ok()?;
     if info.page_sizes.is_empty() {
         return None;
     }
-    let thumbnailer = Thumbnailer::start(engine.clone(), bytes.clone(), boxed(waker));
-    let sidebar = Renderer::start_background(engine.clone(), bytes.clone(), boxed(waker));
-    let linker = Linker::start(engine.clone(), bytes.clone(), boxed(waker));
-    let searcher = TextSearcher::start(engine.clone(), bytes.clone(), boxed(waker));
+    let thumbnailer = Thumbnailer::start(
+        engine.clone(),
+        bytes.clone(),
+        noido_render::Transforms::default(),
+        boxed(waker),
+    );
+    let sidebar = Renderer::start_background(
+        engine.clone(),
+        bytes.clone(),
+        noido_render::Transforms::default(),
+        boxed(waker),
+    );
+    let linker = Linker::start(
+        engine.clone(),
+        bytes.clone(),
+        noido_render::Transforms::default(),
+        boxed(waker),
+    );
+    let searcher = TextSearcher::start(
+        engine.clone(),
+        bytes.clone(),
+        noido_render::Transforms::default(),
+        boxed(waker),
+    );
     Some(Reload {
         renderer,
         thumbnailer,

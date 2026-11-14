@@ -74,7 +74,12 @@ fn start(pages: usize, gated: bool) -> Setup {
         fail_open: false,
         panic_on: None,
     };
-    let thumbnailer = Thumbnailer::start(Arc::new(engine), Arc::new(vec![]), Box::new(|| {}));
+    let thumbnailer = Thumbnailer::start(
+        Arc::new(engine),
+        Arc::new(vec![]),
+        noido_render::Transforms::default(),
+        Box::new(|| {}),
+    );
     Setup {
         thumbnailer,
         log,
@@ -166,7 +171,12 @@ fn a_panicking_page_does_not_end_the_thumbnails() {
         fail_open: false,
         panic_on: Some(1),
     };
-    let thumbnailer = Thumbnailer::start(Arc::new(engine), Arc::new(vec![]), Box::new(|| {}));
+    let thumbnailer = Thumbnailer::start(
+        Arc::new(engine),
+        Arc::new(vec![]),
+        noido_render::Transforms::default(),
+        Box::new(|| {}),
+    );
     thumbnailer.set_focus(0, Direction::Forward);
 
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -205,7 +215,12 @@ fn open_failure_stops_quietly() {
         fail_open: true,
         panic_on: None,
     };
-    let thumbnailer = Thumbnailer::start(Arc::new(engine), Arc::new(vec![]), Box::new(|| {}));
+    let thumbnailer = Thumbnailer::start(
+        Arc::new(engine),
+        Arc::new(vec![]),
+        noido_render::Transforms::default(),
+        Box::new(|| {}),
+    );
     thumbnailer.set_focus(0, Direction::Forward);
     std::thread::sleep(Duration::from_millis(50));
     assert!(thumbnailer.try_recv().is_none());
@@ -240,8 +255,12 @@ fn thumbnails_have_no_light_edge() {
         ))
         .unwrap(),
     );
-    let thumbnailer =
-        Thumbnailer::start(Arc::new(engine_hayro::HayroEngine), black, Box::new(|| {}));
+    let thumbnailer = Thumbnailer::start(
+        Arc::new(engine_hayro::HayroEngine),
+        black,
+        noido_render::Transforms::default(),
+        Box::new(|| {}),
+    );
     thumbnailer.set_focus(0, Direction::Forward);
     let deadline = Instant::now() + Duration::from_secs(5);
     let image = loop {
@@ -258,4 +277,43 @@ fn thumbnails_have_no_light_edge() {
         "{:?}",
         image.pixel(60, bottom)
     );
+}
+
+#[test]
+fn thumbnail_refresh_renders_again_with_its_stamp() {
+    use noido_core::{PageTransform, Rotation};
+    let log = Arc::new(Mutex::new(vec![]));
+    let engine = LogEngine {
+        pages: 3,
+        log: log.clone(),
+        gate: None,
+        fail_open: false,
+        panic_on: None,
+    };
+    let transforms = noido_render::Transforms::default();
+    let thumbnailer = Thumbnailer::start(
+        Arc::new(engine),
+        Arc::new(vec![]),
+        transforms.clone(),
+        Box::new(|| {}),
+    );
+    thumbnailer.set_focus(0, Direction::Forward);
+    wait_for(&log, 3);
+    transforms.set(
+        1,
+        PageTransform {
+            rotation: Rotation::R90,
+        },
+    );
+    thumbnailer.refresh(1);
+    let log = wait_for(&log, 4);
+    assert_eq!(log[3], 1);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut stamps = vec![];
+    while stamps.len() < 4 && Instant::now() < deadline {
+        if let Some(t) = thumbnailer.try_recv() {
+            stamps.push((t.page, t.transform.rotation));
+        }
+    }
+    assert_eq!(stamps.last(), Some(&(1, Rotation::R90)));
 }

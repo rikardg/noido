@@ -6,8 +6,11 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
+use noido_core::PageTransform;
 use noido_engine::{Destination, Document, Link, OutlineEntry, PdfBytes, PdfEngine, Rect};
 use noido_text::PageText;
+
+use crate::{Transformed, Transforms, open_transformed};
 
 /// The height, in points, of the bar flashed where a target has no line.
 pub const FLASH_BAR_HEIGHT: f32 = 2.0;
@@ -15,7 +18,12 @@ pub const FLASH_BAR_HEIGHT: f32 = 2.0;
 #[derive(Debug)]
 pub enum LinkReply {
     /// The links on `page`; none if they couldn't be read.
-    Links { page: usize, links: Vec<Link> },
+    /// The transform is the page's when they were read.
+    Links {
+        page: usize,
+        links: Vec<Link>,
+        transform: PageTransform,
+    },
     /// Where to flash `target`: its line, else a bar at its height, else
     /// nothing.
     Flash {
@@ -53,6 +61,7 @@ impl Linker {
     pub fn start(
         engine: Arc<dyn PdfEngine>,
         bytes: PdfBytes,
+        transforms: Transforms,
         waker: Box<dyn Fn() + Send>,
     ) -> Linker {
         let (commands, command_rx) = mpsc::channel();
@@ -61,8 +70,8 @@ impl Linker {
         let _ = thread::Builder::new()
             .name("noido-links".into())
             .spawn(move || {
-                if let Ok(document) = engine.open(bytes) {
-                    run(document.as_ref(), &command_rx, &reply_tx, &*waker);
+                if let Ok(document) = open_transformed(engine.as_ref(), bytes, &transforms) {
+                    run(&document, &command_rx, &reply_tx, &*waker);
                 }
             });
         Linker { commands, replies }
@@ -100,7 +109,7 @@ impl Linker {
 }
 
 fn run(
-    document: &dyn Document,
+    document: &Transformed,
     commands: &Receiver<Command>,
     replies: &Sender<LinkReply>,
     waker: &dyn Fn(),
@@ -109,6 +118,7 @@ fn run(
         let reply = match command {
             Command::Links(page) => LinkReply::Links {
                 page,
+                transform: document.transform(page),
                 links: crate::caught(|| document.links(page)).unwrap_or_else(|e| {
                     eprintln!("noido: links of page {}: {e}", page + 1);
                     Vec::new()

@@ -6,7 +6,10 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 
+use noido_core::PageTransform;
 use noido_engine::{Document, PdfBytes, PdfEngine};
+
+use crate::{Transformed, Transforms, open_transformed};
 use noido_text::{PageText, Query, TextHit};
 
 /// The most hits a search finds; past that it stops. One letter on a long
@@ -24,8 +27,13 @@ pub enum SearchUpdate {
     },
     /// Every page searched, or `cut_short` at [`MAX_HITS`].
     Done { generation: u64, cut_short: bool },
-    /// A page's text, as asked for with [`TextSearcher::request_text`].
-    Text { page: usize, text: Arc<PageText> },
+    /// A page's text, as asked for with [`TextSearcher::request_text`],
+    /// and the transform the page had when it was read.
+    Text {
+        page: usize,
+        text: Arc<PageText>,
+        transform: PageTransform,
+    },
 }
 
 enum Command {
@@ -37,6 +45,7 @@ enum Command {
     },
     Cancel,
     Text(usize),
+    Forget(usize),
 }
 
 /// Handle to the text thread. Dropping it stops the thread after its
@@ -53,6 +62,7 @@ impl TextSearcher {
     pub fn start(
         engine: Arc<dyn PdfEngine>,
         bytes: PdfBytes,
+        transforms: Transforms,
         waker: Box<dyn Fn() + Send>,
     ) -> TextSearcher {
         let (commands, command_rx) = mpsc::channel();
@@ -65,9 +75,9 @@ impl TextSearcher {
                 let Ok(first) = command_rx.recv() else {
                     return;
                 };
-                match engine.open(bytes) {
+                match open_transformed(engine.as_ref(), bytes, &transforms) {
                     Ok(document) => {
-                        Worker::new(document.as_ref(), &result_tx, &*waker).run(first, &command_rx)
+                        Worker::new(&document, &result_tx, &*waker).run(first, &command_rx)
                     }
                     Err(e) => eprintln!("noido: text: {e}"),
                 }
@@ -111,6 +121,12 @@ impl TextSearcher {
         let _ = self.commands.send(Command::Text(page));
     }
 
+    /// Drops `page`'s text, so it is read again when next needed: after
+    /// the page was turned.
+    pub fn forget(&self, page: usize) {
+        let _ = self.commands.send(Command::Forget(page));
+    }
+
     pub fn try_recv(&self) -> Option<SearchUpdate> {
         self.results.try_recv().ok()
     }
@@ -127,11 +143,12 @@ struct Job {
 }
 
 struct Worker<'a> {
-    document: &'a dyn Document,
+    document: &'a Transformed,
     results: &'a Sender<SearchUpdate>,
     waker: &'a dyn Fn(),
-    /// Each page's text, once extracted.
-    texts: Vec<Option<Arc<PageText>>>,
+    /// Each page's text, once extracted, with the transform it was read
+    /// with.
+    texts: Vec<Option<(PageTransform, Arc<PageText>)>>,
     /// Pages whose text was asked for, to answer first.
     requests: VecDeque<usize>,
     /// Extract every page when idle.
@@ -141,7 +158,7 @@ struct Worker<'a> {
 
 impl<'a> Worker<'a> {
     fn new(
-        document: &'a dyn Document,
+        document: &'a Transformed,
         results: &'a Sender<SearchUpdate>,
         waker: &'a dyn Fn(),
     ) -> Worker<'a> {
@@ -220,6 +237,11 @@ impl<'a> Worker<'a> {
                     self.requests.push_back(page);
                 }
             }
+            Command::Forget(page) => {
+                if let Some(text) = self.texts.get_mut(page) {
+                    *text = None;
+                }
+            }
         }
     }
 
@@ -227,7 +249,14 @@ impl<'a> Worker<'a> {
     fn step(&mut self) -> bool {
         if let Some(page) = self.requests.pop_front() {
             let text = self.text(page).clone();
-            return self.send(SearchUpdate::Text { page, text });
+            let transform = self.texts[page]
+                .as_ref()
+                .map_or_else(PageTransform::default, |t| t.0);
+            return self.send(SearchUpdate::Text {
+                page,
+                text,
+                transform,
+            });
         }
         let Some(mut job) = self.job.take() else {
             if let Some(page) = self.texts.iter().position(Option::is_none) {
@@ -267,15 +296,20 @@ impl<'a> Worker<'a> {
     /// searches do not ask for it again.
     fn text(&mut self, page: usize) -> &Arc<PageText> {
         let document = self.document;
-        self.texts[page].get_or_insert_with(|| {
-            Arc::new(match crate::glyphs_on_page(document, page) {
-                Ok(glyphs) => PageText::new(glyphs),
-                Err(e) => {
-                    eprintln!("noido: text of page {}: {e}", page + 1);
-                    PageText::new(Vec::new())
-                }
+        &self.texts[page]
+            .get_or_insert_with(|| {
+                // Read before the text, so a turn under way stamps it old.
+                let transform = document.transform(page);
+                let text = match crate::glyphs_on_page(document, page) {
+                    Ok(glyphs) => PageText::new(glyphs),
+                    Err(e) => {
+                        eprintln!("noido: text of page {}: {e}", page + 1);
+                        PageText::new(Vec::new())
+                    }
+                };
+                (transform, Arc::new(text))
             })
-        })
+            .1
     }
 
     fn send(&self, update: SearchUpdate) -> bool {

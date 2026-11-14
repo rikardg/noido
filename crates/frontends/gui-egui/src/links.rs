@@ -118,7 +118,7 @@ impl Links {
         let mut answer = None;
         while let Some(reply) = linker.try_recv() {
             match reply {
-                LinkReply::Links { page, links } => {
+                LinkReply::Links { page, links, .. } => {
                     if let Some(state) = self.pages.get_mut(page) {
                         *state = PageLinks::Known(links);
                     }
@@ -240,7 +240,12 @@ mod tests {
 
     fn links() -> Links {
         let mut links = Links::new(2);
-        let linker = Linker::start(Arc::new(Places), Arc::new(Vec::new()), Box::new(|| {}));
+        let linker = Linker::start(
+            Arc::new(Places),
+            Arc::new(Vec::new()),
+            noido_render::Transforms::default(),
+            Box::new(|| {}),
+        );
         links.set_linker(linker, 2);
         links
     }

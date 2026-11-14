@@ -30,7 +30,13 @@ fn recv(renderer: &Renderer) -> RenderedPage {
 
 #[test]
 fn start_reports_page_sizes() {
-    let (_renderer, info) = Renderer::start(Arc::new(HayroEngine), fixture(), no_waker()).unwrap();
+    let (_renderer, info) = Renderer::start(
+        Arc::new(HayroEngine),
+        fixture(),
+        noido_render::Transforms::default(),
+        no_waker(),
+    )
+    .unwrap();
     assert_eq!(
         info.page_sizes,
         vec![
@@ -51,6 +57,7 @@ fn start_fails_on_garbage() {
     let result = Renderer::start(
         Arc::new(HayroEngine),
         Arc::new(b"nope".to_vec()),
+        noido_render::Transforms::default(),
         no_waker(),
     );
     assert!(matches!(result, Err(EngineError::Open(_))));
@@ -63,7 +70,13 @@ fn renders_requested_page_and_wakes() {
     let waker = Box::new(move || {
         counter.fetch_add(1, Ordering::SeqCst);
     });
-    let (renderer, _) = Renderer::start(Arc::new(HayroEngine), fixture(), waker).unwrap();
+    let (renderer, _) = Renderer::start(
+        Arc::new(HayroEngine),
+        fixture(),
+        noido_render::Transforms::default(),
+        waker,
+    )
+    .unwrap();
     renderer.request(RenderRequest {
         page: 0,
         scale: 0.5,
@@ -81,7 +94,13 @@ fn renders_requested_page_and_wakes() {
 
 #[test]
 fn out_of_range_page_reports_error() {
-    let (renderer, _) = Renderer::start(Arc::new(HayroEngine), fixture(), no_waker()).unwrap();
+    let (renderer, _) = Renderer::start(
+        Arc::new(HayroEngine),
+        fixture(),
+        noido_render::Transforms::default(),
+        no_waker(),
+    )
+    .unwrap();
     renderer.request(RenderRequest {
         page: 9,
         scale: 1.0,
@@ -131,7 +150,13 @@ impl Document for PanicDocument {
 
 #[test]
 fn a_panicking_page_does_not_end_the_render_thread() {
-    let (renderer, _) = Renderer::start(Arc::new(PanicEngine), fixture(), no_waker()).unwrap();
+    let (renderer, _) = Renderer::start(
+        Arc::new(PanicEngine),
+        fixture(),
+        noido_render::Transforms::default(),
+        no_waker(),
+    )
+    .unwrap();
     renderer.request(RenderRequest {
         page: 1,
         scale: 1.0,
@@ -210,7 +235,13 @@ fn coalesces_to_latest_per_page() {
         gate: Arc::new(Barrier::new(2)),
         rendered: Arc::new(Mutex::new(Vec::new())),
     };
-    let (renderer, _) = Renderer::start(Arc::new(engine.clone()), fixture(), no_waker()).unwrap();
+    let (renderer, _) = Renderer::start(
+        Arc::new(engine.clone()),
+        fixture(),
+        noido_render::Transforms::default(),
+        no_waker(),
+    )
+    .unwrap();
 
     renderer.request(RenderRequest {
         page: 0,
@@ -249,7 +280,13 @@ fn skips_pages_outside_keep_range() {
         gate: Arc::new(Barrier::new(2)),
         rendered: Arc::new(Mutex::new(Vec::new())),
     };
-    let (renderer, _) = Renderer::start(Arc::new(engine.clone()), fixture(), no_waker()).unwrap();
+    let (renderer, _) = Renderer::start(
+        Arc::new(engine.clone()),
+        fixture(),
+        noido_render::Transforms::default(),
+        no_waker(),
+    )
+    .unwrap();
 
     renderer.request(RenderRequest {
         page: 0,
@@ -273,7 +310,13 @@ fn skips_pages_outside_keep_range() {
 
 #[test]
 fn renders_extra_kept_page_outside_window() {
-    let (renderer, _) = Renderer::start(Arc::new(HayroEngine), fixture(), no_waker()).unwrap();
+    let (renderer, _) = Renderer::start(
+        Arc::new(HayroEngine),
+        fixture(),
+        noido_render::Transforms::default(),
+        no_waker(),
+    )
+    .unwrap();
     renderer.set_keep(Keep {
         window: 0..0,
         extra: vec![1],
@@ -292,7 +335,13 @@ fn renders_in_priority_order_then_the_rest() {
         gate: Arc::new(Barrier::new(2)),
         rendered: Arc::new(Mutex::new(Vec::new())),
     };
-    let (renderer, _) = Renderer::start(Arc::new(engine.clone()), fixture(), no_waker()).unwrap();
+    let (renderer, _) = Renderer::start(
+        Arc::new(engine.clone()),
+        fixture(),
+        noido_render::Transforms::default(),
+        no_waker(),
+    )
+    .unwrap();
 
     renderer.request(RenderRequest {
         page: 0,
@@ -323,7 +372,12 @@ fn renders_in_priority_order_then_the_rest() {
 
 #[test]
 fn background_start_renders_requested_page() {
-    let renderer = Renderer::start_background(Arc::new(HayroEngine), fixture(), no_waker());
+    let renderer = Renderer::start_background(
+        Arc::new(HayroEngine),
+        fixture(),
+        noido_render::Transforms::default(),
+        no_waker(),
+    );
     renderer.request(RenderRequest {
         page: 1,
         scale: 0.5,
@@ -339,6 +393,7 @@ fn background_start_on_garbage_delivers_nothing() {
     let renderer = Renderer::start_background(
         Arc::new(HayroEngine),
         Arc::new(b"nope".to_vec()),
+        noido_render::Transforms::default(),
         no_waker(),
     );
     renderer.request(RenderRequest {
@@ -360,7 +415,13 @@ fn renders_to_whole_pixels_without_a_light_edge() {
         ))
         .unwrap(),
     );
-    let (renderer, _) = Renderer::start(Arc::new(HayroEngine), black, no_waker()).unwrap();
+    let (renderer, _) = Renderer::start(
+        Arc::new(HayroEngine),
+        black,
+        noido_render::Transforms::default(),
+        no_waker(),
+    )
+    .unwrap();
     renderer.request(RenderRequest {
         page: 0,
         scale: 1.37,
@@ -378,4 +439,32 @@ fn renders_to_whole_pixels_without_a_light_edge() {
         "{:?}",
         image.pixel(400, bottom)
     );
+}
+
+#[test]
+fn renderer_reports_turned_sizes_and_stamps() {
+    use noido_core::{PageTransform, PageTransforms, Rotation};
+    let transforms = noido_render::Transforms::new(PageTransforms::from_records([(
+        0,
+        PageTransform {
+            rotation: Rotation::R90,
+        },
+    )]));
+    let (renderer, info) =
+        Renderer::start(Arc::new(HayroEngine), fixture(), transforms, no_waker()).unwrap();
+    assert_eq!(
+        info.page_sizes[0],
+        Size {
+            width: 792.0,
+            height: 612.0
+        }
+    );
+    renderer.request(RenderRequest {
+        page: 0,
+        scale: 0.5,
+    });
+    let rendered = recv(&renderer);
+    assert_eq!(rendered.transform.rotation, Rotation::R90);
+    let image = rendered.result.unwrap();
+    assert!(image.width() > image.height());
 }

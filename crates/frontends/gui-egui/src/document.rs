@@ -101,12 +101,30 @@ pub fn open(
     });
 
     // Shares the document bytes with the renderer; opens it in the background.
-    let thumbnailer =
-        Thumbnailer::start(Arc::new(HayroEngine), bytes.clone(), waker(ctx, viewport));
-    let sidebar_renderer =
-        Renderer::start_background(Arc::new(HayroEngine), bytes.clone(), waker(ctx, viewport));
-    let searcher = TextSearcher::start(Arc::new(HayroEngine), bytes.clone(), waker(ctx, viewport));
-    let linker = Linker::start(Arc::new(HayroEngine), bytes.clone(), waker(ctx, viewport));
+    let thumbnailer = Thumbnailer::start(
+        Arc::new(HayroEngine),
+        bytes.clone(),
+        noido_render::Transforms::default(),
+        waker(ctx, viewport),
+    );
+    let sidebar_renderer = Renderer::start_background(
+        Arc::new(HayroEngine),
+        bytes.clone(),
+        noido_render::Transforms::default(),
+        waker(ctx, viewport),
+    );
+    let searcher = TextSearcher::start(
+        Arc::new(HayroEngine),
+        bytes.clone(),
+        noido_render::Transforms::default(),
+        waker(ctx, viewport),
+    );
+    let linker = Linker::start(
+        Arc::new(HayroEngine),
+        bytes.clone(),
+        noido_render::Transforms::default(),
+        waker(ctx, viewport),
+    );
     let source = info::Source {
         engine: Arc::new(HayroEngine),
         bytes: bytes.clone(),
@@ -114,8 +132,13 @@ pub fn open(
         // what it shows is decided in one place (and `..` folded there).
         path: path.to_owned(),
     };
-    let (renderer, info) = Renderer::start(Arc::new(HayroEngine), bytes, waker(ctx, viewport))
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let (renderer, info) = Renderer::start(
+        Arc::new(HayroEngine),
+        bytes,
+        noido_render::Transforms::default(),
+        waker(ctx, viewport),
+    )
+    .map_err(|e| format!("{}: {e}", path.display()))?;
 
     let watcher = Watcher::start(
         path,

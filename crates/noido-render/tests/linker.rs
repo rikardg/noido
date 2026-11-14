@@ -120,7 +120,12 @@ fn linker() -> Linker {
         panicking_text: None,
         panicking_named: false,
     };
-    Linker::start(Arc::new(engine), Arc::new(Vec::new()), Box::new(|| {}))
+    Linker::start(
+        Arc::new(engine),
+        Arc::new(Vec::new()),
+        noido_render::Transforms::default(),
+        Box::new(|| {}),
+    )
 }
 
 fn recv(linker: &Linker) -> LinkReply {
@@ -158,7 +163,7 @@ fn answers_links_of_a_page() {
     let linker = linker();
     linker.request_links(0);
     match recv(&linker) {
-        LinkReply::Links { page, links } => {
+        LinkReply::Links { page, links, .. } => {
             assert_eq!(page, 0);
             assert_eq!(links, vec![web_link()]);
         }
@@ -171,7 +176,7 @@ fn failed_links_answer_empty() {
     let linker = linker();
     linker.request_links(1);
     match recv(&linker) {
-        LinkReply::Links { page, links } => {
+        LinkReply::Links { page, links, .. } => {
             assert_eq!(page, 1);
             assert!(links.is_empty());
         }
@@ -189,10 +194,15 @@ fn panicking_links_answer_empty_and_the_thread_lives() {
         panicking_text: None,
         panicking_named: false,
     };
-    let linker = Linker::start(Arc::new(engine), Arc::new(Vec::new()), Box::new(|| {}));
+    let linker = Linker::start(
+        Arc::new(engine),
+        Arc::new(Vec::new()),
+        noido_render::Transforms::default(),
+        Box::new(|| {}),
+    );
     linker.request_links(0);
     match recv(&linker) {
-        LinkReply::Links { page, links } => {
+        LinkReply::Links { page, links, .. } => {
             assert_eq!(page, 0);
             assert!(links.is_empty(), "the panicking page gave links");
         }
@@ -216,7 +226,12 @@ fn flash_survives_panicking_text() {
         panicking_text: Some(0),
         panicking_named: false,
     };
-    let linker = Linker::start(Arc::new(engine), Arc::new(Vec::new()), Box::new(|| {}));
+    let linker = Linker::start(
+        Arc::new(engine),
+        Arc::new(Vec::new()),
+        noido_render::Transforms::default(),
+        Box::new(|| {}),
+    );
     let area = flash_area(&linker, target(0, Some(300.0))).expect("no flash area");
     assert!((area.x - 61.2).abs() < 0.01);
     assert!((area.width - 489.6).abs() < 0.01);
@@ -232,7 +247,12 @@ fn panicking_named_destination_is_none() {
         panicking_text: None,
         panicking_named: true,
     };
-    let linker = Linker::start(Arc::new(engine), Arc::new(Vec::new()), Box::new(|| {}));
+    let linker = Linker::start(
+        Arc::new(engine),
+        Arc::new(Vec::new()),
+        noido_render::Transforms::default(),
+        Box::new(|| {}),
+    );
     linker.request_named("boom".into());
     assert!(matches!(
         recv(&linker),
@@ -349,7 +369,12 @@ impl Document for WholeDocument {
 }
 
 fn whole_document(engine: WholeDocument) -> Linker {
-    Linker::start(Arc::new(engine), Arc::new(Vec::new()), Box::new(|| {}))
+    Linker::start(
+        Arc::new(engine),
+        Arc::new(Vec::new()),
+        noido_render::Transforms::default(),
+        Box::new(|| {}),
+    )
 }
 
 #[test]
@@ -408,5 +433,114 @@ fn panicking_outline_gives_none() {
     match recv(&linker) {
         LinkReply::Outline(got) => assert!(got.is_empty()),
         other => panic!("unexpected reply: {other:?}"),
+    }
+}
+
+#[test]
+fn links_carry_their_stamp() {
+    use noido_core::{PageTransform, PageTransforms, Rotation};
+    let bytes: PdfBytes = Arc::new(
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/links.pdf"
+        ))
+        .unwrap(),
+    );
+    let transforms = noido_render::Transforms::new(PageTransforms::from_records([(
+        0,
+        PageTransform {
+            rotation: Rotation::R90,
+        },
+    )]));
+    let linker = Linker::start(
+        Arc::new(engine_hayro::HayroEngine),
+        bytes,
+        transforms,
+        Box::new(|| {}),
+    );
+    linker.request_links(0);
+    match recv(&linker) {
+        LinkReply::Links {
+            page, transform, ..
+        } => assert_eq!((page, transform.rotation), (0, Rotation::R90)),
+        _ => panic!("links expected"),
+    }
+}
+
+/// The flash for `target` on a page of `text.pdf` turned by `rotation`,
+/// and for the same spot on the page upright: the turned one must be the
+/// upright one turned.
+fn flash_turned_like_upright(rotation: noido_core::Rotation, at: (Option<f32>, Option<f32>)) {
+    use noido_core::{PageTransform, PageTransforms};
+    let bytes: PdfBytes = Arc::new(
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/text.pdf"
+        ))
+        .unwrap(),
+    );
+    let start = |transforms| {
+        Linker::start(
+            Arc::new(engine_hayro::HayroEngine),
+            bytes.clone(),
+            transforms,
+            Box::new(|| {}),
+        )
+    };
+    let letter = noido_engine::Size {
+        width: 612.0,
+        height: 792.0,
+    };
+    let upright = Destination {
+        page: 0,
+        x: at.0,
+        y: at.1,
+    };
+    let want =
+        flash_area(&start(noido_render::Transforms::default()), upright).expect("a flash upright");
+    let p = rotation.point(
+        noido_engine::Point {
+            x: at.0.unwrap_or(f32::NAN),
+            y: at.1.unwrap_or(f32::NAN),
+        },
+        letter,
+    );
+    let known = |v: f32| (!v.is_nan()).then_some(v);
+    let turned = Destination {
+        page: 0,
+        x: known(p.x),
+        y: known(p.y),
+    };
+    let transforms = noido_render::Transforms::new(PageTransforms::from_records([(
+        0,
+        PageTransform { rotation },
+    )]));
+    let got = flash_area(&start(transforms), turned).expect("a flash turned");
+    let want = rotation.rect(want, letter);
+    let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+    assert!(
+        near(got.x, want.x)
+            && near(got.y, want.y)
+            && near(got.width, want.width)
+            && near(got.height, want.height),
+        "{rotation:?} {at:?}: {got:?}, want {want:?}"
+    );
+}
+
+#[test]
+fn the_flash_on_a_turned_page_is_its_line_turned() {
+    use noido_core::Rotation;
+    // A little above "noido", the second line (baseline 112 from the top).
+    for rotation in Rotation::ALL {
+        flash_turned_like_upright(rotation, (Some(72.0), Some(100.0)));
+    }
+}
+
+#[test]
+fn the_flash_bar_on_a_turned_page_crosses_its_text() {
+    use noido_core::Rotation;
+    // Below all the text: no line, a bar across the text at that height.
+    for rotation in Rotation::ALL {
+        flash_turned_like_upright(rotation, (Some(72.0), Some(500.0)));
     }
 }

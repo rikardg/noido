@@ -194,7 +194,7 @@ impl Search {
                 } if generation == self.generation && self.searched.is_some() => {
                     self.done = Some(cut_short);
                 }
-                SearchUpdate::Text { page, text } => self.texts.push((page, text)),
+                SearchUpdate::Text { page, text, .. } => self.texts.push((page, text)),
                 _ => {}
             }
         }
