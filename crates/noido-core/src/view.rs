@@ -471,6 +471,7 @@ impl View {
             Action::LastPage => self.go_to_page(self.layout.page_count().saturating_sub(1)),
             // Not about the page view; frontends handle these.
             Action::ToggleSidebar
+            | Action::ToggleScaleToFit
             | Action::FitWindowWidth
             | Action::FitWindowPage
             | Action::FocusSearch

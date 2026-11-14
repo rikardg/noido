@@ -12,6 +12,7 @@ pub enum Check {
     Dual,
     OddLeft,
     Gapless,
+    ScaleToFit,
     Sidebar,
     SelectTool,
 }
@@ -151,6 +152,7 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
             check(Action::ToggleDual, "Dual page", Check::Dual),
             check(Action::ToggleOddLeft, "Odd pages left", Check::OddLeft),
             check(Action::ToggleGapless, "Gapless mode", Check::Gapless),
+            check(Action::ToggleScaleToFit, "Scale to fit", Check::ScaleToFit),
         ],
         vec![check(Action::ToggleSidebar, "Show sidebar", Check::Sidebar)],
         vec![check(
@@ -208,7 +210,13 @@ mod tests {
                     "Zoom in",
                     "Zoom out"
                 ],
-                vec!["Continuous", "Dual page", "Odd pages left", "Gapless mode"],
+                vec![
+                    "Continuous",
+                    "Dual page",
+                    "Odd pages left",
+                    "Gapless mode",
+                    "Scale to fit"
+                ],
                 vec!["Show sidebar"],
                 vec!["Select text"],
                 vec!["Undo", "Redo"],
@@ -232,6 +240,7 @@ mod tests {
                 "Dual page",
                 "Odd pages left",
                 "Gapless mode",
+                "Scale to fit",
                 "Show sidebar",
                 "Select text"
             ]
@@ -367,6 +376,10 @@ mod tests {
     fn every_menu_action_has_a_key() {
         let keymap = Keymap::native();
         for entry in menu().iter().flatten() {
+            // Menu only, by design: no key is bound to it.
+            if entry.action == Action::ToggleScaleToFit {
+                continue;
+            }
             assert!(keymap.key_for(entry.action).is_some(), "{}", entry.label);
         }
     }
