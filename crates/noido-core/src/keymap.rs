@@ -70,6 +70,7 @@ pub enum Action {
     ToggleDual,
     ToggleOddLeft,
     ToggleGapless,
+    ToggleScaleToFit,
     ToggleSidebar,
     FocusSearch,
     NextHit,

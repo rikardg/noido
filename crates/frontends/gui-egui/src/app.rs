@@ -8052,14 +8052,14 @@ pub(crate) mod tests {
     #[test]
     fn the_menu_may_use_the_whole_window() {
         let mut h = Harness::new();
-        h.size = vec2(900.0, 1200.0);
+        h.size = vec2(900.0, 1300.0);
         h.frames(2, vec![]);
         h.click(h.app.bar.menu.center());
         h.frames(30, vec![]);
         let quit = h
             .text_rect("Quit")
             .expect("a tall window shows the whole menu");
-        assert!(quit.bottom() <= 1200.0, "{quit:?} is inside the window");
+        assert!(quit.bottom() <= 1300.0, "{quit:?} is inside the window");
     }
 
     #[test]
