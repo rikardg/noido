@@ -1266,6 +1266,7 @@ dependencies = [
  "noido-engine",
  "roxmltree 0.21.2",
  "self_cell",
+ "tempfile",
 ]
 
 [[package]]
@@ -1789,6 +1790,7 @@ dependencies = [
  "blake3",
  "clap",
  "ctrlc",
+ "directories",
  "eframe",
  "engine-hayro",
  "interprocess",
@@ -2709,6 +2711,10 @@ dependencies = [
 name = "noido-engine"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "memmap2",
+ "rustix 1.1.6",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 

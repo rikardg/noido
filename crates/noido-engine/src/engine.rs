@@ -1,10 +1,6 @@
-use std::sync::Arc;
-
-/// The bytes of a PDF file, shared without copying between loader, render
-/// thread and engine.
-pub type PdfBytes = Arc<Vec<u8>>;
-
-use crate::{Destination, Glyph, Link, OutlineEntry, PixelRect, Properties, Rgba8Image, Size};
+use crate::{
+    Destination, Glyph, Link, OutlineEntry, PdfBytes, PixelRect, Properties, Rgba8Image, Size,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {

@@ -6,12 +6,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use engine_hayro::HayroEngine;
+use noido_engine::PdfBytes;
 use noido_render::{SearchUpdate, TextSearcher};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let path = args.get(1).expect("usage: search_text <file.pdf> <query>…");
-    let bytes = Arc::new(std::fs::read(path).expect("read file"));
+    let bytes = PdfBytes::from(std::fs::read(path).expect("read file"));
     let mut searcher = TextSearcher::start(
         Arc::new(HayroEngine),
         bytes,

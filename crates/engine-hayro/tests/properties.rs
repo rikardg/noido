@@ -1,12 +1,10 @@
-use std::sync::Arc;
-
 use engine_hayro::HayroEngine;
 use noido_engine::{Date, Document, Font, PdfBytes, PdfEngine, Properties};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures");
 
 fn open(name: &str) -> Box<dyn Document> {
-    let bytes: PdfBytes = Arc::new(std::fs::read(format!("{FIXTURES}/{name}")).unwrap());
+    let bytes: PdfBytes = PdfBytes::from(std::fs::read(format!("{FIXTURES}/{name}")).unwrap());
     HayroEngine.open(bytes).unwrap()
 }
 
@@ -141,7 +139,7 @@ fn nested_forms(depth: usize) -> Vec<u8> {
 
 #[test]
 fn deeply_nested_forms_do_not_overflow_the_stack() {
-    let bytes: PdfBytes = Arc::new(nested_forms(5_000));
+    let bytes = PdfBytes::from(nested_forms(5_000));
     let fonts = HayroEngine.open(bytes).unwrap().properties().fonts;
     assert_eq!(fonts, vec![font("Deepest", false)]);
 }

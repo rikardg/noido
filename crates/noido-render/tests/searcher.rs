@@ -123,7 +123,7 @@ impl Document for TextEngine {
 fn start(engine: &TextEngine) -> TextSearcher {
     TextSearcher::start(
         Arc::new(engine.clone()),
-        Arc::new(Vec::new()),
+        PdfBytes::default(),
         noido_render::Transforms::default(),
         Box::new(|| {}),
     )
@@ -505,7 +505,7 @@ fn wakes_per_update() {
     let counter = wakes.clone();
     let mut searcher = TextSearcher::start(
         Arc::new(engine.clone()),
-        Arc::new(Vec::new()),
+        PdfBytes::default(),
         noido_render::Transforms::default(),
         Box::new(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -603,7 +603,7 @@ fn text_leaves_out_glyphs_off_the_page() {
 #[test]
 fn forgotten_text_is_read_again_turned() {
     use noido_core::{PageTransform, Rotation};
-    let bytes: PdfBytes = Arc::new(
+    let bytes = PdfBytes::from(
         std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/text.pdf"

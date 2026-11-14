@@ -1,8 +1,6 @@
 //! The document as the reader turned it: sizes, renders, glyphs, links and
 //! destinations all come out turned.
 
-use std::sync::Arc;
-
 use engine_hayro::HayroEngine;
 use noido_core::{PageTransform, PageTransforms, Rotation};
 use noido_engine::{
@@ -13,7 +11,7 @@ use noido_render::{Transformed, Transforms, open_transformed};
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures");
 
 fn bytes(name: &str) -> PdfBytes {
-    Arc::new(std::fs::read(format!("{FIXTURES}/{name}")).unwrap())
+    PdfBytes::from(std::fs::read(format!("{FIXTURES}/{name}")).unwrap())
 }
 
 fn plain(name: &str) -> Box<dyn Document> {

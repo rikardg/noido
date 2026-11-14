@@ -76,7 +76,7 @@ fn start(pages: usize, gated: bool) -> Setup {
     };
     let thumbnailer = Thumbnailer::start(
         Arc::new(engine),
-        Arc::new(vec![]),
+        PdfBytes::default(),
         noido_render::Transforms::default(),
         Box::new(|| {}),
     );
@@ -173,7 +173,7 @@ fn a_panicking_page_does_not_end_the_thumbnails() {
     };
     let thumbnailer = Thumbnailer::start(
         Arc::new(engine),
-        Arc::new(vec![]),
+        PdfBytes::default(),
         noido_render::Transforms::default(),
         Box::new(|| {}),
     );
@@ -217,7 +217,7 @@ fn open_failure_stops_quietly() {
     };
     let thumbnailer = Thumbnailer::start(
         Arc::new(engine),
-        Arc::new(vec![]),
+        PdfBytes::default(),
         noido_render::Transforms::default(),
         Box::new(|| {}),
     );
@@ -248,7 +248,7 @@ fn every_focus_evicts_even_when_read_together() {
 #[test]
 fn thumbnails_have_no_light_edge() {
     // Letter 120 px wide is 155.29 px tall.
-    let black = Arc::new(
+    let black = PdfBytes::from(
         std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/black.pdf"
@@ -293,7 +293,7 @@ fn thumbnail_refresh_renders_again_with_its_stamp() {
     let transforms = noido_render::Transforms::default();
     let thumbnailer = Thumbnailer::start(
         Arc::new(engine),
-        Arc::new(vec![]),
+        PdfBytes::default(),
         transforms.clone(),
         Box::new(|| {}),
     );

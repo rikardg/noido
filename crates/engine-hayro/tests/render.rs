@@ -1,12 +1,10 @@
-use std::sync::Arc;
-
 use engine_hayro::HayroEngine;
 use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Size};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/two-pages.pdf");
 
 fn open_fixture() -> Box<dyn Document> {
-    let bytes: PdfBytes = Arc::new(std::fs::read(FIXTURE).unwrap());
+    let bytes: PdfBytes = PdfBytes::from(std::fs::read(FIXTURE).unwrap());
     HayroEngine.open(bytes).unwrap()
 }
 
@@ -118,7 +116,7 @@ fn a_tiling_pattern_with_a_step_bigger_than_the_page_renders() {
     // One 10 pt red tile, repeated every 99999 pt: a tile that cannot be
     // sized by its step. Sizing it by the step overflows a 16-bit pixel
     // dimension, which vello answers with a panic.
-    let bytes: PdfBytes = Arc::new(
+    let bytes = PdfBytes::from(
         std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/tiling.pdf"
@@ -148,23 +146,24 @@ fn a_tiling_pattern_with_a_step_bigger_than_the_page_renders() {
 #[test]
 fn garbage_and_empty_fail_to_open() {
     assert!(matches!(
-        HayroEngine.open(Arc::new(b"hello".to_vec())),
+        HayroEngine.open(PdfBytes::from(b"hello".to_vec())),
         Err(EngineError::Open(_))
     ));
     assert!(matches!(
-        HayroEngine.open(Arc::new(Vec::new())),
+        HayroEngine.open(PdfBytes::default()),
         Err(EngineError::Open(_))
     ));
 }
 
 #[test]
 fn open_shares_bytes_without_copying() {
-    let bytes: PdfBytes = Arc::new(std::fs::read(FIXTURE).unwrap());
+    let bytes = PdfBytes::from(std::fs::read(FIXTURE).unwrap());
     let doc = HayroEngine.open(bytes.clone()).unwrap();
-    // The document holds references to the caller's buffer instead of a copy.
-    assert!(Arc::strong_count(&bytes) > 1);
+    // Cloning a handle shares the bytes instead of copying them, mapped or
+    // read, so the document and the caller read the same buffer.
+    assert_eq!(bytes.as_ptr(), bytes.clone().as_ptr());
     drop(doc);
-    assert_eq!(Arc::strong_count(&bytes), 1);
+    assert!(bytes.starts_with(b"%PDF-"));
 }
 
 /// Where the fixture's black square (x 100–200, 100–200 pt from the bottom)
@@ -208,7 +207,7 @@ fn content_lands_in_the_same_place_at_every_scale() {
 #[test]
 fn whole_page_render_has_no_light_edge() {
     // Letter at 1.37 is 838.44 × 1085.04 px: neither side is whole.
-    let bytes: PdfBytes = Arc::new(
+    let bytes: PdfBytes = PdfBytes::from(
         std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/black.pdf"

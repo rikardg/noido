@@ -14,5 +14,8 @@ hayro.workspace = true
 roxmltree.workspace = true
 self_cell.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true
