@@ -612,8 +612,9 @@ fn own_title_bar(builder: egui::ViewportBuilder) -> egui::ViewportBuilder {
 fn root_viewport() -> egui::ViewportBuilder {
     egui::ViewportBuilder::default()
         .with_title("noido")
-        // eframe gives the Dock the root's icon, or its own if there is none.
-        .with_icon(icon::window_icon())
+        // eframe gives the Dock the root's icon, or its own if there is none;
+        // it replaces the bundle's, so it has the bundle's margin.
+        .with_icon(icon::app_icon_macos())
         .with_visible(false)
 }
 
@@ -651,7 +652,7 @@ mod tests {
     fn the_hidden_root_carries_the_app_icon() {
         let root = root_viewport();
         assert_eq!(root.visible, Some(false));
-        assert_eq!(root.icon.as_deref(), Some(&icon::window_icon()));
+        assert_eq!(root.icon.as_deref(), Some(&icon::app_icon_macos()));
     }
 
     #[test]

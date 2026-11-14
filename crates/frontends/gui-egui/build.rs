@@ -1,6 +1,7 @@
 //! Stamps the commit into `noido --version`: `0.1.0+deadbeef`, and renders
 //! the window icon and the macOS app's `.icns` from `assets/noido.svg`.
-//! The `.icns` gets the margin and shadow of Apple's icon template.
+//! The `.icns`, and the app icon noido sets on macOS while it runs, get the
+//! margin and shadow of Apple's icon template.
 //!
 //! The commit comes in `NOIDO_GIT_SHA`: from the workflow for a release,
 //! and from the justfile, which reads the working copy, for every `just`
@@ -15,8 +16,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The icon's source, and the side of the window icon rendered from it
-/// (`src/icon.rs` holds the same number).
+/// The icon's source, and the side of the window icon and macOS's app icon
+/// rendered from it (`src/icon.rs` holds the same number).
 const ICON_SVG: &str = "assets/noido.svg";
 const ICON_SIDE: u32 = 256;
 
@@ -37,8 +38,10 @@ fn main() {
     // The macOS wrapper places the body in a 0 0 1024 1024 viewBox.
     assert_eq!(size.width(), 1024.0, "{ICON_SVG} must be 1024 wide");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
-    write_window_icon(&tree, &out);
-    write_icns(&parse(&macos_icon_svg(&svg)), &out);
+    write_rgba(&tree, &out.join("icon.rgba"));
+    let macos = parse(&macos_icon_svg(&svg));
+    write_rgba(&macos, &out.join("icon-macos.rgba"));
+    write_icns(&macos, &out);
 }
 
 fn parse(svg: &str) -> resvg::usvg::Tree {
@@ -47,8 +50,9 @@ fn parse(svg: &str) -> resvg::usvg::Tree {
 
 /// The icon as Apple's macOS template wants it: on a 1024 canvas, the
 /// full-bleed icon shrunk to an 824 tile in the middle, with a drop shadow
-/// in the margin (black at 30 %, 10 px down, blurred). The window icon and
-/// the Linux desktop keep the full-bleed SVG.
+/// in the margin (black at 30 %, 10 px down, blurred). The `.icns` and the
+/// app icon macOS shows while noido runs are rendered from it; the window
+/// icon and the Linux desktop keep the full-bleed SVG.
 fn macos_icon_svg(svg: &str) -> String {
     let open = svg.find("<svg").expect("an <svg> element");
     let body_start = open + svg[open..].find('>').expect("the <svg> tag's end") + 1;
@@ -81,8 +85,10 @@ fn render(tree: &resvg::usvg::Tree, side: u32) -> tiny_skia::Pixmap {
     pixmap
 }
 
-/// The window icon, `$OUT_DIR/icon.rgba`: straight RGBA, as winit wants it.
-fn write_window_icon(tree: &resvg::usvg::Tree, out: &Path) {
+/// An icon at the window icon's side, written to `path` as straight RGBA,
+/// as winit and eframe want it: the window icon (`icon.rgba`) and the
+/// app icon macOS shows while noido runs (`icon-macos.rgba`).
+fn write_rgba(tree: &resvg::usvg::Tree, path: &Path) {
     // tiny-skia keeps colour premultiplied by alpha.
     let rgba: Vec<u8> = render(tree, ICON_SIDE)
         .pixels()
@@ -92,7 +98,7 @@ fn write_window_icon(tree: &resvg::usvg::Tree, out: &Path) {
             [c.red(), c.green(), c.blue(), c.alpha()]
         })
         .collect();
-    std::fs::write(out.join("icon.rgba"), rgba).expect("write the icon");
+    std::fs::write(path, rgba).expect("write the icon");
 }
 
 /// The macOS app's icon, `$OUT_DIR/noido.icns`, packed here rather than by
