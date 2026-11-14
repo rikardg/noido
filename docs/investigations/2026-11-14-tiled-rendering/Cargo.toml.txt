@@ -1,0 +1,11 @@
+[package]
+name = "tilebench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hayro = { git = "https://github.com/bitemyapp/hayro", rev = "3ec1c46a7d0d2407803e9cecf4a7e7cc0720039a" }
+vello_cpu = { version = "0.3", default-features = false, features = ["std", "png", "u8_pipeline", "multithreading"] }
+
+[profile.release]
+debug = false
