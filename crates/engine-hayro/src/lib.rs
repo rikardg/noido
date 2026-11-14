@@ -28,7 +28,13 @@ pub struct HayroEngine;
 
 impl PdfEngine for HayroEngine {
     fn open(&self, bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
-        let pdf = Pdf::new(bytes).map_err(|e| EngineError::Open(format!("{e:?}")))?;
+        // A mapped clone and bytes read into memory open alike: hayro only
+        // asks for a slice either way.
+        let pdf = match bytes {
+            PdfBytes::Mapped(map) => Pdf::new(map),
+            PdfBytes::Memory(bytes) => Pdf::new(bytes),
+        }
+        .map_err(|e| EngineError::Open(format!("{e:?}")))?;
         Ok(Box::new(HayroDocument::new(pdf)))
     }
 }
@@ -254,12 +260,41 @@ impl Document for HayroDocument {
 mod tests {
     use super::*;
     use noido_engine::PixelRect;
-    use std::sync::Arc;
+
+    fn fixture(name: &str) -> std::path::PathBuf {
+        format!("{}/../../fixtures/{name}", env!("CARGO_MANIFEST_DIR")).into()
+    }
 
     fn open(name: &str) -> HayroDocument {
-        let path = format!("{}/../../fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
-        let bytes: PdfBytes = Arc::new(std::fs::read(path).unwrap());
-        HayroDocument::new(Pdf::new(bytes).unwrap())
+        open_bytes(PdfBytes::from(std::fs::read(fixture(name)).unwrap()))
+    }
+
+    fn open_bytes(bytes: PdfBytes) -> HayroDocument {
+        let pdf = match bytes {
+            PdfBytes::Mapped(map) => Pdf::new(map),
+            PdfBytes::Memory(bytes) => Pdf::new(bytes),
+        };
+        HayroDocument::new(pdf.unwrap())
+    }
+
+    #[test]
+    fn a_mapped_clone_opens_and_renders_like_bytes_in_memory() {
+        // In a directory of its own, so nothing is cloned beside the
+        // fixtures; the temp file system clones on APFS and btrfs and the
+        // test skips where it does not.
+        let Ok(dir) = tempfile::TempDir::new() else {
+            return;
+        };
+        let path = dir.path().join("text.pdf");
+        std::fs::copy(fixture("text.pdf"), &path).unwrap();
+        let Some(mapped) = PdfBytes::mapped_in(&path, dir.path()) else {
+            eprintln!("skipping: this file system cannot clone");
+            return;
+        };
+        let in_memory = PdfBytes::from(std::fs::read(&path).unwrap());
+        let (mapped, in_memory) = (open_bytes(mapped), open_bytes(in_memory));
+        assert_eq!(mapped.page_count(), in_memory.page_count());
+        assert_eq!(tile(&mapped, 0, 1.0), tile(&in_memory, 0, 1.0));
     }
 
     /// Pixel bytes whose `Debug` is short: the length and a checksum, not

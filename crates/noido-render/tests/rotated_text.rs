@@ -1,8 +1,6 @@
 //! Text on a page the PDF itself turns (`/Rotate 90`) picks and draws as
 //! the same text upright does.
 
-use std::sync::Arc;
-
 use engine_hayro::HayroEngine;
 use noido_engine::{PdfBytes, PdfEngine};
 use noido_text::PageText;
@@ -10,7 +8,7 @@ use noido_text::PageText;
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures");
 
 fn text_pdf_page(page: usize) -> PageText {
-    let bytes: PdfBytes = Arc::new(std::fs::read(format!("{FIXTURES}/text.pdf")).unwrap());
+    let bytes = PdfBytes::from(std::fs::read(format!("{FIXTURES}/text.pdf")).unwrap());
     let document = HayroEngine.open(bytes).unwrap();
     PageText::new(document.text(page).unwrap())
 }

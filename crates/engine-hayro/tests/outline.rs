@@ -1,12 +1,10 @@
-use std::sync::Arc;
-
 use engine_hayro::HayroEngine;
 use noido_engine::{Destination, Document, LinkTarget, OutlineEntry, PdfBytes, PdfEngine};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures");
 
 fn open(name: &str) -> Box<dyn Document> {
-    let bytes: PdfBytes = Arc::new(std::fs::read(format!("{FIXTURES}/{name}")).unwrap());
+    let bytes: PdfBytes = PdfBytes::from(std::fs::read(format!("{FIXTURES}/{name}")).unwrap());
     HayroEngine.open(bytes).unwrap()
 }
 

@@ -3,14 +3,14 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use engine_hayro::HayroEngine;
-use noido_engine::Properties;
+use noido_engine::{PdfBytes, Properties};
 use noido_render::read_properties;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures");
 
 #[test]
 fn properties_arrive_and_wake_the_app() {
-    let bytes = Arc::new(std::fs::read(format!("{FIXTURES}/properties.pdf")).unwrap());
+    let bytes = PdfBytes::from(std::fs::read(format!("{FIXTURES}/properties.pdf")).unwrap());
     let (wake, woken) = mpsc::channel();
     let reply = read_properties(
         Arc::new(HayroEngine),
@@ -31,7 +31,7 @@ fn properties_arrive_and_wake_the_app() {
 fn a_document_that_does_not_open_has_no_properties() {
     let reply = read_properties(
         Arc::new(HayroEngine),
-        Arc::new(b"not a pdf".to_vec()),
+        PdfBytes::from(b"not a pdf".to_vec()),
         Box::new(|| {}),
     );
     assert_eq!(

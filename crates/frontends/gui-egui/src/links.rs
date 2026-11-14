@@ -262,7 +262,7 @@ mod tests {
         let mut links = Links::new(2);
         let linker = Linker::start(
             Arc::new(Places),
-            Arc::new(Vec::new()),
+            PdfBytes::default(),
             noido_render::Transforms::default(),
             Box::new(|| {}),
         );

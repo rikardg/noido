@@ -122,7 +122,7 @@ fn linker() -> Linker {
     };
     Linker::start(
         Arc::new(engine),
-        Arc::new(Vec::new()),
+        PdfBytes::default(),
         noido_render::Transforms::default(),
         Box::new(|| {}),
     )
@@ -196,7 +196,7 @@ fn panicking_links_answer_empty_and_the_thread_lives() {
     };
     let linker = Linker::start(
         Arc::new(engine),
-        Arc::new(Vec::new()),
+        PdfBytes::default(),
         noido_render::Transforms::default(),
         Box::new(|| {}),
     );
@@ -228,7 +228,7 @@ fn flash_survives_panicking_text() {
     };
     let linker = Linker::start(
         Arc::new(engine),
-        Arc::new(Vec::new()),
+        PdfBytes::default(),
         noido_render::Transforms::default(),
         Box::new(|| {}),
     );
@@ -249,7 +249,7 @@ fn panicking_named_destination_is_none() {
     };
     let linker = Linker::start(
         Arc::new(engine),
-        Arc::new(Vec::new()),
+        PdfBytes::default(),
         noido_render::Transforms::default(),
         Box::new(|| {}),
     );
@@ -371,7 +371,7 @@ impl Document for WholeDocument {
 fn whole_document(engine: WholeDocument) -> Linker {
     Linker::start(
         Arc::new(engine),
-        Arc::new(Vec::new()),
+        PdfBytes::default(),
         noido_render::Transforms::default(),
         Box::new(|| {}),
     )
@@ -439,7 +439,7 @@ fn panicking_outline_gives_none() {
 #[test]
 fn links_carry_their_stamp() {
     use noido_core::{PageTransform, PageTransforms, Rotation};
-    let bytes: PdfBytes = Arc::new(
+    let bytes = PdfBytes::from(
         std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/links.pdf"
@@ -473,7 +473,7 @@ fn links_carry_their_stamp() {
 /// upright one turned.
 fn flash_turned_like_upright(rotation: noido_core::Rotation, at: (Option<f32>, Option<f32>)) {
     use noido_core::{PageTransform, PageTransforms};
-    let bytes: PdfBytes = Arc::new(
+    let bytes = PdfBytes::from(
         std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/text.pdf"

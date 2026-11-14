@@ -10,7 +10,7 @@ use noido_render::{RenderRequest, RenderedPage, Renderer};
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/two-pages.pdf");
 
 fn fixture() -> PdfBytes {
-    Arc::new(std::fs::read(FIXTURE).unwrap())
+    PdfBytes::from(std::fs::read(FIXTURE).unwrap())
 }
 
 fn no_waker() -> Box<dyn Fn() + Send> {
@@ -56,7 +56,7 @@ fn start_reports_page_sizes() {
 fn start_fails_on_garbage() {
     let result = Renderer::start(
         Arc::new(HayroEngine),
-        Arc::new(b"nope".to_vec()),
+        PdfBytes::from(b"nope".to_vec()),
         noido_render::Transforms::default(),
         no_waker(),
     );
@@ -392,7 +392,7 @@ fn background_start_renders_requested_page() {
 fn background_start_on_garbage_delivers_nothing() {
     let renderer = Renderer::start_background(
         Arc::new(HayroEngine),
-        Arc::new(b"nope".to_vec()),
+        PdfBytes::from(b"nope".to_vec()),
         noido_render::Transforms::default(),
         no_waker(),
     );
@@ -408,7 +408,7 @@ fn background_start_on_garbage_delivers_nothing() {
 fn renders_to_whole_pixels_without_a_light_edge() {
     // Letter at 1.37 is 838.44 × 1085.04 px; a light last column or row
     // shows as a line between pages drawn without a gap.
-    let black = Arc::new(
+    let black = PdfBytes::from(
         std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/black.pdf"
@@ -472,7 +472,7 @@ fn renderer_reports_turned_sizes_and_stamps() {
 
 #[test]
 fn start_with_scale_to_fit_reports_fitted_sizes() {
-    let bytes: PdfBytes = Arc::new(
+    let bytes = PdfBytes::from(
         std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/mixed-sizes.pdf"

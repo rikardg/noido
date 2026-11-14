@@ -3490,7 +3490,7 @@ pub(crate) mod tests {
     pub(crate) fn blank_app() -> NoidoApp {
         let (renderer, info) = Renderer::start(
             Arc::new(BlankEngine),
-            Arc::new(Vec::new()),
+            PdfBytes::default(),
             noido_render::Transforms::default(),
             Box::new(|| {}),
         )
@@ -3591,7 +3591,7 @@ pub(crate) mod tests {
         ) -> Self {
             let (renderer, info) = Renderer::start(
                 engine,
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 transforms.clone(),
                 Box::new(|| {}),
             )
@@ -3707,7 +3707,7 @@ pub(crate) mod tests {
         /// Hands the app a new version of the document, opened with `engine`
         /// and identified by `key`, and runs a frame.
         fn reload(&mut self, engine: Arc<dyn PdfEngine>, key: DocKey) {
-            let bytes = Arc::new(b"new version".to_vec());
+            let bytes = PdfBytes::from(b"new version".to_vec());
             let (renderer, info) = Renderer::start(
                 engine.clone(),
                 bytes.clone(),
@@ -3760,7 +3760,7 @@ pub(crate) mod tests {
             sidebar: RecordingEngine,
             key: DocKey,
         ) {
-            let bytes = Arc::new(Vec::new());
+            let bytes = PdfBytes::default();
             let (renderer, info) = Renderer::start(
                 engine.clone(),
                 bytes.clone(),
@@ -6381,7 +6381,7 @@ pub(crate) mod tests {
     fn with_info_source(bytes: &[u8]) -> Harness {
         let source = crate::info::Source {
             engine: Arc::new(PropsEngine),
-            bytes: Arc::new(bytes.to_vec()),
+            bytes: PdfBytes::from(bytes.to_vec()),
             path: "/docs/paper.pdf".into(),
         };
         Harness::build(|app| app.with_source(source))
@@ -6484,7 +6484,7 @@ pub(crate) mod tests {
         let title = "A title long enough that it has to wrap onto a second line in the dialog";
         let source = crate::info::Source {
             engine: Arc::new(GatedProps(std::sync::Mutex::new(gate))),
-            bytes: Arc::new(title.as_bytes().to_vec()),
+            bytes: PdfBytes::from(title.as_bytes().to_vec()),
             path: "/docs/paper.pdf".into(),
         };
         let mut h = Harness::build(|app| app.with_source(source));
@@ -6511,7 +6511,7 @@ pub(crate) mod tests {
         go.send(()).unwrap();
         let source = crate::info::Source {
             engine: Arc::new(GatedProps(std::sync::Mutex::new(gate))),
-            bytes: Arc::new(vec![]),
+            bytes: PdfBytes::default(),
             path: "/docs/paper.pdf".into(),
         };
         let mut h = Harness::build(|app| app.with_source(source));
@@ -6558,7 +6558,7 @@ pub(crate) mod tests {
     fn info_shows_the_folder_without_the_way_there() {
         let source = crate::info::Source {
             engine: Arc::new(PropsEngine),
-            bytes: Arc::new(b"Info Title".to_vec()),
+            bytes: PdfBytes::from(b"Info Title".to_vec()),
             path: "/docs/scans/../papers/./paper.pdf".into(),
         };
         let mut h = Harness::build(|app| app.with_source(source));
@@ -6576,13 +6576,13 @@ pub(crate) mod tests {
         let searcher = engine.clone();
         let source = crate::info::Source {
             engine: Arc::new(engine.clone()),
-            bytes: Arc::new(Vec::new()),
+            bytes: PdfBytes::default(),
             path: "/docs/paper.pdf".into(),
         };
         Harness::build_with(Arc::new(engine.clone()), move |app| {
             app.with_source(source).with_searcher(TextSearcher::start(
                 Arc::new(searcher),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
@@ -6682,7 +6682,7 @@ pub(crate) mod tests {
     ) -> Harness {
         let source = crate::info::Source {
             engine: Arc::new(PropsEngine),
-            bytes: Arc::new(b"Info Title".to_vec()),
+            bytes: PdfBytes::from(b"Info Title".to_vec()),
             path: "/docs/paper.pdf".into(),
         };
         let (store, slot) = (Store::at(dir), test_slot(dir));
@@ -6976,7 +6976,7 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(BlankEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -7008,7 +7008,7 @@ pub(crate) mod tests {
         let mut h = Harness::build_with(engine, |app| {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(BlankEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -7074,7 +7074,7 @@ pub(crate) mod tests {
         let mut h = Harness::build_with(engine, |app| {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(BlankEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -7115,7 +7115,7 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| {
             let thumbnailer = Thumbnailer::start(
                 gated,
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -7137,7 +7137,7 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(BlankEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -7573,7 +7573,7 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(BlankEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -7631,7 +7631,7 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| {
             let renderer = Renderer::start_background(
                 Arc::new(engine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -7846,13 +7846,13 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
             let sidebar = Renderer::start_background(
                 Arc::new(BlankEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -7988,13 +7988,13 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
             let sidebar = Renderer::start_background(
                 engine,
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -8464,7 +8464,7 @@ pub(crate) mod tests {
             // Fails to open: no low-res thumbnails arrive to replace ours.
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -8654,7 +8654,7 @@ pub(crate) mod tests {
             // Fails to open: no low-res thumbnails arrive to replace ours.
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -8687,13 +8687,13 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
             let sidebar = Renderer::start_background(
                 gated,
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -8732,13 +8732,13 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
             let sidebar = Renderer::start_background(
                 Arc::new(BlankEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -9278,13 +9278,13 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| {
             let thumbnailer = Thumbnailer::start(
                 Arc::new(UnopenableEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
             let sidebar = Renderer::start_background(
                 engine,
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -9537,7 +9537,7 @@ pub(crate) mod tests {
         let mut h = Harness::build_with(engine, |app| {
             app.with_thumbnails(Thumbnailer::start(
                 Arc::new(UnopenableEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
@@ -9597,7 +9597,7 @@ pub(crate) mod tests {
             app.sidebar.open = true;
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
@@ -10394,7 +10394,7 @@ pub(crate) mod tests {
         let mut h = Harness::build_with(engine.clone(), |app| {
             app.with_thumbnails(Thumbnailer::start(
                 engine,
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
@@ -10480,7 +10480,7 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| {
             let renderer = Renderer::start_background(
                 Arc::new(SlowEngine),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             );
@@ -11179,7 +11179,7 @@ pub(crate) mod tests {
         Harness::build_with(Arc::new(engine.clone()), move |app| {
             app.with_searcher(TextSearcher::start(
                 Arc::new(searcher),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
@@ -12261,7 +12261,7 @@ pub(crate) mod tests {
         Harness::build_with(Arc::new(engine.clone()), move |app| {
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
@@ -12679,13 +12679,13 @@ pub(crate) mod tests {
         let mut h = Harness::build_with(Arc::new(engine), move |app| {
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
             .with_searcher(TextSearcher::start(
                 Arc::new(searcher),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
@@ -12973,7 +12973,7 @@ pub(crate) mod tests {
         Harness::build_with(Arc::new(engine), move |app| {
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
@@ -13007,7 +13007,7 @@ pub(crate) mod tests {
         let h = Harness::build_with(Arc::new(engine.clone()), move |app| {
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
@@ -13053,7 +13053,7 @@ pub(crate) mod tests {
             move |app| {
                 app.with_linker(noido_render::Linker::start(
                     Arc::new(linker),
-                    Arc::new(Vec::new()),
+                    PdfBytes::default(),
                     noido_render::Transforms::default(),
                     Box::new(|| {}),
                 ))
@@ -13580,13 +13580,13 @@ pub(crate) mod tests {
         let mut h = Harness::build_with(Arc::new(engine), move |app| {
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
             .with_searcher(TextSearcher::start(
                 Arc::new(searcher),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
@@ -15247,7 +15247,7 @@ pub(crate) mod tests {
             app.sidebar.choose(SidebarTab::Outline);
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 noido_render::Transforms::default(),
                 Box::new(|| {}),
             ))
@@ -16037,7 +16037,7 @@ pub(crate) mod tests {
             let transforms = app.transforms.clone();
             app.with_searcher(TextSearcher::start(
                 Arc::new(searcher),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 transforms,
                 Box::new(|| {}),
             ))
@@ -16065,7 +16065,7 @@ pub(crate) mod tests {
             let transforms = app.transforms.clone();
             app.with_searcher(TextSearcher::start(
                 Arc::new(searcher),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 transforms,
                 Box::new(|| {}),
             ))
@@ -16110,7 +16110,7 @@ pub(crate) mod tests {
             let transforms = app.transforms.clone();
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 transforms,
                 Box::new(|| {}),
             ))
@@ -16434,7 +16434,7 @@ pub(crate) mod tests {
             let transforms = app.transforms.clone();
             app.with_searcher(TextSearcher::start(
                 Arc::new(searcher),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 transforms,
                 Box::new(|| {}),
             ))
@@ -16692,7 +16692,7 @@ pub(crate) mod tests {
             let transforms = app.transforms.clone();
             app.with_linker(noido_render::Linker::start(
                 Arc::new(linker),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 transforms,
                 Box::new(|| {}),
             ))
@@ -16754,7 +16754,7 @@ pub(crate) mod tests {
             let transforms = app.transforms.clone();
             app.with_thumbnails(Thumbnailer::start(
                 Arc::new(thumbs),
-                Arc::new(Vec::new()),
+                PdfBytes::default(),
                 transforms,
                 Box::new(|| {}),
             ))

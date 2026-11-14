@@ -10,6 +10,21 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+memmap2.workspace = true
 
-[lints]
-workspace = true
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints.rust]
+# The workspace forbids `unsafe`; mapping a file needs it, so this crate
+# denies it instead and allows it, with its reason, where it maps.
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
