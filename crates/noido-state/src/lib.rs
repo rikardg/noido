@@ -439,6 +439,10 @@ struct Entry {
     /// thumbnails.
     #[serde(default)]
     sidebar_tab: String,
+    // Absent from files written before pages could be scaled to fit, and
+    // when it is off. Before the tables, which end the file's scalars.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    scale_to_fit: bool,
     /// The name of the document's window file; absent from files written
     /// before entries named it, which use their own hash.
     #[serde(default)]
@@ -599,6 +603,7 @@ impl Entry {
                 _ => "thumbnails",
             }
             .to_owned(),
+            scale_to_fit: doc.transforms.scale_to_fit(),
             window: Some(window.to_owned()),
             back: places(doc.history.back_entries()),
             forward: places(doc.history.forward_entries()),
@@ -613,6 +618,8 @@ impl Entry {
             pages: doc
                 .transforms
                 .iter()
+                // The scale is recomputed on load; only turned pages are kept.
+                .filter(|(_, transform)| transform.rotation != Rotation::R0)
                 .map(|(page, transform)| StoredPage {
                     page,
                     rotation: transform.rotation.degrees(),
@@ -655,16 +662,21 @@ impl Entry {
                 page: pagelet.page,
             }),
             // Angles other than a quarter turn are dropped.
-            transforms: PageTransforms::from_records(self.pages.iter().filter_map(|stored| {
-                let rotation = Rotation::from_degrees(stored.rotation)?;
-                Some((
-                    stored.page,
-                    PageTransform {
-                        rotation,
-                        ..PageTransform::default()
-                    },
-                ))
-            })),
+            transforms: {
+                let mut transforms =
+                    PageTransforms::from_records(self.pages.iter().filter_map(|stored| {
+                        let rotation = Rotation::from_degrees(stored.rotation)?;
+                        Some((
+                            stored.page,
+                            PageTransform {
+                                rotation,
+                                ..PageTransform::default()
+                            },
+                        ))
+                    }));
+                transforms.set_scale_to_fit(self.scale_to_fit);
+                transforms
+            },
         }
     }
 }
