@@ -115,6 +115,8 @@ pub struct Input<'a> {
     pub current_entry: Option<usize>,
     /// The pages the reader pinned.
     pub pins: &'a Pins,
+    /// How the reader turns pages, for the right-click menu's check.
+    pub transforms: &'a noido_render::Transforms,
     /// The page the pagelet shows, if it is open.
     pub preview: Option<usize>,
 }
@@ -145,6 +147,8 @@ pub struct Output {
     pub toggle_pin: Option<usize>,
     /// A card's arrow was pressed: the page to open or close the pagelet on.
     pub pagelet: Option<usize>,
+    /// A turn was chosen from a card's right-click menu: the page and how.
+    pub rotate: Option<(usize, noido_core::Rotation)>,
 }
 
 /// A visible outline row, for the tests.
@@ -922,6 +926,7 @@ impl SidebarView {
         let mut clicked = None;
         let mut toggled = None;
         let mut pagelet = None;
+        let mut rotate = None;
         let now = ui.input(|i| i.time);
         let mut fading = false;
         self.drawn.clear();
@@ -942,6 +947,12 @@ impl SidebarView {
             if thumb.clicked() {
                 clicked = Some(page);
             }
+            let current = input.transforms.get(page).rotation;
+            thumb.context_menu(|ui| {
+                if let Some(rotation) = crate::rotation_menu::rotation_menu(ui, current) {
+                    rotate = Some((page, rotation));
+                }
+            });
             let current = input.highlighted.contains(&page);
             let painter = ui.painter();
             if current {
@@ -1065,6 +1076,7 @@ impl SidebarView {
             clicked,
             toggle_pin: toggled,
             pagelet,
+            rotate,
             ..Output::default()
         }
     }
@@ -1153,6 +1165,7 @@ impl SidebarView {
             clicked: shown.inner.clicked,
             toggle_pin: shown.inner.toggle_pin,
             pagelet: shown.inner.pagelet,
+            rotate: shown.inner.rotate,
             ..Output::default()
         }
     }
