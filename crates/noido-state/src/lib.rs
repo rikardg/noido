@@ -657,7 +657,13 @@ impl Entry {
             // Angles other than a quarter turn are dropped.
             transforms: PageTransforms::from_records(self.pages.iter().filter_map(|stored| {
                 let rotation = Rotation::from_degrees(stored.rotation)?;
-                Some((stored.page, PageTransform { rotation }))
+                Some((
+                    stored.page,
+                    PageTransform {
+                        rotation,
+                        ..PageTransform::default()
+                    },
+                ))
             })),
         }
     }

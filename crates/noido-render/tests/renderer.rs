@@ -448,6 +448,7 @@ fn renderer_reports_turned_sizes_and_stamps() {
         0,
         PageTransform {
             rotation: Rotation::R90,
+            ..PageTransform::default()
         },
     )]));
     let (renderer, info) =

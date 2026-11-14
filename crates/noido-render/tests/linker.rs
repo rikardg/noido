@@ -450,6 +450,7 @@ fn links_carry_their_stamp() {
         0,
         PageTransform {
             rotation: Rotation::R90,
+            ..PageTransform::default()
         },
     )]));
     let linker = Linker::start(
@@ -513,7 +514,10 @@ fn flash_turned_like_upright(rotation: noido_core::Rotation, at: (Option<f32>, O
     };
     let transforms = noido_render::Transforms::new(PageTransforms::from_records([(
         0,
-        PageTransform { rotation },
+        PageTransform {
+            rotation,
+            ..PageTransform::default()
+        },
     )]));
     let got = flash_area(&start(transforms), turned).expect("a flash turned");
     let want = rotation.rect(want, letter);
