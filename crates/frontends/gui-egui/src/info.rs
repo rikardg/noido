@@ -1,5 +1,5 @@
 //! The document info page: the file, what the document says about itself,
-//! its format and its fonts.
+//! its format, how much text it holds and its fonts.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use std::sync::mpsc::Receiver;
 use eframe::egui;
 use noido_core::{Family, families};
 use noido_engine::{Date, PdfBytes, PdfEngine, Properties, Size};
-use noido_render::read_properties;
+use noido_render::{Counted, read_properties};
 
 use crate::icons;
 
@@ -75,14 +75,16 @@ impl Page {
 }
 
 /// Shows the page over the window; returns what the reader asked of it.
-/// `sizes` are the pages' sizes, and `settings` the file the document's
-/// settings are saved in, shown when there is one.
+/// `sizes` are the pages' sizes, `settings` the file the document's
+/// settings are saved in, shown when there is one, and `counts` the
+/// document's size in words and characters, counted so far.
 pub fn show(
     page: &mut Page,
     ctx: &egui::Context,
     source: &Source,
     sizes: &[Size],
     settings: Option<&Path>,
+    counts: Option<Counted>,
 ) -> Option<Asked> {
     page.receive();
     let mut asked = None;
@@ -113,7 +115,9 @@ pub fn show(
                     .max_height(max_height)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        asked = right(ui, margin, |ui| contents(ui, page, source, sizes, settings));
+                        asked = right(ui, margin, |ui| {
+                            contents(ui, page, source, sizes, settings, counts)
+                        });
                     });
                 ui.add_space(8.0);
                 right(ui, margin, |ui| {
@@ -148,6 +152,7 @@ fn contents(
     source: &Source,
     sizes: &[Size],
     settings: Option<&Path>,
+    counts: Option<Counted>,
 ) -> Option<Asked> {
     let read = page.read.as_ref();
     let properties = read.map(|(p, _)| p);
@@ -180,7 +185,6 @@ fn contents(
         row(ui, "Modified", p.modified.map(date_text));
     });
     section(ui, "Format", |ui| {
-        row(ui, "Pages", Some(sizes.len().to_string()));
         row(
             ui,
             "Page size",
@@ -194,6 +198,18 @@ fn contents(
         );
         row(ui, "Tagged", properties.and_then(|p| yes(p.tagged)));
         row(ui, "Outline", properties.and_then(|p| yes(p.has_outline)));
+    });
+    section(ui, "Statistics", |ui| {
+        row(ui, "Pages", Some(number(sizes.len())));
+        // "Counting…" until every page has been read; the keys stay, so the
+        // section does not appear and reflow the page late.
+        let shown = |f: fn(&noido_text::Counts) -> usize| match counts {
+            Some(counted) if counted.done() => Some(number(f(&counted.total))),
+            _ => Some("Counting…".to_owned()),
+        };
+        row(ui, "Words", shown(|c| c.words));
+        row(ui, "Characters", shown(|c| c.chars));
+        row(ui, "Characters (no spaces)", shown(|c| c.chars_no_spaces));
     });
     section(ui, "Fonts", |ui| match read {
         None => row(ui, "", Some("Reading…".into())),
@@ -392,6 +408,20 @@ fn date_text(date: Date) -> String {
     }
 }
 
+/// "94 781", "1 234 567": grouped by threes with a plain space, as the page
+/// writes "216 × 279 mm".
+pub(crate) fn number(n: usize) -> String {
+    let digits = n.to_string();
+    let mut grouped = String::new();
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(' ');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
 /// "2.4 MB", "830 kB", "512 bytes".
 fn file_size_text(bytes: u64) -> String {
     let scaled = |unit: f64, name: &str| {
@@ -510,6 +540,16 @@ mod tests {
 
         let through_the_link = dir.path().join("link").join("paper.pdf");
         assert_eq!(shown_path(&through_the_link), through_the_link);
+    }
+
+    #[test]
+    fn numbers_are_grouped_by_threes() {
+        assert_eq!(number(0), "0");
+        assert_eq!(number(7), "7");
+        assert_eq!(number(999), "999");
+        assert_eq!(number(1000), "1 000");
+        assert_eq!(number(94781), "94 781");
+        assert_eq!(number(1234567), "1 234 567");
     }
 
     #[test]

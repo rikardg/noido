@@ -1,12 +1,13 @@
-//! Search state: the text thread, the hits of the current query, and when
-//! to search and where to jump.
+//! Search state: the text thread, the hits of the current query, when to
+//! search and where to jump, and the document's counts of words and
+//! characters.
 
 use eframe::egui::Color32;
 use noido_core::Hits;
 use std::sync::Arc;
 
 use noido_core::PageTransform;
-use noido_render::{SearchUpdate, TextSearcher};
+use noido_render::{Counted, SearchUpdate, TextSearcher};
 use noido_text::PageText;
 
 /// Seconds after the last change to the field before it is searched.
@@ -57,6 +58,10 @@ pub struct Search {
     searcher: Option<TextSearcher>,
     /// Whether extraction was asked for, so a reload asks the new thread too.
     extracting: bool,
+    /// Whether the counts were asked for, so a reload asks the new thread too.
+    counting: bool,
+    /// What the text thread has counted so far.
+    counts: Option<Counted>,
     pub hits: Hits,
     /// The field's text as last seen, and when it last changed.
     text: String,
@@ -81,6 +86,8 @@ impl Search {
         Search {
             searcher: None,
             extracting: false,
+            counting: false,
+            counts: None,
             hits: Hits::new(),
             text: String::new(),
             changed_at: None,
@@ -94,11 +101,16 @@ impl Search {
         }
     }
 
-    /// Searches with `searcher` from now on, as after a reload.
+    /// Searches with `searcher` from now on, as after a reload. The counts
+    /// are the old document's: they go, and the new one is asked for them.
     pub fn set_searcher(&mut self, searcher: TextSearcher) {
         if self.extracting {
             searcher.extract();
         }
+        if self.counting {
+            searcher.count();
+        }
+        self.counts = None;
         self.searcher = Some(searcher);
     }
 
@@ -111,6 +123,24 @@ impl Search {
         if let Some(searcher) = &self.searcher {
             searcher.extract();
         }
+    }
+
+    /// Asks for the document's word and character counts, once: the text
+    /// thread reads what it has not read yet and reports as it counts.
+    pub fn count(&mut self) {
+        if self.counting {
+            return;
+        }
+        self.counting = true;
+        self.extracting = true;
+        if let Some(searcher) = &self.searcher {
+            searcher.count();
+        }
+    }
+
+    /// What the text thread has counted so far; `None` before it is asked.
+    pub fn counts(&self) -> Option<Counted> {
+        self.counts
     }
 
     /// Notes the field's `text` at time `now`. Returns the seconds until it
@@ -248,6 +278,7 @@ impl Search {
                     text,
                     transform,
                 } => self.texts.push((page, text, transform)),
+                SearchUpdate::Counts(counted) => self.counts = Some(counted),
                 _ => {}
             }
         }

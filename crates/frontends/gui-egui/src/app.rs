@@ -1614,6 +1614,9 @@ impl NoidoApp {
                     // So Esc closes the page, not the search behind it.
                     ctx.memory_mut(|m| m.stop_text_input());
                     self.info_page = Some(info::Page::open(source, ctx));
+                    // The counts are what the reader came for; the walk
+                    // starts here rather than at open.
+                    self.search_state.count();
                 }
             }
             _ => {
@@ -3237,7 +3240,8 @@ impl NoidoApp {
         let sizes: Vec<noido_engine::Size> = (0..layout.page_count())
             .filter_map(|page| layout.page_size(page))
             .collect();
-        match info::show(page, ctx, source, &sizes, settings.as_deref()) {
+        let counts = self.search_state.counts();
+        match info::show(page, ctx, source, &sizes, settings.as_deref(), counts) {
             None => {}
             Some(info::Asked::Close) => self.info_page = None,
             Some(info::Asked::CopyPath) => {
@@ -6564,6 +6568,100 @@ pub(crate) mod tests {
             h.text_rect("/docs/scans/../papers").is_none(),
             "the way there is shown"
         );
+    }
+
+    /// A harness whose document is `engine`'s pages, with a searcher on it,
+    /// so Document info can count.
+    fn info_with_text(engine: &TextEngine) -> Harness {
+        let searcher = engine.clone();
+        let source = crate::info::Source {
+            engine: Arc::new(engine.clone()),
+            bytes: Arc::new(Vec::new()),
+            path: "/docs/paper.pdf".into(),
+        };
+        Harness::build_with(Arc::new(engine.clone()), move |app| {
+            app.with_source(source).with_searcher(TextSearcher::start(
+                Arc::new(searcher),
+                Arc::new(Vec::new()),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            ))
+        })
+    }
+
+    #[test]
+    fn document_info_shows_the_statistics() {
+        // Two pages: 3 + 2 words, 11 + 5 characters, 9 + 4 without spaces.
+        let engine = TextEngine::new(&[&["the cat sat"], &["a dog"]]);
+        let mut h = info_with_text(&engine);
+        h.press(egui::Key::I, Modifiers::COMMAND);
+        h.until(|h| h.text_rect("Words").is_some());
+        h.until(|h| h.text_rect("Counting…").is_none());
+        for text in [
+            "Statistics",
+            "Pages",
+            "2",
+            "Words",
+            "5",
+            "Characters",
+            "16",
+            "Characters (no spaces)",
+            "13",
+        ] {
+            assert!(h.text_rect(text).is_some(), "{text:?} not drawn");
+        }
+    }
+
+    #[test]
+    fn document_info_counts_until_the_pages_are_read() {
+        let engine = TextEngine::new(&[&["the cat sat"]]).gated();
+        let mut h = info_with_text(&engine);
+        h.press(egui::Key::I, Modifiers::COMMAND);
+        h.frames(10, vec![]);
+        assert!(h.text_rect("Counting…").is_some(), "no placeholder");
+        engine.open_gate();
+        h.until(|h| h.text_rect("3").is_some());
+        assert!(h.text_rect("Counting…").is_none(), "still counting");
+    }
+
+    #[test]
+    fn nothing_is_counted_until_the_page_asks() {
+        // The visible pages' text is read on open, for picking; what must
+        // wait for Document info is the counting.
+        let engine = TextEngine::new(&[&["the cat sat"], &["a dog"]]);
+        let mut h = info_with_text(&engine);
+        h.frames(20, vec![]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(h.app.search_state.counts().is_none(), "counted unasked");
+        h.press(egui::Key::I, Modifiers::COMMAND);
+        h.until(|h| h.app.search_state.counts().is_some_and(|c| c.done()));
+        assert!(engine.calls() >= 2, "not every page was read");
+    }
+
+    #[test]
+    fn format_no_longer_lists_the_pages() {
+        let engine = TextEngine::new(&[&["the cat sat"], &["a dog"]]);
+        let mut h = info_with_text(&engine);
+        h.press(egui::Key::I, Modifiers::COMMAND);
+        h.until(|h| h.text_rect("Words").is_some());
+        let pages = h.texts().iter().filter(|t| *t == "Pages").count();
+        assert_eq!(pages, 1, "Pages drawn {pages} times");
+    }
+
+    #[test]
+    fn document_info_counts_the_new_version_after_a_reload() {
+        let engine = TextEngine::new(&[&["x"]]);
+        let mut h = info_with_text(&engine);
+        h.press(egui::Key::I, Modifiers::COMMAND);
+        h.until(|h| h.text_rect("Words").is_some());
+        h.until(|h| h.text_rect("Counting…").is_none());
+        // "alpha beta gamma delta": 4 words, 22 characters.
+        h.reload(
+            Arc::new(TextEngine::new(&[&["alpha beta gamma delta"]])),
+            recompiled_key(),
+        );
+        h.until(|h| h.text_rect("22").is_some());
+        assert!(h.text_rect("4").is_some(), "the new words");
     }
 
     #[test]
