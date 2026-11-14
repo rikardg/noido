@@ -2228,19 +2228,23 @@ impl NoidoApp {
 
     /// Opens the pagelet on `page`, or swaps its page, keeping the place
     /// and size it last had.
-    fn open_pagelet(&mut self, page: usize, view: Rect, bounds: Rect, pointer: Option<egui::Pos2>) {
+    fn open_pagelet(&mut self, ctx: &egui::Context, page: usize) {
         if self.view.layout().page_size(page).is_none() {
             return;
         }
+        let view = self
+            .last_scroll
+            .map_or_else(|| ctx.content_rect(), |last| last.inner);
+        let bounds = self.pagelet_area(ctx);
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
         // One pagelet: it keeps its place while its page changes.
         let width = self
             .pagelet
             .map_or_else(|| self.default_page_width(page, view), |p| p.width);
         let page_size = self.page_size_at(page, view, width);
-        // Its first place is the document view's upper-left corner, flush
-        // against the sidebar.
-        // Its first place is the document view's corner; once placed, the
-        // reader's place stands, even over the sidebar.
+        // Its first place is the document view's corner (a gap in, as
+        // `bounds` has it); once placed, the reader's place stands, even
+        // over the sidebar.
         let pos = self.pagelet.map_or(view.min, |p| pos2(p.x, p.y));
         let rect = clamp_into(
             Rect::from_min_size(pos, page_size + Vec2::splat(2.0 * PAGELET_PADDING)),
@@ -2259,6 +2263,16 @@ impl NoidoApp {
             opacity,
             resizing: false,
         });
+    }
+
+    /// Where the pagelet may be: the window below the title bar, the
+    /// sidebar included, a small gap in from every side.
+    fn pagelet_area(&self, ctx: &egui::Context) -> Rect {
+        let content = ctx.content_rect();
+        let top = self
+            .last_scroll
+            .map_or(content.min.y, |last| last.inner.min.y);
+        Rect::from_min_max(pos2(content.min.x, top), content.max).shrink(PAGELET_PADDING)
     }
 
     /// Closes the pagelet, remembering where it was for the next one.
@@ -2339,14 +2353,14 @@ impl NoidoApp {
         let aspect = size.width / size.height;
         let min = (PAGELET_MIN.x - 2.0 * PAGELET_PADDING)
             .max((PAGELET_MIN.y - 2.0 * PAGELET_PADDING) * aspect);
-        let bounds = ctx.content_rect().shrink2(Vec2::splat(PAGELET_PADDING));
+        let bounds = self.pagelet_area(ctx);
         let window = egui::Window::new("pagelet")
             .title_bar(false)
             .resizable(false)
             .movable(true)
             .current_pos(rect.min)
             .default_size(rect.size())
-            .constrain(true)
+            .constrain_to(bounds)
             .frame(frame)
             .show(ctx, |ui| {
                 // The content is the page's size; the area takes that plus
@@ -2397,7 +2411,9 @@ impl NoidoApp {
                         && response.drag_delta() != Vec2::ZERO
                         && let Some(pointer) = ui.ctx().input(|i| i.pointer.interact_pos())
                     {
-                        let page = resized_page(page_rect, aspect, direction, pointer, bounds, min);
+                        // The frame around the page stays in the area too.
+                        let room = Rect::from_min_max(bounds.min + inset, bounds.max - inset);
+                        let page = resized_page(page_rect, aspect, direction, pointer, room, min);
                         let outer =
                             Rect::from_min_size(page.min - inset, page.size() + inset * 2.0);
                         resized = Some((outer, page.size()));
@@ -2576,7 +2592,19 @@ fn resized_page(
             page.min.y
         },
     );
-    let max = bounds.width().min(bounds.height() * aspect).max(min);
+    // The room from the fixed side or corner to the area's edge it grows
+    // towards; a size past it would push the fixed side.
+    let room_x = if dx < 0 {
+        anchor.x - bounds.min.x
+    } else {
+        bounds.max.x - anchor.x
+    };
+    let room_y = if dy < 0 {
+        anchor.y - bounds.min.y
+    } else {
+        bounds.max.y - anchor.y
+    };
+    let max = room_x.min(room_y * aspect).max(min);
     let width = if dx != 0 && dy != 0 {
         (pointer.x - anchor.x)
             .abs()
@@ -2831,13 +2859,7 @@ impl NoidoApp {
                 {
                     self.close_pagelet();
                 } else if page < self.view.layout().page_count() {
-                    let view = self
-                        .last_scroll
-                        .map_or_else(|| ctx.content_rect(), |last| last.inner);
-                    let bounds =
-                        Rect::from_min_max(pos2(ctx.content_rect().min.x, view.min.y), view.max);
-                    let pointer = ctx.input(|i| i.pointer.hover_pos());
-                    self.open_pagelet(page, view, bounds, pointer);
+                    self.open_pagelet(&ctx, page);
                 }
             }
             if let Some(index) = output.hit {
@@ -2847,16 +2869,13 @@ impl NoidoApp {
             self.sidebar_view.hidden();
         }
 
-        // A pagelet restored open waits for the view's rect, then shows.
+        // A pagelet restored open opens on the first frame. The view's rect
+        // may not be known yet; `pagelet`, later this frame, keeps it below
+        // the title bar once it is.
         if let Some(page) = self.pending_pagelet.take()
             && page < self.view.layout().page_count()
         {
-            let view = self
-                .last_scroll
-                .map_or_else(|| ctx.content_rect(), |last| last.inner);
-            let bounds = Rect::from_min_max(pos2(ctx.content_rect().min.x, view.min.y), view.max);
-            let pointer = ctx.input(|i| i.pointer.hover_pos());
-            self.open_pagelet(page, view, bounds, pointer);
+            self.open_pagelet(&ctx, page);
         }
 
         // The page area changes size this frame when the sidebar opens or
@@ -9323,7 +9342,7 @@ pub(crate) mod tests {
             "{panel:?} vs {view:?}"
         );
         assert!(
-            (panel.min.y - view.min.y).abs() < 1.0,
+            (panel.min.y - (view.min.y + PAGELET_PADDING)).abs() < 1.0,
             "{panel:?} vs {view:?}"
         );
     }
@@ -9388,6 +9407,46 @@ pub(crate) mod tests {
         assert!((panel.min.y - 120.0).abs() < 1.0, "{panel:?}");
         let page = h.app.pagelet_page_rect().unwrap();
         assert!((page.width() - 360.0).abs() < 1.0, "{page:?}");
+    }
+
+    #[test]
+    fn a_pagelet_saved_over_the_title_bar_is_restored_below_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let restored = DocState {
+            view: ViewState {
+                zoom: noido_core::ZoomMode::FitWidth,
+                scale: 1.0,
+                continuous: true,
+                dual: false,
+                odd_left: true,
+                gapless: false,
+                centre: noido_core::DocPoint {
+                    page: 0,
+                    x: 306.0,
+                    y: 400.0,
+                },
+            },
+            sidebar: SidebarState::default(),
+            history: History::default(),
+            highlights: Vec::new(),
+            pins: Pins::from_sorted([2]),
+            pagelet: Some(noido_state::Pagelet {
+                x: 300.0,
+                y: 0.0,
+                width: 360.0,
+                page: Some(2),
+            }),
+        };
+        let h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
+        });
+        assert!(pagelet_on(&h, 2), "the pagelet did not reopen");
+        let panel = h.app.pin_preview.as_ref().unwrap().rect;
+        let view = h.app.last_scroll.unwrap().inner;
+        assert!(
+            (panel.min.y - (view.min.y + PAGELET_PADDING)).abs() < 1.0,
+            "{panel:?} vs {view:?}"
+        );
     }
 
     #[test]
@@ -9509,6 +9568,17 @@ pub(crate) mod tests {
         h.app.pagelet_page_rect().unwrap()
     }
 
+    /// Opens the pagelet on page 0, moves it down to leave room above,
+    /// and returns its page rect.
+    fn lowered_pagelet_page(h: &mut Harness) -> Rect {
+        let page = pagelet_page(h);
+        h.drag(page.center(), vec2(0.0, 100.0));
+        h.frames(2, vec![]);
+        let lowered = h.app.pagelet_page_rect().unwrap();
+        assert!(lowered.min.y > page.min.y + 50.0, "{page:?} -> {lowered:?}");
+        lowered
+    }
+
     #[test]
     fn resizing_from_the_left_edge_keeps_the_right_edge() {
         let mut h = pinned_on(&[0]);
@@ -9543,7 +9613,7 @@ pub(crate) mod tests {
     #[test]
     fn resizing_from_the_top_edge_keeps_the_bottom() {
         let mut h = pinned_on(&[0]);
-        let before = pagelet_page(&mut h);
+        let before = lowered_pagelet_page(&mut h);
         let at = egui::pos2(before.center().x, before.min.y + 3.0);
         h.drag(at, vec2(0.0, -20.0));
         h.frames(3, vec![]);
@@ -9587,8 +9657,8 @@ pub(crate) mod tests {
         // Close it, then open it again as a click would.
         h.app.close_pagelet();
         h.frames(1, vec![]);
-        let bounds = Rect::from_min_max(pos2(h.ctx.content_rect().min.x, view.min.y), view.max);
-        h.app.open_pagelet(2, view, bounds, None);
+        let ctx = h.ctx.clone();
+        h.app.open_pagelet(&ctx, 2);
         h.frames(1, vec![]);
         assert!(
             (h.app.pin_preview.as_ref().unwrap().rect.min.x - moved.min.x).abs() < 1.0,
@@ -9648,6 +9718,64 @@ pub(crate) mod tests {
             "{once:?} -> {twice:?}"
         );
         assert!((twice.width() / twice.height() - 612.0 / 792.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn dragging_the_pagelet_up_stops_below_the_title_bar() {
+        let mut h = pinned_on(&[2]);
+        open_pagelet(&mut h, 2);
+        let rect = h.app.pin_preview.as_ref().unwrap().rect;
+        h.drag(rect.center(), vec2(0.0, -400.0));
+        h.frames(2, vec![]);
+        let moved = h.app.pin_preview.as_ref().unwrap().rect;
+        let view = h.app.last_scroll.unwrap().inner;
+        assert!(
+            (moved.min.y - (view.min.y + PAGELET_PADDING)).abs() < 1.0,
+            "{moved:?} vs {view:?}"
+        );
+    }
+
+    #[test]
+    fn resizing_the_pagelet_up_stops_below_the_title_bar() {
+        let mut h = pinned_on(&[0]);
+        let before = lowered_pagelet_page(&mut h);
+        let at = egui::pos2(before.center().x, before.min.y + 3.0);
+        h.drag(at, vec2(0.0, -400.0));
+        h.frames(3, vec![]);
+        let panel = h.app.pin_preview.as_ref().unwrap().rect;
+        let view = h.app.last_scroll.unwrap().inner;
+        assert!(
+            (panel.min.y - (view.min.y + PAGELET_PADDING)).abs() < 1.0,
+            "{panel:?} vs {view:?}"
+        );
+        // It grew up to the limit; the bottom stayed.
+        let after = h.app.pagelet_page_rect().unwrap();
+        assert!(
+            (after.max.y - before.max.y).abs() < 1.0,
+            "{before:?} -> {after:?}"
+        );
+    }
+
+    #[test]
+    fn with_the_sidebar_shut_the_pagelet_keeps_a_gap_from_the_window() {
+        let mut h = pinned_on(&[2]);
+        open_pagelet(&mut h, 2);
+        h.app.sidebar.open = false;
+        h.frames(2, vec![]);
+        let rect = h.app.pin_preview.as_ref().unwrap().rect;
+        h.drag(rect.center(), vec2(-2000.0, -2000.0));
+        h.frames(2, vec![]);
+        let moved = h.app.pin_preview.as_ref().unwrap().rect;
+        let view = h.app.last_scroll.unwrap().inner;
+        let content = h.ctx.content_rect();
+        assert!(
+            (moved.min.x - (content.min.x + PAGELET_PADDING)).abs() < 1.0,
+            "{moved:?} vs {content:?}"
+        );
+        assert!(
+            (moved.min.y - (view.min.y + PAGELET_PADDING)).abs() < 1.0,
+            "{moved:?} vs {view:?}"
+        );
     }
 
     #[test]
