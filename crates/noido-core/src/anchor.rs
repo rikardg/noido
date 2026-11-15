@@ -247,8 +247,14 @@ pub fn requote(h: &mut Highlight, window: &Joined) {
 }
 
 /// Anchors `highlights` against `pages`, all in memory: checks each where
-/// it was, then walks the pages for those that need searching.
-pub fn anchor(highlights: &[Highlight], pages: &[&PageText], fill_missing: bool) -> Anchored {
+/// it was, then, with `relocate`, walks the pages for those that need
+/// searching; without it they are left as they are.
+pub fn anchor(
+    highlights: &[Highlight],
+    pages: &[&PageText],
+    fill_missing: bool,
+    relocate: bool,
+) -> Anchored {
     let n = pages.len();
     let mut items = highlights.to_vec();
     let mut pending = Vec::new();
@@ -259,10 +265,11 @@ pub fn anchor(highlights: &[Highlight], pages: &[&PageText], fill_missing: bool)
                 let window = Joined::new(first, &pages[w]);
                 match check(h, &window, fill_missing) {
                     Check::Keep(kept) => items[i] = kept,
-                    Check::Search => pending.push((i, h.clone())),
+                    Check::Search if relocate => pending.push((i, h.clone())),
+                    Check::Search => {}
                 }
             }
-            None if h.quote.is_some() => pending.push((i, h.clone())),
+            None if relocate && h.quote.is_some() => pending.push((i, h.clone())),
             None => {}
         }
     }
@@ -357,7 +364,7 @@ mod tests {
     fn unchanged_text_changes_nothing() {
         let pages = [text(&["the cat sat. the cat ran."]), text(&["other"])];
         let items = vec![made(&pages, (0, 13), (0, 20)), made(&pages, (1, 0), (1, 5))];
-        let out = anchor(&items, &refs(&pages), true);
+        let out = anchor(&items, &refs(&pages), true, true);
         assert_eq!(out.items, items);
         assert!(!out.relocated);
     }
@@ -366,13 +373,29 @@ mod tests {
     fn fills_a_missing_quote_only_when_asked() {
         let pages = [text(&["the cat sat."])];
         let h = plain((0, 0), (0, 7));
-        let out = anchor(std::slice::from_ref(&h), &refs(&pages), true);
+        let out = anchor(std::slice::from_ref(&h), &refs(&pages), true, true);
         let expected = made(&pages, (0, 0), (0, 7)).quote;
         assert_eq!(out.items[0].quote, expected);
         assert_eq!(out.items[0].quote.as_ref().unwrap().exact, "the cat");
         assert!(!out.relocated);
-        let out = anchor(&[h], &refs(&pages), false);
+        let out = anchor(&[h], &refs(&pages), false, true);
         assert_eq!(out.items[0].quote, None);
+    }
+
+    #[test]
+    fn without_relocate_a_moved_highlight_stays() {
+        let old = [text(&["the cat"])];
+        let h = made(&old, (0, 0), (0, 7));
+        let new = [text(&["so the cat"])];
+        let out = anchor(std::slice::from_ref(&h), &refs(&new), true, false);
+        assert_eq!(out.items, std::slice::from_ref(&h));
+        assert!(!out.relocated);
+        let gone = [text(&["nothing here."])];
+        let orphan = anchor(std::slice::from_ref(&h), &refs(&gone), true, true).items;
+        assert!(orphan[0].orphaned);
+        let out = anchor(&orphan, &refs(&new), true, false);
+        assert_eq!(out.items, orphan);
+        assert!(!out.relocated);
     }
 
     #[test]
@@ -380,7 +403,7 @@ mod tests {
         let old = [text(&["the cat"])];
         let h = made(&old, (0, 0), (0, 7));
         let new = [text(&["so the cat"])];
-        let out = anchor(std::slice::from_ref(&h), &refs(&new), false);
+        let out = anchor(std::slice::from_ref(&h), &refs(&new), false, true);
         assert_eq!(span_of(&out.items[0]), ((0, 3), (0, 10)));
         let quote = out.items[0].quote.as_ref().unwrap();
         assert_eq!(quote.exact, "the cat");
@@ -394,7 +417,7 @@ mod tests {
         let old = [text(&["the cat"]), text(&["other"])];
         let h = made(&old, (0, 0), (0, 7));
         let new = [text(&["other"]), text(&["the cat"])];
-        let out = anchor(&[h], &refs(&new), false);
+        let out = anchor(&[h], &refs(&new), false, true);
         assert_eq!(span_of(&out.items[0]), ((1, 0), (1, 7)));
         assert!(out.relocated);
     }
@@ -404,11 +427,11 @@ mod tests {
         let old = [text(&["the cat sat."])];
         let h = made(&old, (0, 0), (0, 7));
         let new = [text(&["nothing here."])];
-        let out = anchor(std::slice::from_ref(&h), &refs(&new), false);
+        let out = anchor(std::slice::from_ref(&h), &refs(&new), false, true);
         assert!(out.items[0].orphaned);
         assert_eq!(span_of(&out.items[0]), ((0, 0), (0, 7)));
         assert!(out.relocated);
-        let back = anchor(&out.items, &refs(&old), false);
+        let back = anchor(&out.items, &refs(&old), false, true);
         assert_eq!(back.items, [h]);
         assert!(back.relocated);
     }
@@ -417,7 +440,7 @@ mod tests {
     fn repeats_resolve_by_context() {
         let pages = [text(&["the cat sat. the cat ran."])];
         let h = quoted((0, 0), (0, 7), "the cat", "sat. ", " ran");
-        let out = anchor(&[h], &refs(&pages), false);
+        let out = anchor(&[h], &refs(&pages), false, true);
         assert_eq!(span_of(&out.items[0]), ((0, 13), (0, 20)));
     }
 
@@ -425,7 +448,7 @@ mod tests {
     fn moved_to_next_page_beats_a_repeat_on_the_old_page() {
         let pages = [text(&["the cat slept."]), text(&["sat. the cat ran."])];
         let h = quoted((0, 13), (0, 20), "the cat", "sat. ", " ran");
-        let out = anchor(&[h], &refs(&pages), false);
+        let out = anchor(&[h], &refs(&pages), false, true);
         assert_eq!(span_of(&out.items[0]), ((1, 5), (1, 12)));
     }
 
@@ -433,7 +456,7 @@ mod tests {
     fn repeat_at_the_old_offset_does_not_hold_it() {
         let pages = [text(&["q. the cat gone. a. the cat ran."])];
         let h = quoted((0, 3), (0, 10), "the cat", "a. ", " ran");
-        let out = anchor(&[h], &refs(&pages), false);
+        let out = anchor(&[h], &refs(&pages), false, true);
         assert_eq!(span_of(&out.items[0]), ((0, 20), (0, 27)));
         assert!(out.relocated);
     }
@@ -444,7 +467,7 @@ mod tests {
         let h = made(&old, (0, 4), (0, 11));
         assert_eq!(h.quote.as_ref().unwrap().exact, "cat sat");
         let new = [text(&["the cat"]), text(&["sat on mat"])];
-        let out = anchor(&[h], &refs(&new), false);
+        let out = anchor(&[h], &refs(&new), false, true);
         assert_eq!(span_of(&out.items[0]), ((0, 4), (1, 3)));
     }
 
@@ -454,7 +477,7 @@ mod tests {
         let h = made(&old, (0, 8), (1, 4));
         assert_eq!(h.quote.as_ref().unwrap().exact, "three four");
         let new = [text(&["zero", "one two three"]), text(&["four five six"])];
-        let out = anchor(&[h], &refs(&new), false);
+        let out = anchor(&[h], &refs(&new), false, true);
         let at = new[0].text().find("three").unwrap();
         assert_eq!(span_of(&out.items[0]), ((0, at), (1, 4)));
     }
@@ -482,7 +505,7 @@ mod tests {
             text(&["eta theta iota"]),
             text(&["tail"]),
         ];
-        let out = anchor(&[h], &refs(&new), false);
+        let out = anchor(&[h], &refs(&new), false, true);
         let at = new[1].text().find("gamma").unwrap();
         assert_eq!(span_of(&out.items[0]), ((1, at), (3, 3)));
         assert!(!out.items[0].orphaned);
@@ -495,11 +518,11 @@ mod tests {
         let h = made(&old, (5, 0), (5, 7));
         assert_eq!(h.window(2), None);
         let new = [text(&["nothing"]), text(&["see the cat"])];
-        let out = anchor(std::slice::from_ref(&h), &refs(&new), false);
+        let out = anchor(std::slice::from_ref(&h), &refs(&new), false, true);
         assert_eq!(span_of(&out.items[0]), ((1, 4), (1, 11)));
         assert!(!out.items[0].orphaned);
         let gone = [text(&["nothing"]), text(&["nothing"])];
-        let out = anchor(&[h], &refs(&gone), false);
+        let out = anchor(&[h], &refs(&gone), false, true);
         assert!(out.items[0].orphaned);
         assert_eq!(span_of(&out.items[0]), ((5, 0), (5, 7)));
     }
@@ -508,7 +531,7 @@ mod tests {
     fn equal_context_goes_to_the_nearest_old_start() {
         let pages = [text(&["the cat"]), text(&["x"]), text(&["the cat"])];
         let h = quoted((2, 3), (2, 6), "the cat", "zzz", "");
-        let out = anchor(&[h], &refs(&pages), false);
+        let out = anchor(&[h], &refs(&pages), false, true);
         assert_eq!(span_of(&out.items[0]), ((2, 0), (2, 7)));
     }
 
@@ -516,7 +539,7 @@ mod tests {
     fn past_the_end_counts_as_the_end_of_the_document() {
         let pages = [text(&["the cat"]), text(&["the cat"])];
         let h = quoted((5, 0), (5, 7), "the cat", "zzz", "");
-        let out = anchor(&[h], &refs(&pages), false);
+        let out = anchor(&[h], &refs(&pages), false, true);
         assert_eq!(span_of(&out.items[0]), ((1, 0), (1, 7)));
     }
 
@@ -535,14 +558,14 @@ mod tests {
         let old = [text(&["a the cat b"])];
         let h = made(&old, (0, 2), (0, 9));
         let new = [text(&["so the cat sat"])];
-        let first = anchor(std::slice::from_ref(&h), &refs(&new), false);
+        let first = anchor(std::slice::from_ref(&h), &refs(&new), false, true);
         assert!(first.relocated);
         let quote = first.items[0].quote.as_ref().unwrap();
         assert_eq!(
             (quote.prefix.as_str(), quote.suffix.as_str()),
             ("so ", " sat")
         );
-        let again = anchor(&first.items, &refs(&new), false);
+        let again = anchor(&first.items, &refs(&new), false, true);
         assert_eq!(again.items, first.items);
         assert!(!again.relocated);
         let w = first.items[0].window(1).unwrap();
@@ -569,7 +592,7 @@ mod tests {
         pages[150] = text(&["a a a x a a a"]);
         let h = quoted((3, 0), (3, 1), "a", "a a x ", " a a");
         let start = Instant::now();
-        let out = anchor(&[h], &refs(&pages), false);
+        let out = anchor(&[h], &refs(&pages), false, true);
         let took = start.elapsed();
         assert_eq!(span_of(&out.items[0]), ((150, 8), (150, 9)));
         assert!(took.as_millis() < 100, "took {took:?}");

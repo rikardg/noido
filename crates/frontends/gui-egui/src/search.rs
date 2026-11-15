@@ -108,6 +108,8 @@ impl Search {
             searcher.count();
         }
         self.counts = None;
+        // Answers of the old document's text thread do not apply.
+        self.anchored.clear();
         self.searcher = Some(searcher);
     }
 
@@ -288,11 +290,11 @@ impl Search {
 
     /// Asks the text thread to find `highlights` again; the answer comes
     /// through [`Search::take_anchored`]. `false` with no text thread.
-    pub fn anchor(&self, highlights: Vec<Highlight>, fill_missing: bool) -> bool {
+    pub fn anchor(&self, highlights: Vec<Highlight>, fill_missing: bool, relocate: bool) -> bool {
         let Some(searcher) = &self.searcher else {
             return false;
         };
-        searcher.anchor(highlights, fill_missing);
+        searcher.anchor(highlights, fill_missing, relocate);
         true
     }
 

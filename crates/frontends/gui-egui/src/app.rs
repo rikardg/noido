@@ -131,6 +131,8 @@ struct Anchoring {
     /// Whether the request under way lets highlights without a quote take
     /// one.
     fill: bool,
+    /// Whether it lets moved highlights be searched for in the document.
+    relocate: bool,
 }
 
 pub struct NoidoApp {
@@ -699,24 +701,30 @@ impl NoidoApp {
     /// come from text that is no longer there.
     fn anchor_opened(&mut self) {
         if let Some(persistence) = &self.persistence {
-            let fill = !persistence.slot.edited();
-            self.anchor(fill);
+            // A file edited since the state was saved takes no new quotes,
+            // and its highlights may have moved.
+            let edited = persistence.slot.edited();
+            self.anchor(!edited, edited);
         }
     }
 
     /// Asks the text thread to find the highlights again. A request still
-    /// under way is replaced, and `fill_missing` is kept only if both
-    /// meant it.
-    fn anchor(&mut self, fill_missing: bool) {
+    /// under way is replaced, and wants what either asked for: a quote
+    /// filled in is the same now as later, and a walk is only skipped if
+    /// nobody needed it.
+    fn anchor(&mut self, fill_missing: bool, relocate: bool) {
         if self.highlights.items().is_empty() {
             return;
         }
-        let fill = fill_missing && (self.anchoring.sent.is_none() || self.anchoring.fill);
+        let pending = self.anchoring.sent.is_some();
+        let fill = fill_missing || (pending && self.anchoring.fill);
+        let relocate = relocate || (pending && self.anchoring.relocate);
         let items = self.highlights.items().to_vec();
-        if self.search_state.anchor(items.clone(), fill) {
+        if self.search_state.anchor(items.clone(), fill, relocate) {
             self.anchoring = Anchoring {
                 sent: Some(items),
                 fill,
+                relocate,
             };
         }
     }
@@ -725,7 +733,7 @@ impl NoidoApp {
     /// answers.
     fn update_anchoring(&mut self) {
         if self.select.take_resized() {
-            self.anchor(true);
+            self.anchor(true, false);
         }
         for (asked, answer) in self.search_state.take_anchored() {
             if self.anchoring.sent.as_ref() != Some(&asked) {
@@ -741,9 +749,9 @@ impl NoidoApp {
                 self.anchoring = Anchoring::default();
             } else {
                 // Changed in a way that sent nothing, a colour or a removal.
-                let fill = self.anchoring.fill;
+                let (fill, relocate) = (self.anchoring.fill, self.anchoring.relocate);
                 self.anchoring.sent = None;
-                self.anchor(fill);
+                self.anchor(fill, relocate);
             }
         }
     }
@@ -1175,7 +1183,7 @@ impl NoidoApp {
         self.sidebar_view.replace(reload.sidebar, page_count);
         self.search_state.set_searcher(reload.searcher);
         self.anchoring = Anchoring::default();
-        self.anchor(false);
+        self.anchor(false, true);
         self.links.set_linker(reload.linker, page_count);
         self.texts.reset(page_count);
         self.select.clear();
@@ -1668,13 +1676,13 @@ impl NoidoApp {
             Action::Undo => {
                 if self.highlights.undo() {
                     self.select.clear();
-                    self.anchor(true);
+                    self.anchor(true, false);
                 }
             }
             Action::Redo => {
                 if self.highlights.redo() {
                     self.select.clear();
-                    self.anchor(true);
+                    self.anchor(true, false);
                 }
             }
             Action::Copy => self.copy_selection(ctx),
@@ -2524,7 +2532,7 @@ impl NoidoApp {
                 && start < end
             {
                 self.select.editing = self.highlights.add(Highlight::new(start, end, colour));
-                self.anchor(true);
+                self.anchor(true, false);
             }
         }
         if delete && let Some(index) = self.select.editing {
@@ -14611,6 +14619,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_highlight_made_during_a_reload_gets_its_quote() {
+        let (mut h, _) = selecting();
+        highlight_the_cat(&mut h);
+        h.until(|h| h.app.highlights.items()[0].quote.is_some());
+        let moved =
+            TextEngine::new(&[&["so the cat sat", "on the mat"], &["a dog"], &["one more"]])
+                .gated();
+        h.reload(Arc::new(moved.clone()), recompiled_key());
+        h.app.highlights.add(Highlight::new(
+            Caret { page: 1, char: 0 },
+            Caret { page: 1, char: 5 },
+            HighlightColour::Yellow,
+        ));
+        h.app.anchor(true, false);
+        assert_eq!(h.app.highlights.items().len(), 2);
+        moved.open_gate();
+        h.until(|h| {
+            let items = h.app.highlights.items();
+            items[0].start.char == 3 && items[1].quote.is_some()
+        });
+        let items = h.app.highlights.items();
+        assert_eq!(items[0].start.char, 3);
+        assert!(items[1].quote.is_some(), "no quote: {:?}", quotes(&h));
+    }
+
+    #[test]
     fn reload_orphans_a_highlight_whose_text_went() {
         let (mut h, _) = selecting();
         highlight_the_cat(&mut h);
@@ -14634,7 +14668,7 @@ pub(crate) mod tests {
             Caret { page: 2, char: 3 },
             HighlightColour::Yellow,
         ));
-        h.app.anchor(true);
+        h.app.anchor(true, false);
         h.until(|h| h.app.highlights.items()[0].quote.is_some());
         let shorter = TextEngine::new(&[&["the cat sat", "on the mat"]]);
         h.reload(Arc::new(shorter), recompiled_key());

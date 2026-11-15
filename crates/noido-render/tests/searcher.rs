@@ -752,7 +752,7 @@ fn anchor_answers_with_quotes_filled() {
     let engine = TextEngine::new(&["the cat sat", "a dog ran"]);
     let searcher = start(&engine);
     let asked = vec![highlight((0, 0), (0, 7), None)];
-    searcher.anchor(asked.clone(), true);
+    searcher.anchor(asked.clone(), true, true);
     let (got, answer) = until_anchored(&searcher);
     assert_eq!(got, asked);
     assert_eq!(answer.items[0].quote.as_ref().unwrap().exact, "the cat");
@@ -764,7 +764,7 @@ fn unchanged_highlights_read_only_their_pages() {
     let engine = numbered(50, None);
     let searcher = start(&engine);
     let asked = vec![highlight((20, 0), (20, 4), Some(("page", "", " 20")))];
-    searcher.anchor(asked, false);
+    searcher.anchor(asked, false, true);
     let (_, answer) = until_anchored(&searcher);
     assert!(!answer.relocated);
     assert!(engine.calls() <= 3, "{} page reads", engine.calls());
@@ -775,7 +775,7 @@ fn anchoring_keeps_no_page_it_was_not_asked_for() {
     let engine = numbered(50, Some("see xyzzy now"));
     let searcher = start(&engine);
     let asked = vec![highlight((5, 0), (5, 5), Some(("xyzzy", "", "")))];
-    searcher.anchor(asked, false);
+    searcher.anchor(asked, false, true);
     until_anchored(&searcher);
     let reads = engine.calls();
     searcher.request_text(7);
@@ -787,7 +787,7 @@ fn moved_text_is_found_by_the_walk() {
     let engine = numbered(50, Some("see xyzzy now"));
     let searcher = start(&engine);
     let asked = vec![highlight((5, 0), (5, 5), Some(("xyzzy", "", "")))];
-    searcher.anchor(asked, false);
+    searcher.anchor(asked, false, true);
     let (_, answer) = until_anchored(&searcher);
     let h = &answer.items[0];
     assert_eq!(
@@ -804,7 +804,7 @@ fn unreadable_page_moves_nothing() {
     engine.failing = Some(1);
     let searcher = start(&engine);
     let asked = vec![highlight((0, 0), (0, 4), Some(("gone", "", "")))];
-    searcher.anchor(asked.clone(), false);
+    searcher.anchor(asked.clone(), false, true);
     let (_, answer) = until_anchored(&searcher);
     assert_eq!(answer.items, asked);
     assert!(!answer.relocated);
@@ -816,8 +816,8 @@ fn newer_anchor_replaces_one_under_way() {
     let searcher = start(&engine);
     let first = vec![highlight((0, 0), (0, 1), None)];
     let second = vec![highlight((0, 0), (0, 2), None)];
-    searcher.anchor(first, true);
-    searcher.anchor(second.clone(), true);
+    searcher.anchor(first, true, true);
+    searcher.anchor(second.clone(), true, true);
     engine.open_gate();
     let (asked, _) = until_anchored(&searcher);
     assert_eq!(asked, second);
@@ -844,7 +844,7 @@ fn the_thread_agrees_with_anchoring_in_memory() {
         // Without a quote.
         highlight((3, 0), (3, 2), None),
     ];
-    searcher.anchor(asked.clone(), true);
+    searcher.anchor(asked.clone(), true, true);
     let (_, answer) = until_anchored(&searcher);
     let texts: Vec<PageText> = (0..engine.page_count())
         .map(|p| {
@@ -854,8 +854,38 @@ fn the_thread_agrees_with_anchoring_in_memory() {
         })
         .collect();
     let refs: Vec<&PageText> = texts.iter().collect();
-    let expected = anchor(&asked, &refs, true);
+    let expected = anchor(&asked, &refs, true, true);
     assert_eq!(answer, expected);
     assert!(expected.relocated);
     assert!(expected.items[1].orphaned);
+}
+
+#[test]
+fn an_orphan_does_not_make_edits_walk() {
+    let engine = numbered(50, None);
+    let searcher = start(&engine);
+    let mut orphan = highlight((3, 0), (3, 4), Some(("zzzz", "", "")));
+    orphan.orphaned = true;
+    let asked = vec![
+        orphan,
+        highlight((20, 0), (20, 4), Some(("page", "", " 20"))),
+    ];
+    searcher.anchor(asked.clone(), true, false);
+    let (_, answer) = until_anchored(&searcher);
+    assert_eq!(answer.items, asked);
+    assert!(!answer.relocated);
+    assert!(engine.calls() <= 6, "{} page reads", engine.calls());
+}
+
+#[test]
+fn a_page_failing_mid_walk_moves_nothing() {
+    let mut engine = numbered(50, Some("see xyzzy now"));
+    engine.failing = Some(30);
+    let searcher = start(&engine);
+    let asked = vec![highlight((5, 0), (5, 5), Some(("xyzzy", "", "")))];
+    searcher.anchor(asked.clone(), false, true);
+    let (_, answer) = until_anchored(&searcher);
+    assert_eq!(answer.items, asked);
+    assert!(!answer.items[0].orphaned);
+    assert!(!answer.relocated);
 }
