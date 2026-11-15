@@ -31,8 +31,14 @@ impl PdfEngine for AnyEngine {
             HayroEngine.open(bytes)
         } else if bytes.starts_with(b"PK\x03\x04") {
             ComicEngine.open(bytes)
-        } else {
+        } else if bytes[..bytes.len().min(1024)]
+            .windows(5)
+            .any(|window| window == b"%PDF-")
+        {
+            // A PDF may carry junk before its header; let hayro name it.
             HayroEngine.open(bytes)
+        } else {
+            Err(EngineError::Open("not a readable document".into()))
         }
     }
 }
@@ -228,6 +234,27 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../fixtures")
             .join(name)
+    }
+
+    #[test]
+    fn unknown_bytes_are_not_called_a_pdf() {
+        let error = match AnyEngine.open(PdfBytes::from(b"not a document".to_vec())) {
+            Err(error) => error,
+            Ok(_) => panic!("opened junk"),
+        };
+        assert_eq!(error.to_string(), "not a readable document");
+    }
+
+    #[test]
+    fn a_cbz_open_error_names_the_cbz() {
+        let bytes = PdfBytes::from(std::fs::read(fixture("comic-empty.cbz")).unwrap());
+        let error = match AnyEngine.open(bytes) {
+            Err(error) => error,
+            Ok(_) => panic!("opened an archive without images"),
+        };
+        let message = error.to_string();
+        assert!(message.contains("CBZ"), "{message}");
+        assert!(!message.contains("PDF"), "{message}");
     }
 
     #[test]

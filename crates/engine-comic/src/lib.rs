@@ -39,7 +39,7 @@ impl PdfEngine for ComicEngine {
         let mut zip = archive(&bytes)?;
         if zip.len() > MAX_ENTRIES {
             return Err(EngineError::Open(format!(
-                "the archive has {} entries, more than a comic",
+                "not a readable CBZ: the archive has {} entries, more than a comic",
                 zip.len()
             )));
         }
@@ -88,7 +88,9 @@ impl PdfEngine for ComicEngine {
             });
         }
         if pages.is_empty() {
-            return Err(EngineError::Open("no images in the archive".into()));
+            return Err(EngineError::Open(
+                "not a readable CBZ: no images in the archive".into(),
+            ));
         }
         pages.sort_by(|a, b| natural_cmp(&a.name, &b.name).then(a.index.cmp(&b.index)));
         for (number, page) in pages.iter_mut().enumerate() {

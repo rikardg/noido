@@ -34,7 +34,7 @@ impl PdfEngine for HayroEngine {
             PdfBytes::Mapped(map) => Pdf::new(map),
             PdfBytes::Memory(bytes) => Pdf::new(bytes),
         }
-        .map_err(|e| EngineError::Open(format!("{e:?}")))?;
+        .map_err(|e| EngineError::Open(format!("not a readable PDF: {e:?}")))?;
         Ok(Box::new(HayroDocument::new(pdf)))
     }
 }
