@@ -320,6 +320,14 @@ impl Layout {
     }
 }
 
+/// The bytes a page's render takes at `display_scale`: its size in pixels,
+/// rounded the way the renderer rounds it, times four.
+pub fn render_bytes(page: Size, display_scale: f32, max_side: u32) -> u64 {
+    let scale = render_scale(page, display_scale, max_side);
+    let px = |points: f32| ((points * scale).round() as u64).max(1);
+    px(page.width) * px(page.height) * 4
+}
+
 /// The scale to render `page` at: `display_scale`, reduced if needed so the
 /// longest side stays within `max_side` pixels.
 pub fn render_scale(page: Size, display_scale: f32, max_side: u32) -> f32 {
@@ -633,5 +641,16 @@ mod tests {
         let s = render_scale(size(100.0, 20_000.0), 2.0, 8192);
         assert!(20_000.0 * s <= 8192.0 && 20_000.0 * s > 8191.0, "scale {s}");
         assert_eq!(render_scale(size(612.0, 792.0), 2.0, 8192), 2.0);
+    }
+
+    #[test]
+    fn render_bytes_counts_the_pixels_the_renderer_makes() {
+        // 612 x 792 points at two pixels each, four bytes a pixel.
+        assert_eq!(render_bytes(size(612.0, 792.0), 2.0, 8192), 1224 * 1584 * 4);
+        // Capped by the longest side, and never nothing: a page of no size
+        // still has one pixel.
+        let capped = render_bytes(size(100.0, 20_000.0), 2.0, 8192);
+        assert_eq!(capped, 41 * 8192 * 4);
+        assert_eq!(render_bytes(size(0.0, 0.0), 1.0, 8192), 4);
     }
 }

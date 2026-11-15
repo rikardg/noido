@@ -228,6 +228,159 @@ impl Document for GateDocument {
     }
 }
 
+/// Fails page 0 at once and takes 40 ms over the others, so a cheap failure
+/// would drag the median down.
+struct SlowGoodEngine;
+
+impl PdfEngine for SlowGoodEngine {
+    fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+        Ok(Box::new(SlowGoodEngine))
+    }
+}
+
+impl Document for SlowGoodEngine {
+    fn page_count(&self) -> usize {
+        2
+    }
+    fn page_size(&self, _page: usize) -> Result<Size, EngineError> {
+        Ok(Size {
+            width: 612.0,
+            height: 792.0,
+        })
+    }
+    fn render_tile(
+        &self,
+        page: usize,
+        scale: f32,
+        tile: PixelRect,
+    ) -> Result<Rgba8Image, EngineError> {
+        if page == 0 {
+            return Err(EngineError::Render("broken".into()));
+        }
+        std::thread::sleep(Duration::from_millis(40));
+        let width = ((tile.width as f32 * scale) as u32).max(1);
+        let height = ((tile.height as f32 * scale) as u32).max(1);
+        Rgba8Image::from_premultiplied(width, height, vec![255; (width * height * 4) as usize])
+            .ok_or_else(|| EngineError::Render("size".into()))
+    }
+}
+
+/// Costs `ms_per_megapixel` of what it is asked for: the same page takes four
+/// times as long at twice the scale, as a real one does.
+#[derive(Clone, Copy)]
+struct PixelCostEngine {
+    ms_per_megapixel: f32,
+}
+
+impl PdfEngine for PixelCostEngine {
+    fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+        Ok(Box::new(*self))
+    }
+}
+
+impl Document for PixelCostEngine {
+    fn page_count(&self) -> usize {
+        2
+    }
+    fn page_size(&self, _page: usize) -> Result<Size, EngineError> {
+        Ok(Size {
+            width: 612.0,
+            height: 792.0,
+        })
+    }
+    fn render_tile(
+        &self,
+        _page: usize,
+        _scale: f32,
+        tile: PixelRect,
+    ) -> Result<Rgba8Image, EngineError> {
+        let megapixels = tile.width as f32 * tile.height as f32 / 1e6;
+        std::thread::sleep(Duration::from_secs_f32(
+            self.ms_per_megapixel * megapixels / 1000.0,
+        ));
+        Rgba8Image::from_premultiplied(
+            tile.width,
+            tile.height,
+            vec![255; (tile.width * tile.height * 4) as usize],
+        )
+        .ok_or_else(|| EngineError::Render("size".into()))
+    }
+}
+
+#[test]
+fn a_page_costs_a_megapixel_whatever_the_scale() {
+    let cost_at = |scale: f32| {
+        let renderer = Renderer::start_background(
+            Arc::new(PixelCostEngine {
+                ms_per_megapixel: 20.0,
+            }),
+            PdfBytes::default(),
+            noido_render::Transforms::default(),
+            no_waker(),
+        );
+        renderer.request(RenderRequest { page: 0, scale });
+        assert!(recv(&renderer).result.is_ok());
+        renderer.render_cost_per_megapixel().expect("a cost")
+    };
+    // Sixteen times the pixels, and the same cost a megapixel: a median of
+    // per-page milliseconds would be sixteen times larger at the larger
+    // scale, and would go stale the moment the reader zoomed.
+    let small = cost_at(1.0);
+    let large = cost_at(4.0);
+    assert!(
+        small > 15.0 && large > 15.0,
+        "{small} and {large} ms a megapixel, for a page that costs 20"
+    );
+    assert!(
+        (large / small - 1.0).abs() < 0.5,
+        "{large} against {small} ms a megapixel: not a cost per pixel"
+    );
+}
+
+#[test]
+fn a_failed_render_does_not_count_as_a_cheap_one() {
+    let renderer = Renderer::start_background(
+        Arc::new(SlowGoodEngine),
+        PdfBytes::default(),
+        noido_render::Transforms::default(),
+        no_waker(),
+    );
+    // The good page is the slow one; it alone decides the cost.
+    renderer.request(RenderRequest {
+        page: 1,
+        scale: 1.0,
+    });
+    let rendered = recv(&renderer);
+    assert!(rendered.result.is_ok());
+    let cost = renderer.render_cost_per_megapixel().expect("a cost");
+    assert!(cost >= 35.0, "a slow page measured {cost} ms a megapixel");
+
+    // Two failures against one slow success: the median of all three would
+    // be a failure's.
+    for _ in 0..2 {
+        renderer.request(RenderRequest {
+            page: 0,
+            scale: 1.0,
+        });
+        let failed = recv(&renderer);
+        assert!(failed.result.is_err());
+    }
+    let cost = renderer.render_cost_per_megapixel().expect("a cost");
+    assert!(
+        cost >= 35.0,
+        "a failed render pulled the cost down to {cost} ms a megapixel"
+    );
+}
+
+#[test]
+fn the_median_is_the_middle_of_the_last_few() {
+    let mut costs = vec![1.0, 2.0, 3.0, 4.0, 90.0];
+    assert_eq!(noido_render::median_of(&costs), Some(3.0));
+    costs = vec![1.0, 2.0, 3.0, 4.0];
+    assert_eq!(noido_render::median_of(&costs), Some(3.0));
+    assert_eq!(noido_render::median_of(&[]), None);
+}
+
 #[test]
 fn coalesces_to_latest_per_page() {
     let engine = GateEngine {

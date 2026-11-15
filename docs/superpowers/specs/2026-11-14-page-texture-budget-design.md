@@ -31,24 +31,37 @@ comes back.
 
 - **A budget in bytes** for kept page renders: `PAGE_TEXTURE_BUDGET =
   256 MB`. It is a cap on what is *kept*, not on what is requested.
-- **Kept by distance**: spreads around the reader, nearest first, taken
-  until the budget is spent; the ones that don't fit are forgotten
-  exactly as pages outside the keep window are forgotten today
-  (`RenderTracker::forget_outside`, `textures.retain`). Because the
-  window is already biased ahead of the reader (six ahead, three behind,
-  flipped with the direction of travel), the budget spends itself on the
-  spreads the reader is most likely to see next.
-- **Never evicted**: the visible spread and the one beside it. They are
-  the two the reader is looking at or about to; without that floor a
-  budget smaller than one spread would blank the page on screen.
+- **Kept by distance**: the spreads around the reader, taken until the
+  budget is spent; the ones that don't fit are forgotten exactly as pages
+  outside the keep window are forgotten today
+  (`RenderTracker::forget_outside`, `textures.retain`). The keep window
+  itself is symmetric (`window_keep`); the ahead bias of the prefetch
+  (`window_order`: six ahead, three behind, flipped with the direction of
+  travel) orders the requests, not what is kept.
+- **Never evicted**: the spread on screen and the two beside it, since a
+  turn can go either way. This is a floor, not a guarantee that the
+  budget holds: at a zoom where a page is 124 MB, those three spreads
+  are over it, and the budget caps only what is kept beyond them.
 - **Prefetch follows the budget**: nothing is requested that would not be
   kept once it arrived, so a maximised window stops asking for ten
   spreads it cannot hold.
-- **A cheap document keeps less.** A page that renders in under 10 ms
-  (the median of the render thread's last twelve, a `Renderer` accessor)
-  is better remade than kept: such a document keeps only the visible
-  spread and the one beside it. building-git goes from 279 MB to the
-  four pages on screen and beside them.
+- **A cheap document keeps less.** A page that can be made again within
+  a frame is better remade than kept: such a document keeps only the
+  spread on screen and the two beside it. "A frame" is
+  `predicted_dt` floored at 1/60 s, because egui 0.37 integrations leave
+  `predicted_dt` at 1/60 and a 120 Hz display is no reason to keep a
+  hundred megabytes more. The cost comes from the render thread, the
+  median of its last twelve page renders, as milliseconds per megapixel
+  of the pixels it was *asked* for — a page costs what the pixels cost,
+  so the answer holds when a zoom changes how many there are, and an
+  engine that answers with fewer pixels still did the work. It is an
+  estimate: a page is not exactly linear in pixels, and a render at a
+  much larger scale than the reader's (the pagelet's) pulls the figure
+  up, which errs towards keeping more. A render
+  that failed is not counted, as it says nothing about what a page
+  costs to make.
+  building-git, 13 ms a page at a Retina backing store, drops from
+  279 MB to the three pages on screen and beside them.
 - Unchanged: the sidebar's sharp thumbnails keep their own fixed budget
   (`THUMBNAIL_BUDGET`), and hit and history pages keep the same
   treatment they have now.
@@ -56,18 +69,19 @@ comes back.
 ## Tests
 
 - A maximised harness window (1512×982 at `pixels_per_point` 2) with a
-  budget that fits three spreads: exactly the three nearest are kept, the
-  rest are dropped, and the visible spread and its neighbour survive a
-  budget smaller than themselves.
-- Dropped farthest-first: with a budget that fits `n` spreads, the kept
-  set is the `n` nearest, and no farther page is among them.
+  slow engine, so the budget rather than the cheap rule answers: what is
+  kept fits the budget, and one spread more would not. Without the
+  fitting (a helper that returns the whole window) the test fails with
+  385 MB against the 256 MB budget.
+- A 1-byte budget still keeps the spread on screen and its two
+  neighbours, wherever the reader is scrolled to.
 - The default harness window (900×1000) keeps all of `KEEP` when the
   budget allows it, so nothing about today's behaviour changes where the
   pages are small.
 - A page that renders in milliseconds (`RecordingEngine`) keeps only the
-  visible and beside spreads; one that takes 15 ms a page
-  (`SlowRecordingEngine`) keeps the full window. Both exist in the
-  harness today.
+  visible and beside spreads; one that takes 30 ms a page
+  (`SlowRecordingEngine`, above the 1/60 s frame so it cannot be read as
+  cheap) keeps the full window.
 - Nothing outside the budget is requested: the pages the recorder saw
   are a subset of the kept ones.
 
