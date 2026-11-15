@@ -43,12 +43,12 @@ impl DocKey {
     }
 
     /// A key from the bytes' length, their first four kilobytes and their last
-    /// mebibyte. For a ZIP archive that is enough: its central directory at the end records
+    /// four mebibytes. For a ZIP archive that is enough: its central directory at the end records
     /// every entry's CRC and size, so a changed page changes the key, while
     /// hashing the whole of a large book would read all of it. Not for a
     /// format whose edits can leave both ends untouched.
     pub fn sampled(bytes: &[u8], path: &Path) -> Self {
-        const END: usize = 1024 * 1024;
+        const END: usize = 4 * 1024 * 1024;
         let mut hasher = blake3::Hasher::new();
         hasher.update(&(bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes[..bytes.len().min(4096)]);
@@ -805,17 +805,27 @@ mod key_tests {
     }
 
     #[test]
-    fn a_sampled_key_leaves_the_middle_alone() {
+    fn a_sampled_key_sees_a_wide_tail_but_not_the_middle() {
         // The ZIP trade: its central directory at the end changes with a
-        // page, so the middle is not read.
+        // page, so the middle is not read. The first four mebibytes of the
+        // tail are read; a page inside the last one is not enough.
         let path = Path::new("/papers/a.cbz");
-        let bytes = vec![0u8; 4 * 1024 * 1024];
-        let mut changed = bytes.clone();
-        changed[2 * 1024 * 1024] = 1;
-        assert_eq!(
-            DocKey::sampled(&changed, path).hex(),
-            DocKey::sampled(&bytes, path).hex()
-        );
+        let bytes = vec![0u8; 8 * 1024 * 1024];
+        let key = DocKey::sampled(&bytes, path).hex();
+
+        let mut middle = bytes.clone();
+        middle[2 * 1024 * 1024] = 1;
+        assert_eq!(DocKey::sampled(&middle, path).hex(), key);
+
+        let mut wide = bytes.clone();
+        wide[5 * 1024 * 1024] = 1;
+        assert_ne!(DocKey::sampled(&wide, path).hex(), key);
+
+        let mut tail = bytes.clone();
+        tail[7 * 1024 * 1024] = 1;
+        assert_ne!(DocKey::sampled(&tail, path).hex(), key);
+
+        assert_ne!(DocKey::sampled(&[bytes, vec![0]].concat(), path).hex(), key);
     }
 }
 
