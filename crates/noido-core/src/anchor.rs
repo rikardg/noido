@@ -7,7 +7,9 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::ops::RangeInclusive;
 
-use noido_text::{Joined, PageText, Query, Span, folded_chars, folded_len, same_text};
+use noido_text::{
+    Joined, PageText, Query, Span, context_full, folded_prefix, folded_suffix, same_text,
+};
 
 use crate::{Highlight, Location, Quote};
 
@@ -60,7 +62,7 @@ pub fn check(h: &Highlight, window: &Joined, fill_missing: bool) -> Check {
         }
         Some(q) => {
             let same = text.is_some_and(|t| same_text(&t, &q.exact));
-            let full = folded_len(&q.prefix) + folded_len(&q.suffix);
+            let full = context_full(&q.prefix, &q.suffix);
             if !(same && window.context(span, &q.prefix, &q.suffix) == full) {
                 return Check::Search;
             }
@@ -118,7 +120,7 @@ impl Walk {
                 });
                 let (prefix, suffix) =
                     highlight.quote.as_ref().map_or_else(Default::default, |q| {
-                        (folded_chars(&q.prefix), folded_chars(&q.suffix))
+                        (folded_prefix(&q.prefix), folded_suffix(&q.suffix))
                     });
                 Pending {
                     index,
@@ -787,6 +789,34 @@ mod tests {
         assert_eq!(out.items[1].quote, b.quote);
         let back = anchor(&out.items, &refs(&old), false, true);
         assert_eq!(back.items, [a, b]);
+    }
+
+    #[test]
+    fn a_selection_with_spaces_at_its_edges_stays_and_follows() {
+        let old = [text(&["there was a quiet argument on tides"])];
+        let h = made(&old, (0, 11), (0, 27));
+        let out = anchor(std::slice::from_ref(&h), &refs(&old), false, true);
+        assert_eq!(out.items, std::slice::from_ref(&h));
+        assert!(!out.relocated);
+        let new = [text(&["new words. there was a quiet argument on tides"])];
+        let out = anchor(&[h], &refs(&new), false, true);
+        assert!(!out.items[0].orphaned);
+        assert_eq!(out.items[0].quote.as_ref().unwrap().exact, "quiet argument");
+    }
+
+    #[test]
+    fn a_quote_saved_without_its_edge_spaces_still_holds() {
+        let pages = [text(&["there was a quiet argument on tides"])];
+        let h = quoted(
+            (0, 11),
+            (0, 27),
+            "quiet argument",
+            "there was a",
+            "on tides",
+        );
+        let out = anchor(std::slice::from_ref(&h), &refs(&pages), false, true);
+        assert_eq!(out.items, [h]);
+        assert!(!out.relocated);
     }
 
     #[test]
