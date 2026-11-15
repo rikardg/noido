@@ -166,6 +166,8 @@ pub struct NoidoApp {
     persistence: Option<Persistence>,
     /// Where Back and Forward go.
     history: History,
+    /// Where each page's characters sit in the document's parts.
+    locations: noido_engine::LocationMap,
     /// The document's highlights.
     highlights: Highlights,
     /// The pages the reader pinned.
@@ -372,6 +374,7 @@ impl NoidoApp {
             flip_distance: 0.0,
             persistence: None,
             history: History::default(),
+            locations: noido_engine::LocationMap::identity(),
             highlights: Highlights::default(),
             pins: Pins::default(),
             pagelet: None,
@@ -626,14 +629,20 @@ impl NoidoApp {
     /// Remembers the current place before a jump, for Back.
     fn leave_here(&mut self) {
         self.links.cancel_named();
-        if let Some(here) = self.view.place() {
+        if let Some(here) = self.here() {
             self.history.leave(here);
         }
     }
 
+    /// Where the reader is, for Back and Forward.
+    fn here(&self) -> Option<noido_core::Place> {
+        self.view.place().map(noido_core::Place::Point)
+    }
+
     fn go_back(&mut self) {
-        if let Some(here) = self.view.place()
+        if let Some(here) = self.here()
             && let Some(to) = self.history.back(here)
+            && let Some(to) = to.point(&self.locations)
         {
             self.view.restore_place(&to);
             self.reader_moved();
@@ -641,8 +650,9 @@ impl NoidoApp {
     }
 
     fn go_forward(&mut self) {
-        if let Some(here) = self.view.place()
+        if let Some(here) = self.here()
             && let Some(to) = self.history.forward(here)
+            && let Some(to) = to.point(&self.locations)
         {
             self.view.restore_place(&to);
             self.reader_moved();
@@ -651,7 +661,7 @@ impl NoidoApp {
 
     /// The nearest places Back and Forward would go to, as many each way as
     /// [`HISTORY_KEEP`] keeps.
-    fn nearest_history_targets(&self) -> impl Iterator<Item = &noido_core::DocPoint> + '_ {
+    fn nearest_history_targets(&self) -> Vec<noido_core::DocPoint> {
         self.history
             .back_entries()
             .iter()
@@ -664,6 +674,8 @@ impl NoidoApp {
                     .rev()
                     .take(HISTORY_KEEP),
             )
+            .filter_map(|place| place.point(&self.locations))
+            .collect()
     }
 
     /// Searches the field's text once it has rested, and takes in hits.
@@ -807,7 +819,7 @@ impl NoidoApp {
         // A search is one jump: stepping from hit to hit, or searching
         // again from a hit, adds nothing.
         if !std::mem::replace(&mut self.searched_away, true)
-            && let Some(here) = self.view.place()
+            && let Some(here) = self.here()
         {
             self.history.leave(here);
         }
@@ -1738,9 +1750,9 @@ impl NoidoApp {
             // Jumps, like a thumbnail click: Back returns to where the reader
             // was; a press that moves nothing leaves no entry.
             Action::FirstPage | Action::LastPage => {
-                let before = self.view.place();
+                let before = self.here();
                 self.view.apply(action);
-                if self.view.place() != before {
+                if self.here() != before {
                     if let Some(here) = before {
                         self.history.leave(here);
                     }
@@ -1990,7 +2002,7 @@ impl NoidoApp {
         // a return is sharp, but not requested, so a jump renders nothing it
         // does not show.
         for point in self.nearest_history_targets() {
-            for page in self.view.band_around(point) {
+            for page in self.view.band_around(&point) {
                 if !window.contains(&page) && !extra.contains(&page) {
                     extra.push(page);
                 }
@@ -12830,7 +12842,8 @@ pub(crate) mod tests {
         h.frames(3, vec![]);
         let target = h.app.history.back_entries().last().expect("a Back target");
         let layout = h.app.view.layout();
-        let requested = layout.spread_pages(layout.spread_of(target.page));
+        let page = target.page(&h.app.locations).unwrap();
+        let requested = layout.spread_pages(layout.spread_of(page));
         let ahead: Vec<usize> = engine.rendered()[before..]
             .iter()
             .copied()
@@ -13490,7 +13503,10 @@ pub(crate) mod tests {
         click_link(&mut h, 0, 100.0, 96.0);
         let state = h.app.doc_state().unwrap();
         assert_eq!(state.history.back_entries().len(), 1);
-        assert_eq!(state.history.back_entries()[0].page, 0);
+        assert_eq!(
+            state.history.back_entries()[0].page(&noido_engine::LocationMap::identity()),
+            Some(0)
+        );
     }
 
     #[test]
