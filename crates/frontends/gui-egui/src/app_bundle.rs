@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 /// The bundle identifier Launch Services knows noido by.
 pub const IDENTIFIER: &str = "io.github.rikardg.noido";
 
+/// The exported type of a CBZ, so Finder offers noido for one.
+pub const CBZ_UTI: &str = "io.github.rikardg.noido.cbz";
+
 /// The bundle's directory name.
 pub const APP_NAME: &str = "noido.app";
 
@@ -45,6 +48,24 @@ pub fn info_plist(version: &str) -> String {
 <key>CFBundleTypeRole</key><string>Viewer</string>
 <key>LSHandlerRank</key><string>Alternate</string>
 <key>LSItemContentTypes</key><array><string>com.adobe.pdf</string></array>
+</dict>
+<dict>
+<key>CFBundleTypeName</key><string>Comic book archive</string>
+<key>CFBundleTypeRole</key><string>Viewer</string>
+<key>LSHandlerRank</key><string>Alternate</string>
+<key>LSItemContentTypes</key><array><string>{CBZ_UTI}</string></array>
+</dict>
+</array>
+<key>UTExportedTypeDeclarations</key>
+<array>
+<dict>
+<key>UTTypeIdentifier</key><string>{CBZ_UTI}</string>
+<key>UTTypeDescription</key><string>Comic book archive</string>
+<key>UTTypeConformsTo</key><array><string>public.zip-archive</string></array>
+<key>UTTypeTagSpecification</key><dict>
+<key>public.filename-extension</key><array><string>cbz</string></array>
+<key>public.mime-type</key><string>application/vnd.comicbook+zip</string>
+</dict>
 </dict>
 </array>
 <key>CFBundleURLTypes</key>
@@ -531,6 +552,11 @@ mod tests {
             "<key>LSHandlerRank</key><string>Alternate</string>",
             "<key>CFBundleTypeRole</key><string>Viewer</string>",
             "<key>CFBundleURLSchemes</key><array><string>noido</string></array>",
+            "<key>UTExportedTypeDeclarations</key>",
+            "<string>io.github.rikardg.noido.cbz</string>",
+            "<string>public.zip-archive</string>",
+            "<string>application/vnd.comicbook+zip</string>",
+            "<key>CFBundleTypeName</key><string>Comic book archive</string>",
         ] {
             assert!(xml.contains(wanted), "missing {wanted}");
         }

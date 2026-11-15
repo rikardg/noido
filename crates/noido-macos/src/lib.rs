@@ -34,7 +34,7 @@ pub use launch::launch_in_bundle;
 pub use menu::{MenuCommand, clear_recent, install_menu, note_recent, set_recent, take_commands};
 
 #[cfg(target_os = "macos")]
-pub use open_panel::pick_pdfs;
+pub use open_panel::pick_documents;
 
 #[cfg(target_os = "macos")]
 pub use open_urls::{install_open_urls, take_opened};

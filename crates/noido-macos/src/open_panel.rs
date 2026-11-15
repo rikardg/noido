@@ -1,5 +1,5 @@
-//! The Open panel: AppKit's own, filtering by the PDF type noido.app
-//! claims, not by the extension.
+//! The Open panel: AppKit's own, filtering by the types noido.app claims,
+//! not by the extension.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -13,6 +13,16 @@ use objc2_uniform_type_identifiers::UTType;
 /// The PDF type, the one noido.app claims in its Info.plist.
 fn pdf_type() -> Option<Retained<UTType>> {
     UTType::typeWithIdentifier(&NSString::from_str("com.adobe.pdf"))
+}
+
+/// A CBZ, filtered by its extension. Info.plist declares the UTI that makes
+/// Finder offer noido; the panel can work from the extension even when the
+/// bundle is not installed, as in tests.
+const CBZ_UTI: &str = "io.github.rikardg.noido.cbz";
+
+fn cbz_type() -> Option<Retained<UTType>> {
+    UTType::typeWithFilenameExtension(&NSString::from_str("cbz"))
+        .or_else(|| UTType::typeWithIdentifier(&NSString::from_str(CBZ_UTI)))
 }
 
 /// The file a picked URL names.
@@ -37,13 +47,13 @@ thread_local! {
     static SHOWING: RefCell<Option<Retained<NSOpenPanel>>> = const { RefCell::new(None) };
 }
 
-/// Asks for PDFs in the Open panel, in front, starting in `directory`
-/// when given; `on_picked` gets the picked files, and is not called on
-/// Cancel. Several can be picked. The panel is not modal: this returns
-/// at once, so it is safe from inside an event handler, and the windows
-/// keep running while it is up. While one is up, it comes forward instead
-/// of a second. Main thread only.
-pub fn pick_pdfs(directory: Option<&Path>, on_picked: impl Fn(Vec<PathBuf>) + 'static) {
+/// Asks for PDFs and comics in the Open panel, in front, starting in
+/// `directory` when given; `on_picked` gets the picked files, and is not
+/// called on Cancel. Several can be picked. The panel is not modal: this
+/// returns at once, so it is safe from inside an event handler, and the
+/// windows keep running while it is up. While one is up, it comes forward
+/// instead of a second. Main thread only.
+pub fn pick_documents(directory: Option<&Path>, on_picked: impl Fn(Vec<PathBuf>) + 'static) {
     let mtm = MainThreadMarker::new().expect("the Open panel runs on the main thread");
     // NSApp.activate needs macOS 14; noido.app supports 11.
     #[allow(deprecated)]
@@ -54,8 +64,9 @@ pub fn pick_pdfs(directory: Option<&Path>, on_picked: impl Fn(Vec<PathBuf>) + 's
     let panel = NSOpenPanel::openPanel(mtm);
     panel.setAllowsMultipleSelection(true);
     panel.setCanChooseDirectories(false);
-    if let Some(pdf) = pdf_type() {
-        panel.setAllowedContentTypes(&NSArray::from_retained_slice(&[pdf]));
+    let types: Vec<Retained<UTType>> = [pdf_type(), cbz_type()].into_iter().flatten().collect();
+    if !types.is_empty() {
+        panel.setAllowedContentTypes(&NSArray::from_retained_slice(&types));
     }
     if let Some(directory) = directory {
         let url = NSURL::fileURLWithPath_isDirectory(
@@ -90,6 +101,14 @@ mod tests {
         assert_eq!(pdf.identifier().to_string(), "com.adobe.pdf");
         let extension = pdf.preferredFilenameExtension().map(|e| e.to_string());
         assert_eq!(extension.as_deref(), Some("pdf"));
+    }
+
+    #[test]
+    fn the_open_panel_offers_cbz_as_well_as_pdf() {
+        let cbz = cbz_type().expect("the system knows cbz");
+        let extension = cbz.preferredFilenameExtension().map(|e| e.to_string());
+        assert_eq!(extension.as_deref(), Some("cbz"));
+        assert!(pdf_type().is_some());
     }
 
     #[test]
