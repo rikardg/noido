@@ -110,6 +110,12 @@ struct Page {
     /// The page's place in the book, 0-based, after natural sorting.
     number: usize,
     name: String,
+    /// One point per image pixel. At 100% on a 2x display the renderer
+    /// requests four times the source area (a 2456x3375 page is 133 MB),
+    /// but `render_page` returns the image's own 33 MB; fit-width requests
+    /// the window's pixels, not the page's. The texture budget bills the
+    /// request, so it may keep fewer pages than the returned textures
+    /// would allow.
     size: Size,
 }
 
