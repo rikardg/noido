@@ -96,34 +96,53 @@ impl<'a> Joined<'a> {
     /// `prefix`, counting back from the match, plus how many after it agree
     /// with `suffix`, counting forward. Stops at the window's edges.
     pub fn context(&self, span: Span, prefix: &str, suffix: &str) -> usize {
-        self.context_folded(span, &folded(prefix), &folded(suffix))
+        self.context_folded(span, &folded_prefix(prefix), &folded_suffix(suffix))
     }
 
     /// [`Self::context`] with `prefix` and `suffix` already folded by
-    /// [`folded_chars`], for scoring many matches against one quote.
+    /// [`folded_prefix`] and [`folded_suffix`], for scoring many matches
+    /// against one quote.
     pub fn context_folded(&self, span: Span, prefix: &[char], suffix: &[char]) -> usize {
         let (back, forward) = self.agreement_folded(span, prefix, suffix);
         back + forward
     }
 
     /// [`Self::context_folded`] for each side: how many characters of
-    /// `prefix` agree, and how many of `suffix`.
+    /// `prefix` agree, and how many of `suffix`. A space where the match
+    /// meets its neighbours doesn't count, on either side: a selection may
+    /// or may not take in the space next to it, and its copied text is
+    /// trimmed.
     pub fn agreement_folded(&self, span: Span, prefix: &[char], suffix: &[char]) -> (usize, usize) {
         let (Some(start), Some(end)) = (self.index_of(span.start), self.index_of(span.end)) else {
             return (0, 0);
         };
         let (chars, source) = (&self.folds.plain, &self.folds.plain_source);
-        let before = source.partition_point(|&s| s < start);
-        let after = source.partition_point(|&s| s < end);
+        let mut before = source.partition_point(|&s| s < start);
+        let mut after = source.partition_point(|&s| s < end).max(before);
+        // Spaces inside the span's edges, then the one just outside.
+        while before < after && chars[before] == ' ' {
+            before += 1;
+        }
+        while after > before && chars[after - 1] == ' ' {
+            after -= 1;
+        }
+        let mut window_before = &chars[..before];
+        if window_before.last() == Some(&' ') {
+            window_before = &window_before[..before - 1];
+        }
+        let mut window_after = &chars[after..];
+        if window_after.first() == Some(&' ') {
+            window_after = &window_after[1..];
+        }
         let back = prefix
             .iter()
             .rev()
-            .zip(chars[..before].iter().rev())
+            .zip(window_before.iter().rev())
             .take_while(|(a, b)| a == b)
             .count();
         let forward = suffix
             .iter()
-            .zip(&chars[after..])
+            .zip(window_after)
             .take_while(|(a, b)| a == b)
             .count();
         (back, forward)
@@ -224,9 +243,24 @@ fn folded(s: &str) -> Vec<char> {
     fold(&s.chars().collect::<Vec<_>>(), false).plain
 }
 
-/// `s` folded the way [`Joined::context_folded`] wants its neighbours.
-pub fn folded_chars(s: &str) -> Vec<char> {
-    folded(s)
+/// A quote's prefix folded the way [`Joined::context_folded`] wants it:
+/// without the space where it meets the match.
+pub fn folded_prefix(s: &str) -> Vec<char> {
+    let mut f = folded(s);
+    if f.last() == Some(&' ') {
+        f.pop();
+    }
+    f
+}
+
+/// A quote's suffix folded the way [`Joined::context_folded`] wants it:
+/// without the space where it meets the match.
+pub fn folded_suffix(s: &str) -> Vec<char> {
+    let mut f = folded(s);
+    if f.first() == Some(&' ') {
+        f.remove(0);
+    }
+    f
 }
 
 /// Whether `a` and `b` are the same after search folding (accents kept).
@@ -247,6 +281,11 @@ pub fn same_text(a: &str, b: &str) -> bool {
 /// The length of `s` after search folding.
 pub fn folded_len(s: &str) -> usize {
     folded(s).len()
+}
+
+/// The context a match scores when both neighbours agree in full.
+pub fn context_full(prefix: &str, suffix: &str) -> usize {
+    folded_prefix(prefix).len() + folded_suffix(suffix).len()
 }
 
 #[cfg(test)]
@@ -313,7 +352,7 @@ mod tests {
         let first = j.context(spans[0], "sat. ", " ran");
         let second = j.context(spans[1], "sat. ", " ran");
         assert!(second > first);
-        assert_eq!(second, folded_len("sat. ") + folded_len(" ran"));
+        assert_eq!(second, context_full("sat. ", " ran"));
     }
 
     #[test]
@@ -349,6 +388,71 @@ mod tests {
         assert_eq!(prefix, "end of one ");
     }
 
+    /// Whether `span`'s own quote, and `quote`, score full there.
+    fn scores_full(j: &Joined, span: Span, prefix: &str, suffix: &str) -> bool {
+        j.context(span, prefix, suffix) == context_full(prefix, suffix)
+    }
+
+    #[test]
+    fn spaces_at_the_junction_do_not_count() {
+        // A selection with a space at each end, its copied text trimmed.
+        let a = text(&["there was a quiet argument on tides"]);
+        let j = Joined::new(0, &[&a]);
+        let wide = Span {
+            start: (0, 11),
+            end: (0, 27),
+        };
+        let (exact, prefix, suffix) = j.quote(wide);
+        assert_eq!(exact, "quiet argument");
+        assert!(scores_full(&j, wide, &prefix, &suffix));
+        let trimmed = j.find(&Query::new(&exact).unwrap())[0];
+        assert!(scores_full(&j, trimmed, &prefix, &suffix));
+        // With or without the spaces in the stored neighbours.
+        for (p, s) in [("there was a", "on tides"), ("there was a ", " on tides")] {
+            assert!(scores_full(&j, wide, p, s), "{p:?} {s:?}");
+            assert!(scores_full(&j, trimmed, p, s), "{p:?} {s:?}");
+        }
+    }
+
+    #[test]
+    fn a_span_of_only_a_space_scores_full() {
+        let a = text(&["alpha beta gamma"]);
+        let j = Joined::new(0, &[&a]);
+        let span = Span {
+            start: (0, 5),
+            end: (0, 6),
+        };
+        let (_, prefix, suffix) = j.quote(span);
+        assert!(scores_full(&j, span, &prefix, &suffix));
+    }
+
+    #[test]
+    fn a_span_starting_at_a_page_end_scores_full() {
+        let (a, b) = (text(&["end of one"]), text(&["start of two"]));
+        let j = Joined::new(0, &[&a, &b]);
+        let at_end = Span {
+            start: (0, a.char_count()),
+            end: (1, 5),
+        };
+        let (exact, prefix, suffix) = j.quote(at_end);
+        assert_eq!(exact, "start");
+        assert!(scores_full(&j, at_end, &prefix, &suffix));
+    }
+
+    #[test]
+    fn a_span_ending_on_a_hyphen_break_scores_full() {
+        let a = text(&["an inter-", "preter came"]);
+        let j = Joined::new(0, &[&a]);
+        let start = a.text().find("inter").unwrap();
+        let end = a.text().find("preter").unwrap();
+        let span = Span {
+            start: (0, start),
+            end: (0, end),
+        };
+        let (_, prefix, suffix) = j.quote(span);
+        assert!(scores_full(&j, span, &prefix, &suffix));
+    }
+
     #[test]
     fn same_text_folds() {
         assert!(same_text("Magis-\ntrates", "magistrates"));
@@ -368,7 +472,7 @@ mod tests {
         assert!(suffix.contains("magistrates"), "{suffix:?}");
         assert_eq!(
             j.context(span, &prefix, &suffix),
-            folded_len(&prefix) + folded_len(&suffix)
+            context_full(&prefix, &suffix)
         );
     }
 }
