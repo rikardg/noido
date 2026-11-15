@@ -9,7 +9,7 @@ use noido_core::{
     Action, Defaults, Direction, DragKind, Highlight, HighlightColour, Highlights, History, Keep,
     Key, KeyPress, Keymap, MAX_RENDER_SIDE, PageRect, PageTextState, Pins, RenderTracker,
     SidebarState, THUMBNAIL_BUDGET, Target, View, ViewState, drag_kind, fit_page, page_point,
-    render_scale, window_keep, window_order,
+    render_bytes, render_scale, window_keep, window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
 use noido_settings::{Settings, SettingsFile};
@@ -34,9 +34,22 @@ use crate::watch::{Reload, Watcher};
 /// current one, after the visible ones: the current spread, then six ahead
 /// and three behind in the direction of travel (see [`window_order`]).
 const PREFETCH_BUDGET: usize = 10;
-/// Spreads on each side of the current one whose full renders are kept; more
-/// than the window reaches ahead, so moving back and forth doesn't re-render.
+/// Spreads on each side of the current one whose full renders are kept, as
+/// far as [`PAGE_TEXTURE_BUDGET`] allows.
 const KEEP: usize = 8;
+/// The fewest spreads kept whatever the budget: the one on screen and the two
+/// beside it, since a turn can go either way. A floor, not a promise: at a
+/// zoom where a page is 124 MB the three of them are over the budget, and the
+/// budget caps only what is kept beyond them.
+const KEEP_MIN_SPREADS: usize = 1;
+/// The shortest frame to credit, in seconds: egui 0.37 integrations leave
+/// `predicted_dt` at 1/60, and a 120 Hz display is not a reason to keep a
+/// hundred megabytes more.
+const DEFAULT_FRAME_SECONDS: f32 = 1.0 / 60.0;
+/// How many bytes of page renders are kept around the reader. A page costs its
+/// size at the display scale, so a window's worth is 14-18 MB a page at a
+/// default window and 41-51 MB at 1512 wide with a Retina backing store.
+const PAGE_TEXTURE_BUDGET: u64 = 256 * 1024 * 1024;
 /// How many places on each side of the history are kept rendered: the next
 /// Back and the next Forward target.
 const HISTORY_KEEP: usize = 1;
@@ -121,6 +134,13 @@ pub struct NoidoApp {
     view: View,
     tracker: RenderTracker,
     textures: HashMap<usize, PageImage>,
+    /// How many bytes of page renders to keep; [`PAGE_TEXTURE_BUDGET`] unless a
+    /// test says otherwise.
+    texture_budget: u64,
+    /// What a page costs a megapixel of render, when a test says so: see
+    /// [`App::render_cost_per_megapixel`].
+    #[cfg(test)]
+    render_cost: Option<f32>,
     /// Full renders fading in over their thumbnails.
     fades: Fades,
     keymap: Keymap,
@@ -327,6 +347,9 @@ impl NoidoApp {
             view: View::new(info.page_sizes),
             tracker: RenderTracker::new(page_count),
             textures: HashMap::new(),
+            texture_budget: PAGE_TEXTURE_BUDGET,
+            #[cfg(test)]
+            render_cost: None,
             fades: Fades::default(),
             keymap: Keymap::native(),
             last_scroll: None,
@@ -726,6 +749,33 @@ impl NoidoApp {
         self.thumbnails
             .as_ref()
             .and_then(|thumbnails| thumbnails.textures.get(&page))
+    }
+
+    /// Keeps at most `bytes` of page renders, for a test that wants a budget
+    /// small enough to see.
+    #[cfg(test)]
+    fn with_texture_budget(mut self, bytes: u64) -> Self {
+        self.texture_budget = bytes;
+        self
+    }
+
+    /// What a page costs a megapixel, for a test whose timing would otherwise
+    /// be the machine's load rather than the page.
+    #[cfg(test)]
+    fn with_render_cost(mut self, per_megapixel: f32) -> Self {
+        self.render_cost = Some(per_megapixel);
+        self
+    }
+
+    /// What a page costs a megapixel of render, in milliseconds: the render
+    /// thread's measurement, or what a test told it, because a test's timing
+    /// is mostly how loaded the machine is.
+    fn render_cost_per_megapixel(&self) -> Option<f32> {
+        #[cfg(test)]
+        if let Some(cost) = self.render_cost {
+            return Some(cost);
+        }
+        self.renderer.render_cost_per_megapixel()
     }
 
     /// Follows the OS theme while the app runs.
@@ -1758,7 +1808,39 @@ impl NoidoApp {
         };
 
         let focus = layout.spread_of(self.focus.unwrap_or(visible.start));
-        let window = window_keep(spread_count, focus, KEEP);
+        let display_scale = self.view.scale() * ui.ctx().pixels_per_point();
+        // What is kept is bounded by bytes as much as by spreads: a page costs
+        // its size at the display scale. A document whose pages are ready
+        // within a frame makes them again for less than a turn would wait, so
+        // it keeps only what is on screen. The renderer reports its cost per
+        // megapixel, which is what makes the answer hold when a zoom changes
+        // how many pixels a page is.
+        let frame_ms = ui
+            .ctx()
+            .input(|i| i.predicted_dt.max(DEFAULT_FRAME_SECONDS))
+            * 1000.0;
+        let spread_megapixels: f32 = layout
+            .spread_pages(focus)
+            .map(|page| {
+                let size = layout.page_size(page).expect("page in range");
+                render_bytes(size, display_scale, MAX_RENDER_SIDE) as f32 / 4.0 / 1e6
+            })
+            .sum();
+        let cheap = self
+            .render_cost_per_megapixel()
+            .is_none_or(|per_megapixel| per_megapixel * spread_megapixels < frame_ms);
+        let kept = if cheap {
+            KEEP_MIN_SPREADS
+        } else {
+            kept_spreads(
+                self.texture_budget,
+                spread_count,
+                focus,
+                layout,
+                display_scale,
+            )
+        };
+        let window = window_keep(spread_count, focus, kept);
         let window = if window.is_empty() {
             visible.clone()
         } else {
@@ -1842,14 +1924,16 @@ impl NoidoApp {
                 order.push(*page);
             }
         }
+        let keep = Keep { window, extra };
+        // Only what would be kept is worth asking for: a page the budget would
+        // drop on arrival is a page rendered for nothing.
         for spread in window_order(spread_count, focus, self.direction, PREFETCH_BUDGET) {
             order.extend(
                 layout
                     .spread_pages(spread)
-                    .filter(|page| !visible.contains(page)),
+                    .filter(|page| !visible.contains(page) && keep.contains(*page)),
             );
         }
-        let keep = Keep { window, extra };
 
         // Set before requesting: the render thread skips pages outside this
         // set, and the tracker forgets them below, so none stays pending.
@@ -1857,7 +1941,6 @@ impl NoidoApp {
         // Pages requested earlier, while scrolling past, wait behind these.
         self.renderer.set_priority(order.clone());
 
-        let display_scale = self.view.scale() * ui.ctx().pixels_per_point();
         if display_scale > 0.0 {
             for page in order {
                 // A page both on screen and in the pagelet is rendered once,
@@ -2711,6 +2794,33 @@ impl NoidoApp {
     fn pagelet_page_rect(&self) -> Option<Rect> {
         self.pin_preview.as_ref().map(|preview| preview.page_rect)
     }
+}
+
+/// The spreads on each side of `focus` whose renders fit `budget`: as many as
+/// [`KEEP`] allows, and never fewer than [`KEEP_MIN_SPREADS`].
+fn kept_spreads(
+    budget: u64,
+    spread_count: usize,
+    focus: usize,
+    layout: &noido_core::Layout,
+    scale: f32,
+) -> usize {
+    let bytes_of = |page: usize| {
+        let size = layout.page_size(page).expect("page in range");
+        render_bytes(size, scale, MAX_RENDER_SIDE)
+    };
+    let mut spreads = KEEP;
+    while spreads > KEEP_MIN_SPREADS {
+        let bytes: u64 = window_keep(spread_count, focus, spreads)
+            .flat_map(|spread| layout.spread_pages(spread))
+            .map(bytes_of)
+            .sum();
+        if bytes <= budget {
+            break;
+        }
+        spreads -= 1;
+    }
+    spreads
 }
 
 /// The pagelet's eight resize handles: each side and corner, with its
@@ -4676,6 +4786,176 @@ pub(crate) mod tests {
         h.press(egui::Key::ArrowRight, Modifiers::NONE);
         h.frames(2, vec![]);
         assert!(h.app.search_state.at_hit);
+    }
+
+    /// What the renders of the pages in `keep` take, as the app counts them.
+    fn kept_bytes(h: &Harness, keep: &Keep) -> u64 {
+        let layout = h.app.view.layout();
+        let scale = h.app.view.scale() * h.ctx.pixels_per_point();
+        (0..layout.page_count())
+            .filter(|page| keep.contains(*page))
+            .map(|page| render_bytes(layout.page_size(page).unwrap(), scale, MAX_RENDER_SIDE))
+            .sum()
+    }
+
+    #[test]
+    fn a_default_window_keeps_the_whole_spread_window() {
+        // Slow enough that the cheap-document rule leaves it alone.
+        let engine = SlowRecordingEngine::default();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app);
+        h.until(|_| engine.0.pages().len() > 1);
+        h.frames(2, vec![]);
+        let layout = h.app.view.layout();
+        let window = window_keep(layout.spread_count(), 0, KEEP);
+        let pages =
+            layout.spread_pages(window.start).start..layout.spread_pages(window.end - 1).end;
+        assert_eq!(h.app.renderer.keep(), Keep::from(pages));
+    }
+
+    #[test]
+    fn a_large_window_keeps_what_fits_the_budget() {
+        // Slow pages, or the cheap rule answers instead of the budget.
+        let engine = SlowRecordingEngine::default();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app);
+        h.size = vec2(1512.0, 982.0);
+        h.ctx.set_pixels_per_point(2.0);
+        h.until(|_| engine.0.pages().len() > 2);
+        h.frames(2, vec![]);
+        let keep = h.app.renderer.keep();
+        let bytes = kept_bytes(&h, &keep);
+        assert!(
+            bytes <= PAGE_TEXTURE_BUDGET,
+            "{} MB kept against a {} MB budget",
+            bytes / (1024 * 1024),
+            PAGE_TEXTURE_BUDGET / (1024 * 1024)
+        );
+        // As far as it goes: one spread more would not fit. `window_bytes`
+        // takes the count `window_keep` does, so the kept count is one less
+        // than the pages it covers.
+        let pages = keep.window.len();
+        assert!(
+            window_bytes(&h, pages) > PAGE_TEXTURE_BUDGET,
+            "kept {pages} pages, and the next window fit too"
+        );
+        let whole = window_keep(h.app.view.layout().spread_count(), 0, KEEP);
+        assert!(
+            keep.window.len() < whole.len(),
+            "kept {} spreads, the window is {}",
+            keep.window.len(),
+            whole.len()
+        );
+    }
+
+    /// What a window of `spreads` spreads around the first page would take.
+    fn window_bytes(h: &Harness, spreads: usize) -> u64 {
+        let layout = h.app.view.layout();
+        let window = window_keep(layout.spread_count(), 0, spreads);
+        let pages =
+            layout.spread_pages(window.start).start..layout.spread_pages(window.end - 1).end;
+        kept_bytes(h, &Keep::from(pages))
+    }
+
+    #[test]
+    fn a_tiny_budget_keeps_the_page_and_the_one_beside_it() {
+        // Slow pages, so the budget rather than the cheap rule answers.
+        let engine = SlowRecordingEngine::default();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app.with_texture_budget(1));
+        h.until(|_| engine.0.pages().len() > 2);
+        h.frames(2, vec![]);
+        let keep = h.app.renderer.keep();
+        assert!(keep.contains(0), "the page on screen dropped: {keep:?}");
+        assert!(keep.contains(1), "the page beside it dropped: {keep:?}");
+    }
+
+    #[test]
+    fn the_floor_keeps_the_spread_and_its_neighbours() {
+        let engine = SlowRecordingEngine::default();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app.with_texture_budget(1));
+        h.until(|_| engine.0.pages().len() > 2);
+        go_to(&mut h, 5);
+        h.frames(2, vec![]);
+        // The focus the app keeps its window around.
+        let focus = h
+            .app
+            .view
+            .layout()
+            .spread_of(h.app.focus.unwrap_or(pages_shown(&h).start));
+        assert!(focus > 1, "not scrolled into the document: focus {focus}");
+        let keep = h.app.renderer.keep();
+        for spread in focus.saturating_sub(1)..=(focus + 1) {
+            let pages = h.app.view.layout().spread_pages(spread);
+            for page in pages {
+                assert!(
+                    keep.contains(page),
+                    "page {} beside focus spread {focus} dropped: {keep:?}",
+                    page + 1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_cost_estimate_follows_a_zoom() {
+        // 10 ms a megapixel is well inside a frame at this window, and well
+        // outside it once a page is zoomed in to six times the pixels.
+        let mut h = Harness::build_with(Arc::new(RecordingEngine::default()), |app| {
+            app.with_render_cost(10.0)
+        });
+        h.frames(2, vec![]);
+        let close = h.app.renderer.keep();
+        assert_eq!(
+            close.window.len(),
+            2,
+            "at a small scale it should keep only what is beside: {close:?}"
+        );
+        for _ in 0..4 {
+            h.press(egui::Key::Plus, Modifiers::COMMAND);
+        }
+        h.frames(2, vec![]);
+        let zoomed = h.app.renderer.keep();
+        assert!(
+            zoomed.window.len() > 2,
+            "kept only {zoomed:?} after zooming in, where a page is slow again"
+        );
+    }
+
+    #[test]
+    fn a_cheap_document_keeps_only_what_is_beside_the_reader() {
+        let engine = RecordingEngine::default();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app);
+        h.until(|_| engine.pages().len() > 2);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.renderer.keep(), Keep::from(0..2));
+    }
+
+    #[test]
+    fn a_slow_document_keeps_the_spread_window() {
+        let engine = SlowRecordingEngine::default();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app);
+        h.until(|_| engine.0.pages().len() > 2);
+        h.frames(2, vec![]);
+        let keep = h.app.renderer.keep();
+        assert!(
+            keep.window.len() > 2,
+            "kept only {} spreads of a slow document",
+            keep.window.len()
+        );
+    }
+
+    #[test]
+    fn only_kept_pages_are_requested() {
+        let engine = RecordingEngine::default();
+        let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app);
+        h.until(|_| engine.pages().len() > 2);
+        h.frames(10, vec![]);
+        let keep = h.app.renderer.keep();
+        for page in engine.pages() {
+            assert!(
+                keep.contains(page),
+                "page {} rendered but not kept",
+                page + 1
+            );
+        }
     }
 
     #[test]
@@ -7163,8 +7443,9 @@ pub(crate) mod tests {
 
     #[test]
     fn renders_the_window_ahead_and_keeps_within_reach() {
-        // 30 pages, so the window doesn't reach both ends.
-        let mut h = Harness::build_with(Arc::new(BlankEngine30), |app| app);
+        // 30 pages, so the window doesn't reach both ends, and slow ones, so
+        // the reader keeps a window at all.
+        let mut h = Harness::build_with(Arc::new(SlowEngine30), |app| app);
         h.press(egui::Key::C, Modifiers::NONE);
         h.press(egui::Key::F, Modifiers::NONE);
         h.frames(2, vec![]);
@@ -7599,6 +7880,64 @@ pub(crate) mod tests {
 
         fn pages(&self) -> std::collections::BTreeSet<usize> {
             self.recorded().into_iter().map(|(page, _)| page).collect()
+        }
+    }
+
+    /// Thirty Letter pages, 30 ms each: enough pages for a window and slow
+    /// enough that the reader keeps one.
+    struct SlowEngine30;
+
+    impl PdfEngine for SlowEngine30 {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(SlowEngine30))
+        }
+    }
+
+    impl Document for SlowEngine30 {
+        fn page_count(&self) -> usize {
+            30
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument30.page_size(page)
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            scale: f32,
+            tile: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            BlankDocument30.render_tile(page, scale, tile)
+        }
+    }
+
+    /// The same recorder, taking 30 ms a page: a document slow enough to keep
+    /// a window of renders for.
+    #[derive(Clone, Default)]
+    struct SlowRecordingEngine(RecordingEngine);
+
+    impl PdfEngine for SlowRecordingEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(self.clone()))
+        }
+    }
+
+    impl Document for SlowRecordingEngine {
+        fn page_count(&self) -> usize {
+            BlankDocument.page_count()
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument.page_size(page)
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            scale: f32,
+            tile: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            self.0.0.lock().unwrap().push((page, scale));
+            BlankDocument.render_tile(page, scale, tile)
         }
     }
 

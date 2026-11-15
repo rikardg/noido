@@ -108,6 +108,22 @@ pub struct Renderer {
     results: Receiver<RenderedPage>,
     keep: Arc<Mutex<Keep>>,
     priority: Arc<Mutex<Vec<usize>>>,
+    /// What the last few page renders cost, in milliseconds per megapixel.
+    costs: Arc<Mutex<Vec<f32>>>,
+}
+
+/// How many renders the cost estimate looks at.
+const COST_SAMPLES: usize = 12;
+
+/// The middle value of `costs`, the upper one where there is no single
+/// middle: with an even count, either is as good an estimate.
+pub fn median_of(costs: &[f32]) -> Option<f32> {
+    if costs.is_empty() {
+        return None;
+    }
+    let mut sorted = costs.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    Some(sorted[sorted.len() / 2])
 }
 
 impl Renderer {
@@ -148,6 +164,7 @@ impl Renderer {
                     results,
                     keep: Arc::new(Mutex::new(Keep::from(0..usize::MAX))),
                     priority: Arc::new(Mutex::new(Vec::new())),
+                    costs: Arc::new(Mutex::new(Vec::new())),
                 }
             }
         }
@@ -167,6 +184,8 @@ impl Renderer {
         let thread_keep = keep.clone();
         let priority = Arc::new(Mutex::new(Vec::new()));
         let thread_priority = priority.clone();
+        let costs = Arc::new(Mutex::new(Vec::new()));
+        let thread_costs = costs.clone();
 
         thread::Builder::new()
             .name("noido-render".into())
@@ -191,6 +210,7 @@ impl Renderer {
                     &result_tx,
                     &thread_keep,
                     &thread_priority,
+                    &thread_costs,
                     &*waker,
                 );
             })?;
@@ -199,6 +219,7 @@ impl Renderer {
             results,
             keep,
             priority,
+            costs,
         })
     }
 
@@ -224,6 +245,13 @@ impl Renderer {
     /// follow in the order they were requested.
     pub fn set_priority(&self, pages: Vec<usize>) {
         *self.priority.lock().unwrap() = pages;
+    }
+
+    /// What a page render costs, the middle of the last few, in milliseconds
+    /// per megapixel: a page's cost follows the pixels it is made at, so this
+    /// survives a zoom where a page's own time does not.
+    pub fn render_cost_per_megapixel(&self) -> Option<f32> {
+        median_of(&self.costs.lock().unwrap())
     }
 
     pub fn try_recv(&self) -> Option<RenderedPage> {
@@ -263,8 +291,14 @@ pub(crate) fn render_whole(
     size: Size,
     scale: f32,
 ) -> Result<Rgba8Image, EngineError> {
+    let (width, height) = render_pixels(size, scale);
+    document.render_page(page, width, height)
+}
+
+/// The pixels a page of `size` is rendered at, on `scale` pixels per point.
+fn render_pixels(size: Size, scale: f32) -> (u32, u32) {
     let pixels = |points: f32| ((points * scale).round() as u32).max(1);
-    document.render_page(page, pixels(size.width), pixels(size.height))
+    (pixels(size.width), pixels(size.height))
 }
 
 fn run(
@@ -273,6 +307,7 @@ fn run(
     results: &Sender<RenderedPage>,
     keep: &Mutex<Keep>,
     priority: &Mutex<Vec<usize>>,
+    costs: &Mutex<Vec<f32>>,
     waker: &dyn Fn(),
 ) {
     // The latest request per page, in order of first arrival.
@@ -305,11 +340,25 @@ fn run(
         }
         // Read before the render, so a turn under way stamps it old.
         let transform = document.transform(page);
-        let result = caught(|| {
-            document
-                .page_size(page)
-                .and_then(|size| render_whole(document, page, size, scale))
-        });
+        let size = document.page_size(page);
+        // The pixels the app asked for: an engine that answers with fewer of
+        // them still did the work it was asked to do.
+        let requested = size.as_ref().ok().map(|size| render_pixels(*size, scale));
+        let timed = std::time::Instant::now();
+        let result = caught(|| render_whole(document, page, size?, scale));
+        // A failure says nothing about what a page costs to make.
+        if result.is_ok()
+            && let Some((width, height)) = requested
+        {
+            let megapixels = width as f32 * height as f32 / 1e6;
+            if megapixels > 0.0 {
+                let mut costs = costs.lock().unwrap();
+                if costs.len() == COST_SAMPLES {
+                    costs.remove(0);
+                }
+                costs.push(timed.elapsed().as_secs_f32() * 1000.0 / megapixels);
+            }
+        }
         if results
             .send(RenderedPage {
                 page,
