@@ -974,7 +974,8 @@ impl SidebarView {
                 && size.width > 0.0
             {
                 for highlight in input.highlights {
-                    let Some(range) = highlight.on_page(page, text.char_count()) else {
+                    let Some(range) = highlight.on_page(page, text.char_count(), input.locations)
+                    else {
                         continue;
                     };
                     let fill = highlight_fill(highlight.colour, dark);
@@ -1744,10 +1745,14 @@ fn want_texts(input: &mut Input, pages: Range<usize>) {
         texts,
         request_text,
         highlights,
+        locations,
         ..
     } = input;
     for page in pages {
-        if highlights.iter().any(|h| h.pages().contains(&page)) {
+        if highlights
+            .iter()
+            .any(|h| h.pages(locations).contains(&page))
+        {
             texts.want(page, *request_text);
         }
     }

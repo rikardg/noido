@@ -138,6 +138,11 @@ impl Document for Transformed {
         self.inner.page_count()
     }
 
+    /// As the engine has them: text that reflows isn't turned.
+    fn locations(&self) -> noido_engine::LocationMap {
+        self.inner.locations()
+    }
+
     fn page_size(&self, page: usize) -> Result<Size, EngineError> {
         let size = self.inner.page_size(page)?;
         Ok(self.transform(page).size(size))

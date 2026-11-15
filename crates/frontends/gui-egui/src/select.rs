@@ -218,6 +218,8 @@ struct BarPoint {
 pub struct Pages<'a> {
     pub texts: &'a Texts,
     pub layout: &'a Layout,
+    /// Where the pages' characters sit in the document's parts.
+    pub locations: &'a noido_engine::LocationMap,
     /// Where the pages' content starts: its top left is their origin.
     pub content: Rect,
     /// The part of the content in view, on screen.
@@ -297,7 +299,12 @@ impl State {
     /// Keeps the highlight being edited in step with the selection: its
     /// new range while the selection holds characters, its stored one when
     /// the selection has collapsed.
-    fn settle(&mut self, texts: &Texts, highlights: &mut Highlights) {
+    fn settle(
+        &mut self,
+        texts: &Texts,
+        locations: &noido_engine::LocationMap,
+        highlights: &mut Highlights,
+    ) {
         let Some(index) = self.editing else {
             return;
         };
@@ -313,7 +320,7 @@ impl State {
             .and_then(|s| s.carets());
         match selected {
             Some((start, end)) => {
-                if highlights.set_range(index, start, end) {
+                if highlights.set_range(index, start, end, locations) {
                     self.resized = true;
                 }
                 self.selection = Some(Selection {
@@ -322,9 +329,9 @@ impl State {
                 });
             }
             None => {
-                self.selection = Some(Selection {
-                    anchor: Spot::At(highlight.start.into()),
-                    focus: Spot::At(highlight.end.into()),
+                self.selection = highlight.carets(locations).map(|(start, end)| Selection {
+                    anchor: Spot::At(start),
+                    focus: Spot::At(end),
                 });
             }
         }
@@ -347,6 +354,7 @@ impl State {
             layout,
             content,
             viewport,
+            ..
         } = *pages;
         self.carets = [None, None];
         self.caret_lines = [None, None];
@@ -405,6 +413,7 @@ impl State {
         let Pages {
             texts,
             layout,
+            locations,
             content,
             viewport,
         } = *pages;
@@ -481,7 +490,7 @@ impl State {
                 layout.doc_point(drag.origin.x - content.min.x, drag.origin.y - content.min.y);
             if drag.kind == DragKind::Handle && self.editing.is_some() {
                 // The handles resized the highlight being edited.
-                self.settle(texts, highlights);
+                self.settle(texts, locations, highlights);
             } else if click && drag.kind == DragKind::Select && (double || triple) {
                 self.editing = None;
                 self.bar_doc = point.map(|doc| BarPoint { doc, end: Some(1) });
@@ -508,7 +517,7 @@ impl State {
                 let end = self.selection.as_ref().map(focus_end);
                 self.bar_doc = point.map(|doc| BarPoint { doc, end });
                 if self.editing.is_some() {
-                    self.settle(texts, highlights);
+                    self.settle(texts, locations, highlights);
                 }
             } else if click {
                 // A plain click: on a link it follows it, on a highlight it
@@ -520,12 +529,13 @@ impl State {
                 if !(on_link && !drag.shift)
                     && let Some(p) = point
                     && let PageTextState::Known(text) = texts.get(p.page)
-                    && let Some(index) = highlights.at_point(p, text)
-                    && let Some(highlight) = highlights.get(index)
+                    && let Some(index) = highlights.at_point(p, text, locations)
+                    && let Some((start, end)) =
+                        highlights.get(index).and_then(|h| h.carets(locations))
                 {
                     self.selection = Some(Selection {
-                        anchor: Spot::At(highlight.start.into()),
-                        focus: Spot::At(highlight.end.into()),
+                        anchor: Spot::At(start),
+                        focus: Spot::At(end),
                     });
                     self.editing = Some(index);
                     self.bar_doc = Some(BarPoint { doc: p, end: None });
@@ -634,6 +644,47 @@ mod tests {
         let view = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, height));
         let (pos, pivot) = bar_place((at, at), lines, view, view, SIZE, GAP, outside);
         pivot.anchor_size(pos, SIZE)
+    }
+
+    #[test]
+    fn settling_a_highlight_selects_it_where_the_map_puts_it() {
+        use noido_core::{Caret, Highlight, HighlightColour, Location};
+        use noido_engine::{LocationMap, Run};
+        // Part 0, 100 characters a page.
+        let map = LocationMap::from_lines(
+            (0..3)
+                .map(|page| {
+                    vec![Run {
+                        start: Location {
+                            part: 0,
+                            char: page * 100,
+                        },
+                        chars: 100,
+                        top: 72.0,
+                        bottom: 84.0,
+                    }]
+                })
+                .collect(),
+        );
+        let mut highlights = Highlights::default();
+        highlights.add(Highlight {
+            start: Location { part: 0, char: 105 },
+            end: Location { part: 0, char: 110 },
+            ..Highlight::new(
+                Caret { page: 0, char: 0 },
+                Caret { page: 0, char: 1 },
+                HighlightColour::Yellow,
+            )
+        });
+        let mut state = State {
+            editing: Some(0),
+            ..State::default()
+        };
+        state.settle(&Texts::new(3), &map, &mut highlights);
+        assert_eq!(
+            state.selection.and_then(|s| s.carets()),
+            Some((Caret { page: 1, char: 5 }, Caret { page: 1, char: 10 }))
+        );
     }
 
     #[test]

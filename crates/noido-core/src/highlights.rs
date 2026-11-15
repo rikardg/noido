@@ -9,7 +9,7 @@ use noido_text::PageText;
 use crate::selection::range_on_page;
 use crate::{Caret, DocPoint};
 
-pub use noido_engine::Location;
+pub use noido_engine::{Location, LocationMap};
 
 /// How many changes [`Highlights::undo`] can step back through.
 pub const UNDO_LIMIT: usize = 100;
@@ -58,7 +58,9 @@ pub struct Quote {
 }
 
 impl Highlight {
-    /// A highlight from `start` to `end`, with no quote, not orphaned.
+    /// A highlight from `start` to `end`, with no quote, not orphaned. On
+    /// fixed pages only, where a caret is its location; in text that
+    /// reflows, use [`Highlight::from_carets`].
     pub fn new(start: Caret, end: Caret, colour: HighlightColour) -> Self {
         Self {
             start: start.into(),
@@ -69,18 +71,54 @@ impl Highlight {
         }
     }
 
-    /// The highlighted characters on `page`, given its char count; none
-    /// for an orphaned highlight.
-    pub fn on_page(&self, page: usize, char_count: usize) -> Option<Range<usize>> {
+    /// A highlight between carets `a` and `b`, in document order, kept
+    /// where `map` says their characters are; `None` when a caret isn't
+    /// on the text.
+    pub fn from_carets(
+        a: Caret,
+        b: Caret,
+        colour: HighlightColour,
+        map: &LocationMap,
+    ) -> Option<Self> {
+        let (start, end) = (a.min(b), a.max(b));
+        Some(Self {
+            start: map.location(start.page, start.char)?,
+            end: map.location(end.page, end.char)?,
+            ..Self::new(start, end, colour)
+        })
+    }
+
+    /// The highlighted characters on `page`, given its char count, with
+    /// characters where `map` says; none for an orphaned highlight, or one
+    /// off the text.
+    pub fn on_page(
+        &self,
+        page: usize,
+        char_count: usize,
+        map: &LocationMap,
+    ) -> Option<Range<usize>> {
         if self.orphaned {
             return None;
         }
-        range_on_page(self.start.into(), self.end.into(), page, char_count)
+        let (start, end) = self.carets(map)?;
+        range_on_page(start, end, page, char_count)
     }
 
-    /// The pages from start to end.
-    pub fn pages(&self) -> RangeInclusive<usize> {
-        self.start.part..=self.end.part
+    /// The pages from start to end, as `map` lays them out; empty off the
+    /// text.
+    #[allow(clippy::reversed_empty_ranges)]
+    pub fn pages(&self, map: &LocationMap) -> RangeInclusive<usize> {
+        match self.carets(map) {
+            Some((start, end)) => start.page..=end.page,
+            None => 1..=0,
+        }
+    }
+
+    /// Its ends as carets on the pages `map` lays out; `None` off the
+    /// text.
+    pub fn carets(&self, map: &LocationMap) -> Option<(Caret, Caret)> {
+        let caret = |at: Location| map.page_char(at).map(|(page, char)| Caret { page, char });
+        Some((caret(self.start)?, caret(self.end)?))
     }
 }
 
@@ -147,12 +185,17 @@ impl Highlights {
     /// Resizes highlight `index` to the range between `a` and `b`, in
     /// document order; `false`, and no change, when it is missing,
     /// already that range, or the range holds nothing.
-    pub fn set_range(&mut self, index: usize, a: Caret, b: Caret) -> bool {
+    pub fn set_range(&mut self, index: usize, a: Caret, b: Caret, map: &LocationMap) -> bool {
         let (start, end) = (a.min(b), a.max(b));
         let Some(current) = self.get(index) else {
             return false;
         };
-        let (start, end): (Location, Location) = (start.into(), end.into());
+        let (Some(start), Some(end)) = (
+            map.location(start.page, start.char),
+            map.location(end.page, end.char),
+        ) else {
+            return false;
+        };
         if start >= end || (current.start, current.end) == (start, end) {
             return false;
         }
@@ -197,9 +240,9 @@ impl Highlights {
     /// The index of the highlight covering the point `p` on its page: of
     /// those covering it, the one spanning fewest pages and then fewest
     /// characters, the newest of equals.
-    pub fn at_point(&self, p: DocPoint, text: &PageText) -> Option<usize> {
+    pub fn at_point(&self, p: DocPoint, text: &PageText, map: &LocationMap) -> Option<usize> {
         let covers = |h: &Highlight| {
-            let Some(range) = h.on_page(p.page, text.char_count()) else {
+            let Some(range) = h.on_page(p.page, text.char_count(), map) else {
                 return false;
             };
             let inside = |r: &noido_text::Rect| {
@@ -207,6 +250,10 @@ impl Highlights {
             };
             text.rects(range).iter().any(inside)
         };
+        // Parts, not pages: the same on fixed pages. In text that reflows,
+        // highlights in one part tie and characters decide, and one that
+        // crosses into the next chapter counts as wider whatever the
+        // layout; close enough for picking among overlapping highlights.
         let span = |h: &Highlight| {
             (
                 h.end.part - h.start.part,
@@ -238,6 +285,63 @@ mod tests {
     use super::*;
     use noido_text::testing::page;
 
+    fn fixed() -> LocationMap {
+        LocationMap::identity()
+    }
+
+    /// Part 0 over two pages, page 1's text starting at char 120.
+    fn two_pages() -> LocationMap {
+        let run = |char, chars| noido_engine::Run {
+            start: Location { part: 0, char },
+            chars,
+            top: 36.0,
+            bottom: 46.0,
+        };
+        LocationMap::from_lines(vec![vec![run(0, 120)], vec![run(120, 30)]])
+    }
+
+    #[test]
+    fn a_highlight_draws_where_the_map_puts_it() {
+        let h = Highlight {
+            start: Location { part: 0, char: 123 },
+            end: Location { part: 0, char: 130 },
+            ..highlight((0, 0), (0, 1), HighlightColour::Yellow)
+        };
+        assert_eq!(h.on_page(0, 120, &two_pages()), None);
+        assert_eq!(h.on_page(1, 30, &two_pages()), Some(3..10));
+        assert_eq!(h.pages(&two_pages()), 1..=1);
+    }
+
+    #[test]
+    fn a_highlight_made_in_text_keeps_locations() {
+        let h = Highlight::from_carets(at(1, 3), at(1, 10), HighlightColour::Green, &two_pages())
+            .unwrap();
+        assert_eq!(h.start, Location { part: 0, char: 123 });
+        assert_eq!(h.end, Location { part: 0, char: 130 });
+    }
+
+    #[test]
+    fn a_highlight_resized_in_text_keeps_locations() {
+        let mut highlights = Highlights::default();
+        highlights.add(
+            Highlight::from_carets(at(1, 3), at(1, 10), HighlightColour::Green, &two_pages())
+                .unwrap(),
+        );
+        assert!(highlights.set_range(0, at(0, 100), at(1, 10), &two_pages()));
+        assert_eq!(highlights.items()[0].start, Location { part: 0, char: 100 });
+    }
+
+    #[test]
+    fn a_highlight_past_the_text_is_on_no_page() {
+        let h = Highlight {
+            start: Location { part: 0, char: 900 },
+            end: Location { part: 0, char: 910 },
+            ..highlight((0, 0), (0, 1), HighlightColour::Yellow)
+        };
+        assert_eq!(h.on_page(1, 30, &two_pages()), None);
+        assert!(h.pages(&two_pages()).is_empty());
+    }
+
     fn at(page: usize, char: usize) -> Caret {
         Caret { page, char }
     }
@@ -266,11 +370,11 @@ mod tests {
     #[test]
     fn add_and_on_page_across_pages() {
         let spanning = highlight((0, 4), (2, 3), HighlightColour::Yellow);
-        assert_eq!(spanning.on_page(0, 11), Some(4..11));
-        assert_eq!(spanning.on_page(1, 5), Some(0..5));
-        assert_eq!(spanning.on_page(2, 5), Some(0..3));
-        assert_eq!(spanning.on_page(3, 5), None);
-        assert_eq!(spanning.pages(), 0..=2);
+        assert_eq!(spanning.on_page(0, 11, &fixed()), Some(4..11));
+        assert_eq!(spanning.on_page(1, 5, &fixed()), Some(0..5));
+        assert_eq!(spanning.on_page(2, 5, &fixed()), Some(0..3));
+        assert_eq!(spanning.on_page(3, 5, &fixed()), None);
+        assert_eq!(spanning.pages(&fixed()), 0..=2);
 
         let empty = highlight((0, 4), (0, 4), HighlightColour::Yellow);
         let backwards = highlight((2, 3), (0, 4), HighlightColour::Yellow);
@@ -291,11 +395,11 @@ mod tests {
         assert_eq!(highlights.get(0).unwrap().colour, HighlightColour::Green);
         assert!(!highlights.set_colour(0, HighlightColour::Green));
 
-        assert!(highlights.set_range(0, at(0, 9), at(0, 2)));
+        assert!(highlights.set_range(0, at(0, 9), at(0, 2), &fixed()));
         let green = highlight((0, 2), (0, 9), HighlightColour::Green);
         assert_eq!(highlights.get(0), Some(&green));
 
-        assert!(!highlights.set_range(0, at(0, 4), at(0, 4)));
+        assert!(!highlights.set_range(0, at(0, 4), at(0, 4), &fixed()));
         assert_eq!(highlights.get(0), Some(&green));
 
         assert_eq!(highlights.remove(0), Some(green.clone()));
@@ -314,7 +418,7 @@ mod tests {
         let resized = highlight((0, 1), (0, 3), HighlightColour::Blue);
         assert_eq!(highlights.add(added.clone()), Some(0));
         assert!(highlights.set_colour(0, HighlightColour::Blue));
-        assert!(highlights.set_range(0, at(0, 1), at(0, 3)));
+        assert!(highlights.set_range(0, at(0, 1), at(0, 3), &fixed()));
         assert_eq!(highlights.remove(0), Some(resized.clone()));
         assert!(highlights.items().is_empty());
 
@@ -350,7 +454,7 @@ mod tests {
         // Changes that change nothing record no step.
         let mut highlights = Highlights::from_items(vec![blue.clone()]);
         assert!(!highlights.set_colour(0, HighlightColour::Blue));
-        assert!(!highlights.set_range(0, at(0, 0), at(0, 5)));
+        assert!(!highlights.set_range(0, at(0, 0), at(0, 5), &fixed()));
         assert!(!highlights.undo());
     }
 
@@ -378,20 +482,29 @@ mod tests {
         assert_eq!(highlights.add(line.clone()), Some(0));
         assert_eq!(highlights.add(word.clone()), Some(1));
 
-        assert_eq!(highlights.at_point(point(95.0, 95.0), &text), Some(1));
-        assert_eq!(highlights.at_point(point(75.0, 95.0), &text), Some(0));
-        assert_eq!(highlights.at_point(point(300.0, 400.0), &text), None);
+        assert_eq!(
+            highlights.at_point(point(95.0, 95.0), &text, &fixed()),
+            Some(1)
+        );
+        assert_eq!(
+            highlights.at_point(point(75.0, 95.0), &text, &fixed()),
+            Some(0)
+        );
+        assert_eq!(
+            highlights.at_point(point(300.0, 400.0), &text, &fixed()),
+            None
+        );
 
         // Two equal ranges: the newer wins.
         let twins = Highlights::from_items(vec![line.clone(), word.clone(), word.clone()]);
-        assert_eq!(twins.at_point(point(95.0, 95.0), &text), Some(2));
+        assert_eq!(twins.at_point(point(95.0, 95.0), &text, &fixed()), Some(2));
     }
 
     #[test]
     fn orphaned_highlight_is_not_on_any_page() {
         let h = orphan(highlight((0, 0), (0, 7), HighlightColour::Yellow));
-        assert_eq!(h.on_page(0, 20), None);
-        assert_eq!(h.pages(), 0..=0);
+        assert_eq!(h.on_page(0, 20, &fixed()), None);
+        assert_eq!(h.pages(&fixed()), 0..=0);
     }
 
     #[test]
@@ -399,7 +512,10 @@ mod tests {
         let text = PageText::new(page(&["the cat sat", "on the mat"]));
         let h = orphan(highlight((0, 4), (0, 7), HighlightColour::Green));
         let highlights = Highlights::from_items(vec![h]);
-        assert_eq!(highlights.at_point(point(95.0, 95.0), &text), None);
+        assert_eq!(
+            highlights.at_point(point(95.0, 95.0), &text, &fixed()),
+            None
+        );
     }
 
     #[test]
@@ -407,7 +523,7 @@ mod tests {
         let mut h = highlight((0, 2), (0, 5), HighlightColour::Yellow);
         h.quote = Some(quote("llo"));
         let mut highlights = Highlights::from_items(vec![h]);
-        assert!(highlights.set_range(0, at(0, 2), at(0, 9)));
+        assert!(highlights.set_range(0, at(0, 2), at(0, 9), &fixed()));
         assert_eq!(highlights.get(0).unwrap().quote, None);
     }
 

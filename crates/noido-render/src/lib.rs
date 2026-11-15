@@ -100,6 +100,8 @@ pub struct DocumentInfo {
     /// when scale to fit is on. The shared transforms are the app's to
     /// write; opening does not touch them.
     pub transforms: noido_core::PageTransforms,
+    /// Where each page's characters sit in the document's parts.
+    pub locations: noido_engine::LocationMap,
 }
 
 /// Handle to the render thread. Dropping it stops the thread after its current job.
@@ -266,6 +268,7 @@ fn open(
 ) -> Result<(Transformed, DocumentInfo), EngineError> {
     let document = open_transformed(engine, bytes, transforms)?;
     let engine_sizes = document.engine_sizes()?;
+    let locations = document.locations();
     let mut fitted = transforms.snapshot();
     fitted.refit(&engine_sizes);
     let page_sizes = engine_sizes
@@ -279,6 +282,7 @@ fn open(
             page_sizes,
             engine_sizes,
             transforms: fitted,
+            locations,
         },
     ))
 }
