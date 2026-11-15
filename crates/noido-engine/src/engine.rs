@@ -1,5 +1,6 @@
 use crate::{
-    Destination, Glyph, Link, OutlineEntry, PdfBytes, PixelRect, Properties, Rgba8Image, Size,
+    Destination, Glyph, Link, LocationMap, OutlineEntry, PdfBytes, PixelRect, Properties,
+    Rgba8Image, Size,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -94,6 +95,12 @@ pub trait Document {
     fn properties(&self) -> Properties {
         Properties::default()
     }
+
+    /// Where each page's characters sit in the parts. By default each
+    /// page is its own part, as for a PDF.
+    fn locations(&self) -> LocationMap {
+        LocationMap::identity()
+    }
 }
 
 #[cfg(test)]
@@ -127,6 +134,11 @@ mod tests {
     #[test]
     fn document_without_properties_has_none() {
         assert_eq!(OnePage.properties(), crate::Properties::default());
+    }
+
+    #[test]
+    fn a_document_is_its_own_pages_by_default() {
+        assert!(!OnePage.locations().reflows());
     }
 
     #[test]
