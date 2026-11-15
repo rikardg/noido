@@ -636,15 +636,14 @@ impl NoidoApp {
 
     /// Where the reader is, for Back and Forward.
     fn here(&self) -> Option<noido_core::Place> {
-        self.view.place().map(noido_core::Place::Point)
+        self.view.here(&self.locations)
     }
 
     fn go_back(&mut self) {
         if let Some(here) = self.here()
             && let Some(to) = self.history.back(here)
-            && let Some(to) = to.point(&self.locations)
         {
-            self.view.restore_place(&to);
+            self.view.go_to_place(&to, &self.locations);
             self.reader_moved();
         }
     }
@@ -652,9 +651,8 @@ impl NoidoApp {
     fn go_forward(&mut self) {
         if let Some(here) = self.here()
             && let Some(to) = self.history.forward(here)
-            && let Some(to) = to.point(&self.locations)
         {
-            self.view.restore_place(&to);
+            self.view.go_to_place(&to, &self.locations);
             self.reader_moved();
         }
     }

@@ -1,9 +1,11 @@
 use std::ops::Range;
 
-use noido_engine::{Destination, Size};
+use noido_engine::{Destination, Location, LocationMap, Size};
 
 use crate::layout::FIT_NOISE;
-use crate::{Action, Defaults, DocPoint, Layout, LayoutMode, MARGIN, StartZoom, scroll_target};
+use crate::{
+    Action, Defaults, DocPoint, Layout, LayoutMode, MARGIN, Place, StartZoom, scroll_target,
+};
 
 /// Smallest and largest zoom, in UI points per PDF point.
 pub const MIN_ZOOM: f32 = 0.1;
@@ -44,6 +46,15 @@ pub struct ViewState {
 /// the top or bottom edge.
 const EDGE_EPSILON: f32 = 0.5;
 
+/// A place waiting for the first non-empty viewport: a point for the
+/// viewport's centre, or a line's top for a height below its top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pending {
+    point: DocPoint,
+    /// UI points below the viewport's top; `None` centres the point.
+    height: Option<f32>,
+}
+
 /// What the reader sees: page arrangement, zoom, viewport size and scroll
 /// position. Scale changes keep an anchor point of the document still on screen.
 pub struct View {
@@ -51,8 +62,8 @@ pub struct View {
     mode: ZoomMode,
     viewport: (f32, f32),
     offset: (f32, f32),
-    /// A restored centre point waiting for the first non-empty viewport.
-    pending: Option<DocPoint>,
+    /// A restored place waiting for the first non-empty viewport.
+    pending: Option<Pending>,
     /// The old view's edge after a PageUp/PageDown scroll: where the
     /// reader goes on reading.
     screen_edge: Option<DocPoint>,
@@ -181,6 +192,7 @@ impl View {
         let (cx, cy) = self.centre();
         Some(
             self.pending
+                .map(|p| p.point)
                 .or_else(|| {
                     self.layout
                         .doc_point(self.offset.0 + cx, self.offset.1 + cy)
@@ -319,7 +331,124 @@ impl View {
                 ..self.layout.mode()
             });
         }
-        self.pending = Some(centre);
+        self.pending = Some(Pending {
+            point: centre,
+            height: None,
+        });
+        if self.viewport.0 > 0.0 && self.viewport.1 > 0.0 {
+            self.place_pending();
+        }
+    }
+
+    /// Where the reader is: the centre point on fixed pages, the first
+    /// character in view in text that reflows. `None` with zero pages.
+    pub fn here(&self, map: &LocationMap) -> Option<Place> {
+        if !map.reflows() {
+            return self.place().map(Place::Point);
+        }
+        self.reading_anchor(map)
+            .or_else(|| self.pending_text(map))
+            .map(|(at, _)| Place::Text(at))
+            // A page without text, with none before it (a cover): its point.
+            .or_else(|| self.place().map(Place::Point))
+    }
+
+    /// [`View::first_in_view`], or with no text in view (the blank foot of
+    /// the last page, say) the last line above it, for the top.
+    fn reading_anchor(&self, map: &LocationMap) -> Option<(Location, f32)> {
+        self.first_in_view(map).or_else(|| {
+            let scale = self.layout.scale();
+            if !map.reflows() || self.viewport.1 <= 0.0 || scale <= 0.0 {
+                return None;
+            }
+            let bottom = self.offset.1 + self.viewport.1;
+            let end = self.layout.visible_pages(self.offset.1, bottom).end;
+            (0..end).rev().find_map(|page| {
+                let rect = self.layout.page_rect(page)?;
+                let (at, _) = map.last_before(page, (bottom - rect.y) / scale)?;
+                Some((at, 0.0))
+            })
+        })
+    }
+
+    /// The first character in view, in reading order (top to bottom, the
+    /// left page of a spread before the right), and how far below the
+    /// viewport's top its line's top is, in UI points: negative for a line
+    /// cut at the top. `None` on fixed pages, or with nothing in view.
+    pub fn first_in_view(&self, map: &LocationMap) -> Option<(Location, f32)> {
+        if !map.reflows() || self.viewport.0 <= 0.0 || self.viewport.1 <= 0.0 {
+            return None;
+        }
+        let scale = self.layout.scale();
+        if scale <= 0.0 {
+            return None;
+        }
+        let (top, bottom) = (self.offset.1, self.offset.1 + self.viewport.1);
+        self.layout.visible_pages(top, bottom).find_map(|page| {
+            let rect = self.layout.page_rect(page)?;
+            // A line whose bottom is at the top, give or take float
+            // noise, is out of view.
+            let from = (top + EDGE_EPSILON - rect.y) / scale;
+            let (at, line_top) = map.first_from(page, from)?;
+            let y = rect.y + line_top * scale;
+            (y < bottom).then_some((at, y - top))
+        })
+    }
+
+    /// The pending place as a character and its height, for a view that
+    /// has no viewport yet: the first line from the pending point down, at
+    /// the height it waits for (the top for a centred point).
+    fn pending_text(&self, map: &LocationMap) -> Option<(Location, f32)> {
+        let pending = self.pending?;
+        let (at, _) = map.first_from(pending.point.page, pending.point.y)?;
+        Some((at, pending.height.unwrap_or(0.0)))
+    }
+
+    /// Lays the document out again on new pages (`sizes`, with `new` where
+    /// the characters are now), keeping the first character in view at
+    /// its height on screen if the new layout allows, at the top of the
+    /// view otherwise. `old` is where the characters were.
+    pub fn reflow(&mut self, sizes: Vec<Size>, old: &LocationMap, new: &LocationMap) {
+        let anchor = self.reading_anchor(old).or_else(|| self.pending_text(old));
+        self.pending = None;
+        self.layout.replace_pages(sizes);
+        match anchor.and_then(|(at, height)| Some((Place::Text(at).point(new)?, height))) {
+            Some((point, height)) => self.wait_for(point, Some(height)),
+            None => {
+                let scale = self.fit_scale(self.mode);
+                self.layout.arrange(scale, self.viewport.0, self.viewport.1);
+                self.clamp_offset();
+            }
+        }
+    }
+
+    /// Goes to `place`: as [`View::restore_place`] for a point, its line
+    /// at the top of the view for a character.
+    pub fn go_to_place(&mut self, place: &Place, map: &LocationMap) {
+        match place {
+            Place::Point(point) => self.restore_place(point),
+            Place::Text(_) => {
+                if let Some(point) = place.point(map) {
+                    self.wait_for(point, Some(0.0));
+                }
+            }
+        }
+    }
+
+    /// Puts `point` at `height` below the viewport's top (centred for
+    /// `None`), showing its spread in paged mode: now, or on the first
+    /// non-empty viewport.
+    fn wait_for(&mut self, point: DocPoint, height: Option<f32>) {
+        let Some(point) = self.clamped_point(&point) else {
+            return;
+        };
+        if !self.continuous() {
+            self.layout.set_mode(LayoutMode {
+                paged: Some(self.layout.spread_of(point.page)),
+                ..self.layout.mode()
+            });
+        }
+        self.pending = Some(Pending { point, height });
         if self.viewport.0 > 0.0 && self.viewport.1 > 0.0 {
             self.place_pending();
         }
@@ -352,16 +481,35 @@ impl View {
         })
     }
 
-    /// Fits the view and puts the pending restored point at the centre.
+    /// Fits the view and puts the pending place where it waits to be: a
+    /// point at the centre, a line at its height, or at the top if the
+    /// document can't scroll that far.
     fn place_pending(&mut self) {
-        let Some(point) = self.pending.take() else {
+        let Some(Pending { point, height }) = self.pending.take() else {
             return;
         };
         let scale = self.fit_scale_for(self.mode, self.layout.spread_of(point.page));
         self.layout.arrange(scale, self.viewport.0, self.viewport.1);
         if let Some((x, y)) = self.layout.content_point(point) {
-            let (cx, cy) = self.centre();
-            self.offset = (x - cx, y - cy);
+            match height {
+                None => {
+                    let (cx, cy) = self.centre();
+                    self.offset = (x - cx, y - cy);
+                }
+                Some(height) => {
+                    self.offset.1 = y - height;
+                    self.clamp_offset();
+                    // Where scrolling stops short of the height, the line
+                    // stays there if it is in view; otherwise it goes to
+                    // the top.
+                    let shown = y - self.offset.1;
+                    if (shown - height).abs() > EDGE_EPSILON
+                        && !(0.0..self.viewport.1).contains(&shown)
+                    {
+                        self.offset.1 = y;
+                    }
+                }
+            }
         }
         self.clamp_offset();
     }
@@ -395,7 +543,10 @@ impl View {
         }
         match anchor {
             Some(point) => {
-                self.pending = Some(point);
+                self.pending = Some(Pending {
+                    point,
+                    height: None,
+                });
                 if self.viewport.0 > 0.0 && self.viewport.1 > 0.0 {
                     self.place_pending();
                 }

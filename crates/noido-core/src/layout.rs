@@ -179,6 +179,16 @@ impl Layout {
         &self.page_sizes
     }
 
+    /// New pages, as many as `sizes` (text laid out again); the mode is
+    /// kept, a shown spread past the end becomes the last. Takes effect at
+    /// the next [`Layout::arrange`].
+    pub fn replace_pages(&mut self, sizes: Vec<Size>) {
+        self.page_sizes = sizes;
+        if let Some(spread) = self.mode.paged {
+            self.mode.paged = Some(spread.min(self.spread_count().saturating_sub(1)));
+        }
+    }
+
     /// Changes `page`'s size; takes effect at the next [`Layout::arrange`].
     pub fn set_page_size(&mut self, page: usize, size: Size) {
         if let Some(s) = self.page_sizes.get_mut(page) {
