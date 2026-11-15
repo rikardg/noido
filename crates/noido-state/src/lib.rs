@@ -712,26 +712,26 @@ struct StoredHighlight {
 impl StoredHighlight {
     fn new(highlight: &Highlight) -> Self {
         Self {
-            start_page: highlight.start.page,
+            start_page: highlight.start.part,
             start_char: highlight.start.char,
-            end_page: highlight.end.page,
+            end_page: highlight.end.part,
             end_char: highlight.end.char,
             colour: StoredColour::new(&highlight.colour),
         }
     }
 
     fn highlight(&self) -> Highlight {
-        Highlight {
-            start: Caret {
+        Highlight::new(
+            Caret {
                 page: self.start_page,
                 char: self.start_char,
             },
-            end: Caret {
+            Caret {
                 page: self.end_page,
                 char: self.end_char,
             },
-            colour: self.colour.colour(),
-        }
+            self.colour.colour(),
+        )
     }
 }
 

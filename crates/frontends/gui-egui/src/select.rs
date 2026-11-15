@@ -314,8 +314,8 @@ impl State {
             }
             None => {
                 self.selection = Some(Selection {
-                    anchor: Spot::At(highlight.start),
-                    focus: Spot::At(highlight.end),
+                    anchor: Spot::At(highlight.start.into()),
+                    focus: Spot::At(highlight.end.into()),
                 });
             }
         }
@@ -515,8 +515,8 @@ impl State {
                     && let Some(highlight) = highlights.get(index)
                 {
                     self.selection = Some(Selection {
-                        anchor: Spot::At(highlight.start),
-                        focus: Spot::At(highlight.end),
+                        anchor: Spot::At(highlight.start.into()),
+                        focus: Spot::At(highlight.end.into()),
                     });
                     self.editing = Some(index);
                     self.bar_doc = Some(BarPoint { doc: p, end: None });

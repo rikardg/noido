@@ -15,6 +15,24 @@ pub struct Caret {
     pub char: usize,
 }
 
+impl From<Caret> for noido_engine::Location {
+    fn from(c: Caret) -> Self {
+        Self {
+            part: c.page,
+            char: c.char,
+        }
+    }
+}
+
+impl From<noido_engine::Location> for Caret {
+    fn from(l: noido_engine::Location) -> Self {
+        Self {
+            page: l.part,
+            char: l.char,
+        }
+    }
+}
+
 /// The characters on `page` between `start` and `end`, given its char
 /// count: from `start`'s char on its page to `end`'s char on its page, the
 /// whole page in between. `None` off those pages, or when nothing lies
