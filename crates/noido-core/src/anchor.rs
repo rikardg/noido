@@ -215,7 +215,7 @@ impl Walk {
             None => total,
         };
         let pending: HashSet<usize> = self.pending.iter().map(|p| p.index).collect();
-        let held: HashSet<Span> = items
+        let held: Vec<Span> = items
             .iter()
             .enumerate()
             .filter(|(i, h)| !pending.contains(i) && !h.orphaned)
@@ -239,7 +239,11 @@ impl Walk {
                             c.span.start,
                         )
                     })
-                    .filter(|c| c.sure && !held.contains(&c.span))
+                    .filter(|c| {
+                        // Inside, as a kept highlight may hold its edge spaces too.
+                        let inside = |h: &Span| h.start <= c.span.start && c.span.end <= h.end;
+                        c.sure && !held.iter().any(inside)
+                    })
                     .map(|c| (*c, distance(c)))
             })
             .collect();
@@ -315,7 +319,25 @@ pub struct Anchored {
 /// Gives a highlight found by the walk the quote of its new place, so its
 /// prefix and suffix describe the new neighbours and a later check keeps it.
 /// `window` holds the pages of `h.window(..)`.
+///
+/// The match is of the trimmed text; a highlight made with a space at an
+/// edge takes it in again where the new place has one. Its quote shows
+/// that: copying puts the space into the selection, not the neighbour, so
+/// that side's neighbour doesn't end on whitespace.
 pub fn requote(h: &mut Highlight, window: &Joined) {
+    if let Some(q) = &h.quote {
+        let before = q.prefix.chars().last().is_some_and(|c| !c.is_whitespace());
+        let after = q.suffix.chars().next().is_some_and(|c| !c.is_whitespace());
+        let wide = window.widen(h.span(), before, after);
+        h.start = Location {
+            part: wide.start.0,
+            char: wide.start.1,
+        };
+        h.end = Location {
+            part: wide.end.0,
+            char: wide.end.1,
+        };
+    }
     let (exact, prefix, suffix) = window.quote(h.span());
     h.quote = Some(Quote {
         exact,
@@ -802,6 +824,70 @@ mod tests {
         let out = anchor(&[h], &refs(&new), false, true);
         assert!(!out.items[0].orphaned);
         assert_eq!(out.items[0].quote.as_ref().unwrap().exact, "quiet argument");
+        // It keeps the spaces it was made with, and stays put after that.
+        assert_eq!(span_of(&out.items[0]), ((0, 22), (0, 38)));
+        let again = anchor(&out.items, &refs(&new), false, true);
+        assert_eq!(again.items, out.items);
+        assert!(!again.relocated);
+    }
+
+    #[test]
+    fn edge_spaces_are_kept_on_each_side_alone() {
+        let old = [text(&["there was a quiet argument, on tides"])];
+        let start_only = made(&old, (0, 11), (0, 26));
+        let end_only = made(&old, (0, 6), (0, 11));
+        assert_eq!(end_only.quote.as_ref().unwrap().exact, "was a");
+        let new = [text(&["new words. there was a quiet argument, on tides"])];
+        let out = anchor(&[start_only, end_only], &refs(&new), false, true);
+        assert_eq!(span_of(&out.items[0]), ((0, 22), (0, 37)));
+        assert_eq!(span_of(&out.items[1]), ((0, 17), (0, 22)));
+    }
+
+    #[test]
+    fn a_line_break_is_not_taken_in_for_a_space() {
+        let old = [text(&["there was a quiet argument on tides"])];
+        let h = made(&old, (0, 11), (0, 27));
+        let new = [text(&["new words. there was a", "quiet argument on tides"])];
+        let out = anchor(&[h], &refs(&new), false, true);
+        let q = new[0].text().find("quiet").unwrap();
+        assert_eq!(span_of(&out.items[0]), ((0, q), (0, q + 15)));
+    }
+
+    #[test]
+    fn a_double_space_at_the_edge_stays_put_after_a_move() {
+        let old = [text(&["there was a  quiet argument  on tides"])];
+        let h = made(&old, (0, 12), (0, 28));
+        let new = [text(&["new words. there was a  quiet argument  on tides"])];
+        let out = anchor(&[h], &refs(&new), false, true);
+        assert!(!out.items[0].orphaned);
+        let again = anchor(&out.items, &refs(&new), false, true);
+        assert_eq!(again.items, out.items);
+        assert!(!again.relocated);
+    }
+
+    #[test]
+    fn never_inside_a_span_another_highlight_keeps() {
+        let pages = [text(&["new words. there was a quiet argument on tides"])];
+        let kept = made(&pages, (0, 22), (0, 38));
+        let other = quoted(
+            (0, 60),
+            (0, 74),
+            "quiet argument",
+            "there was a",
+            "on tides",
+        );
+        let out = anchor(&[kept.clone(), other], &refs(&pages), false, true);
+        assert_eq!(out.items[0], kept);
+        assert!(out.items[1].orphaned);
+    }
+
+    #[test]
+    fn a_selection_without_edge_spaces_does_not_gain_them() {
+        let old = [text(&["there was a quiet argument on tides"])];
+        let h = made(&old, (0, 12), (0, 26));
+        let new = [text(&["new words. there was a quiet argument on tides"])];
+        let out = anchor(&[h], &refs(&new), false, true);
+        assert_eq!(span_of(&out.items[0]), ((0, 23), (0, 37)));
     }
 
     #[test]
