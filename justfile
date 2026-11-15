@@ -75,6 +75,41 @@ snapshot target="x86_64-unknown-linux-gnu":
     fi
     echo "dist/$name.tar.gz"
 
+# package the macOS app bundle for one target:
+# dist/noido-<target>-<version>.app.zip and its .sha256
+app-zip target="aarch64-apple-darwin":
+    #!/usr/bin/env sh
+    set -eu
+    cargo build --release --locked --target {{target}}
+    release="target/{{target}}/release"
+    version="$("$release/noido" --version | awk '{print $2}')"
+    case "$version" in
+        # Neither the environment nor git could name the commit: a build
+        # that cannot say what it is does not get published.
+        *+unknown) echo "$release/noido does not know its commit" >&2; exit 1 ;;
+        *+*) ;;
+        *) echo "no version from $release/noido: '$version'" >&2; exit 1 ;;
+    esac
+    name="noido-{{target}}-$version"
+    mkdir -p dist
+    "$release/noido" --app-bundle "dist/$name"
+    # ditto keeps the bundle's structure; --sequesterRsrc keeps the bundle's
+    # extended attributes out of its own directories (they would land in
+    # `__MACOSX/`, which Homebrew's unzip deletes) — otherwise the seal
+    # breaks: `codesign --verify` reports "a sealed resource is missing or
+    # invalid"; --keepParent puts `noido.app` at the top of the zip, which
+    # is what a cask's `app "noido.app"` expects.
+    ditto -c -k --sequesterRsrc --keepParent "dist/$name/noido.app" "dist/$name.app.zip"
+    # The staging directory must not stay in dist/: the matrix legs upload
+    # it to the same artifact and both bundles are called noido.app.
+    rm -rf "dist/$name"
+    if command -v sha256sum >/dev/null 2>&1; then
+        (cd dist && sha256sum "$name.app.zip") > "dist/$name.app.zip.sha256"
+    else
+        (cd dist && shasum -a 256 "$name.app.zip") > "dist/$name.app.zip.sha256"
+    fi
+    echo "dist/$name.app.zip"
+
 # update ~/.cargo/bin/noido
 install:
     cargo install --locked --path crates/frontends/gui-egui
