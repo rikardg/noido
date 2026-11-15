@@ -148,6 +148,25 @@ impl<'a> Joined<'a> {
         (back, forward)
     }
 
+    /// `span` taking in the space just before it (with `before`) and just
+    /// after it (with `after`), where its page has one; a line break isn't
+    /// taken in for a space.
+    pub fn widen(&self, span: Span, before: bool, after: bool) -> Span {
+        let char_at = |(page, i): (usize, usize)| {
+            page.checked_sub(self.first)
+                .and_then(|p| self.pages.get(p))
+                .and_then(|t| t.text().chars().nth(i))
+        };
+        let mut out = span;
+        if before && span.start.1 > 0 && char_at((span.start.0, span.start.1 - 1)) == Some(' ') {
+            out.start.1 -= 1;
+        }
+        if after && char_at(span.end) == Some(' ') {
+            out.end.1 += 1;
+        }
+        out
+    }
+
     /// The copied text of `span`, or `None` when it isn't inside the window.
     pub fn text_at(&self, span: Span) -> Option<String> {
         self.index_of(span.start)?;
