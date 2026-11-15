@@ -231,3 +231,15 @@ fn whole_page_render_has_no_light_edge() {
         }
     }
 }
+
+#[test]
+fn junk_is_a_pdf_open_error() {
+    let error = match HayroEngine.open(PdfBytes::from(b"junk".to_vec())) {
+        Err(error) => error,
+        Ok(_) => panic!("opened junk as a PDF"),
+    };
+    assert!(
+        error.to_string().starts_with("not a readable PDF"),
+        "{error}"
+    );
+}

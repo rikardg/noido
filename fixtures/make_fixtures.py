@@ -108,6 +108,15 @@ comic.cbz: four pages in "pages/", named 1, 2, 10 and 11, so natural order
   differs from lexical; 10 is 20x30 px, the others 10x15. ComicInfo.xml has
   a title, writer, summary, genre and date; notes.txt and a __MACOSX entry
   are there to be ignored.
+
+comic-deflated.cbz: the same pages and metadata, deflated rather than stored.
+comic-alpha.cbz: one 2x2 RGBA page, 200/100/50 at alpha 128.
+comic-broken.cbz: a good page, then a page whose IDAT is corrupt.
+comic-damaged.cbz: a good page, then a PNG signature with no IHDR.
+comic-duplicate.cbz: two entries named 1.png; the ZIP reader keeps one.
+comic-empty.cbz: ComicInfo and notes, no pages.
+comic-huge.cbz: an 8000x8000 IHDR with no page data.
+comic-bad-info.cbz: an unclosed ComicInfo title.
 """
 
 import struct
@@ -519,6 +528,20 @@ def comic_broken() -> bytes:
     return out.getvalue()
 
 
+def comic_duplicate() -> bytes:
+    """Two entries with one name: the reader keeps one page."""
+    import io
+    import warnings
+
+    out = io.BytesIO()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+            z.writestr("1.png", comic_png(10, 15, (255, 0, 0)))
+            z.writestr("1.png", comic_png(10, 15, (0, 255, 0)))
+    return out.getvalue()
+
+
 def comic_damaged() -> bytes:
     """A good first page, then a page with a valid PNG signature and no IHDR."""
     import io
@@ -589,6 +612,7 @@ if __name__ == "__main__":
     (here / "comic-alpha.cbz").write_bytes(comic_alpha())
     (here / "comic-broken.cbz").write_bytes(comic_broken())
     (here / "comic-damaged.cbz").write_bytes(comic_damaged())
+    (here / "comic-duplicate.cbz").write_bytes(comic_duplicate())
     (here / "comic-empty.cbz").write_bytes(comic_empty())
     (here / "comic-huge.cbz").write_bytes(comic_huge())
     (here / "comic-bad-info.cbz").write_bytes(comic_bad_info())

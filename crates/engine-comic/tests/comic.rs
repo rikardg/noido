@@ -1,3 +1,5 @@
+use std::io::{Cursor, Read, Write};
+
 use engine_comic::ComicEngine;
 use noido_engine::{Document, EngineError, Format, PdfBytes, PdfEngine, PixelRect, Size};
 
@@ -12,6 +14,14 @@ fn open_named(name: &str) -> Box<dyn Document> {
 
 fn open_fixture() -> Box<dyn Document> {
     open_named("comic.cbz")
+}
+
+fn fixture_entry(archive: &str, name: &str) -> Vec<u8> {
+    let archive_bytes = fixture_bytes(archive);
+    let mut zip = zip::ZipArchive::new(Cursor::new(&archive_bytes[..])).unwrap();
+    let mut bytes = Vec::new();
+    zip.by_name(name).unwrap().read_to_end(&mut bytes).unwrap();
+    bytes
 }
 
 #[test]
@@ -156,7 +166,10 @@ fn an_archive_without_images_is_refused() {
         Err(error) => error,
         Ok(_) => panic!("opened an archive without images"),
     };
-    assert!(error.to_string().contains("no images"), "{error}");
+    let message = error.to_string();
+    assert!(message.contains("no images"), "{message}");
+    assert!(message.contains("CBZ"), "{message}");
+    assert!(!message.contains("PDF"), "{message}");
 }
 
 #[test]
@@ -191,8 +204,6 @@ fn too_many_entries_is_refused() {
 
 #[test]
 fn a_comic_info_over_the_cap_is_ignored() {
-    use std::io::{Cursor, Write};
-
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default();
     writer.start_file("ComicInfo.xml", options).unwrap();
@@ -200,7 +211,9 @@ fn a_comic_info_over_the_cap_is_ignored() {
     writer.write_all(&vec![b' '; 1024 * 1024 + 1]).unwrap();
     writer.write_all(b"</ComicInfo>").unwrap();
     writer.start_file("1.png", options).unwrap();
-    writer.write_all(&comic_png_red()).unwrap();
+    writer
+        .write_all(&fixture_entry("comic.cbz", "pages/1.png"))
+        .unwrap();
     let bytes = writer.finish().unwrap().into_inner();
     let properties = ComicEngine
         .open(PdfBytes::from(bytes))
@@ -210,15 +223,36 @@ fn a_comic_info_over_the_cap_is_ignored() {
     assert_eq!(properties.title, None);
 }
 
-fn comic_png_red() -> Vec<u8> {
-    // A 1x1 red PNG, made with the same bytes as the fixture generator.
-    let fixture = std::fs::read(format!(
-        "{}/../../fixtures/comic-bad-info.cbz",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .unwrap();
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(fixture)).unwrap();
-    let mut png = Vec::new();
-    std::io::Read::read_to_end(&mut zip.by_name("1.png").unwrap(), &mut png).unwrap();
-    png
+#[test]
+fn an_image_with_a_lying_extension_is_recognised() {
+    let png = fixture_entry("comic.cbz", "pages/1.png");
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    writer.start_file("pages/1.jpg", options).unwrap();
+    writer.write_all(&png).unwrap();
+    let bytes = writer.finish().unwrap().into_inner();
+    let doc = ComicEngine.open(PdfBytes::from(bytes)).unwrap();
+    assert_eq!(doc.page_count(), 1);
+    assert_eq!(
+        doc.page_size(0).unwrap(),
+        Size {
+            width: 10.0,
+            height: 15.0
+        }
+    );
+}
+
+#[test]
+fn duplicate_names_are_not_two_pages() {
+    // `zip`'s writer refuses duplicates; a malformed archive can still hold
+    // them, and its reader folds them to one page.
+    let doc = open_named("comic-duplicate.cbz");
+    assert_eq!(doc.page_count(), 1);
+    assert_eq!(
+        doc.page_size(0).unwrap(),
+        Size {
+            width: 10.0,
+            height: 15.0
+        }
+    );
 }

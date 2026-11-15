@@ -4,7 +4,9 @@ use crate::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
-    #[error("not a readable PDF: {0}")]
+    /// Why the document could not be opened. The shared error names no
+    /// format; the engine that tried names the one it reads.
+    #[error("{0}")]
     Open(String),
     #[error("page {page} out of range (document has {count})")]
     PageOutOfRange { page: usize, count: usize },
@@ -115,6 +117,11 @@ mod tests {
         fn render_tile(&self, _: usize, _: f32, _: PixelRect) -> Result<Rgba8Image, EngineError> {
             Err(EngineError::Render("not drawn".into()))
         }
+    }
+
+    #[test]
+    fn an_open_error_shows_only_its_message() {
+        assert_eq!(EngineError::Open("nope".into()).to_string(), "nope");
     }
 
     #[test]
