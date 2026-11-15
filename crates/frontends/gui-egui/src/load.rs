@@ -159,22 +159,33 @@ mod tests {
     }
 
     #[test]
-    fn a_zip_key_leaves_the_middle_alone_and_a_pdf_key_does_not() {
+    fn a_zip_key_sees_a_wide_tail_and_a_pdf_key_sees_the_middle() {
         let path = Path::new("/papers/a");
-        let zip = |middle: u8| {
-            let mut bytes = vec![0u8; 3 * 1024 * 1024];
+        let zip = |at: usize, byte: u8| {
+            let mut bytes = vec![0u8; 8 * 1024 * 1024];
             bytes[..4].copy_from_slice(b"PK\x03\x04");
-            bytes[1_500_000] = middle;
+            bytes[at] = byte;
             PdfBytes::from(bytes)
         };
-        assert_eq!(doc_key(&zip(0), path).hex(), doc_key(&zip(1), path).hex());
-        let pdf = |middle: u8| {
-            let mut bytes = vec![0u8; 3 * 1024 * 1024];
+        // 2 MiB is outside the sampled ends; 5 MiB is inside the 4 MiB tail.
+        assert_eq!(
+            doc_key(&zip(2 * 1024 * 1024, 0), path).hex(),
+            doc_key(&zip(2 * 1024 * 1024, 1), path).hex()
+        );
+        assert_ne!(
+            doc_key(&zip(5 * 1024 * 1024, 0), path).hex(),
+            doc_key(&zip(5 * 1024 * 1024, 1), path).hex()
+        );
+        let pdf = |at: usize, byte: u8| {
+            let mut bytes = vec![0u8; 8 * 1024 * 1024];
             bytes[..5].copy_from_slice(b"%PDF-");
-            bytes[1_500_000] = middle;
+            bytes[at] = byte;
             PdfBytes::from(bytes)
         };
-        assert_ne!(doc_key(&pdf(0), path).hex(), doc_key(&pdf(1), path).hex());
+        assert_ne!(
+            doc_key(&pdf(5 * 1024 * 1024, 0), path).hex(),
+            doc_key(&pdf(5 * 1024 * 1024, 1), path).hex()
+        );
     }
 
     #[test]
