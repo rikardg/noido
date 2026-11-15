@@ -16320,10 +16320,14 @@ pub(crate) mod tests {
         assert!((after.y - before.y).abs() < 1.0, "{before:?} vs {after:?}");
     }
 
-    /// One Letter page whose renders are as large as asked, each waiting
-    /// for a token from the gate.
+    /// One Letter page whose renders are as large as asked, each waiting for
+    /// a token from the gate, counting the renders that finish: a test can
+    /// then wait for one rather than for a while.
     #[derive(Clone)]
-    struct SizedGated(Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>);
+    struct SizedGated {
+        tokens: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+        renders: Arc<std::sync::atomic::AtomicUsize>,
+    }
 
     impl PdfEngine for SizedGated {
         fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
@@ -16344,8 +16348,10 @@ pub(crate) mod tests {
             _: f32,
             tile: PixelRect,
         ) -> Result<Rgba8Image, EngineError> {
-            let _ = self.0.lock().unwrap().recv();
+            let _ = self.tokens.lock().unwrap().recv();
             let pixels = vec![255; tile.width as usize * tile.height as usize * 4];
+            self.renders
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Rgba8Image::from_premultiplied(tile.width, tile.height, pixels).unwrap())
         }
     }
@@ -16353,15 +16359,30 @@ pub(crate) mod tests {
     #[test]
     fn a_stale_render_is_not_shown() {
         let (gate, tokens) = std::sync::mpsc::channel();
-        let engine = SizedGated(Arc::new(std::sync::Mutex::new(tokens)));
+        let engine = SizedGated {
+            tokens: Arc::new(std::sync::Mutex::new(tokens)),
+            renders: Arc::default(),
+        };
+        let finished = engine.renders.clone();
         let mut h = Harness::build_with(Arc::new(engine), |app| app);
         // The upright render is under way, waiting for its token.
         h.app.set_rotation(0, Rotation::R90);
         h.frames(2, vec![]);
         gate.send(()).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Wait for a render to come back rather than for a while; on a slow
+        // runner the turn can reach the queue before the upright render is
+        // taken from it, and then this token releases the turned one.
+        h.until(|_| finished.load(std::sync::atomic::Ordering::SeqCst) > 0);
         h.frames(2, vec![]);
-        assert!(!h.app.textures.contains_key(&0), "the upright render shown");
+        // Whatever came back, nothing upright is drawn: a render of the page
+        // as it was before the turn is dropped, not shown. A page turned by
+        // 90 degrees is wider than it is tall, an upright one taller than
+        // wide.
+        if let Some(image) = h.app.textures.get(&0) {
+            let [w, tall] = image.texture.size();
+            assert!(w > tall, "an upright render was shown, {w} by {tall}");
+        }
+        // The turn's own render, once its token comes.
         gate.send(()).unwrap();
         h.until(|h| h.app.textures.contains_key(&0));
         let [w, h_] = h.app.textures[&0].texture.size();
