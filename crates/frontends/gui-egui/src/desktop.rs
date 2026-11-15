@@ -66,14 +66,14 @@ pub fn desktop_entry(exe: &Path) -> Result<String, String> {
         "[Desktop Entry]\n\
          Type=Application\n\
          Name=noido\n\
-         GenericName=PDF Reader\n\
-         Comment=Read PDFs and take notes\n\
+         GenericName=PDF and comic reader\n\
+         Comment=Read PDFs and comics, and take notes\n\
          Exec={} %u\n\
          Icon=noido\n\
          Terminal=false\n\
          StartupNotify=true\n\
          StartupWMClass=noido\n\
-         MimeType=application/pdf;x-scheme-handler/noido;\n\
+         MimeType=application/pdf;application/vnd.comicbook+zip;x-scheme-handler/noido;\n\
          Categories=Office;Viewer;\n",
         exec_argument(exe)
     ))
@@ -357,14 +357,14 @@ mod tests {
         for line in [
             "Type=Application",
             "Name=noido",
-            "GenericName=PDF Reader",
-            "Comment=Read PDFs and take notes",
+            "GenericName=PDF and comic reader",
+            "Comment=Read PDFs and comics, and take notes",
             "Exec=/opt/noido/noido %u",
             "Icon=noido",
             "Terminal=false",
             "StartupNotify=true",
             "StartupWMClass=noido",
-            "MimeType=application/pdf;x-scheme-handler/noido;",
+            "MimeType=application/pdf;application/vnd.comicbook+zip;x-scheme-handler/noido;",
             "Categories=Office;Viewer;",
         ] {
             assert!(lines.contains(&line), "missing {line:?} in\n{entry}");

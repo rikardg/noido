@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the PDF test fixtures. Standard library only.
+"""Generate the PDF and CBZ test fixtures. Standard library only.
 
 two-pages.pdf:
   page 0: 612x792 pt (Letter) with a black filled square at x 100-200, y 100-200
@@ -103,8 +103,16 @@ outline-deep.pdf: one page; 70 outline items, each the only child of the one
 
 mixed-sizes.pdf: four blank pages: three of 595x842 pt and one of 1190x1684 pt
   (twice the size, so scale to fit shrinks it to half)
+
+comic.cbz: four pages in "pages/", named 1, 2, 10 and 11, so natural order
+  differs from lexical; 10 is 20x30 px, the others 10x15. ComicInfo.xml has
+  a title, writer, summary, genre and date; notes.txt and a __MACOSX entry
+  are there to be ignored.
 """
 
+import struct
+import zipfile
+import zlib
 from pathlib import Path
 
 
@@ -430,6 +438,52 @@ def outline_deep() -> bytes:
     )
 
 
+def comic_png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
+    """A PNG of one solid colour, standard library only."""
+    row = b"\x00" + bytes(rgb) * width
+    raw = row * height
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+def comic() -> bytes:
+    """A CBZ whose page names sort naturally, with metadata and junk."""
+    import io
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        z.writestr(
+            "ComicInfo.xml",
+            "<ComicInfo>"
+            "<Title>The Test Comic</Title>"
+            "<Writer>A. Writer</Writer>"
+            "<Summary>Four pages, out of order.</Summary>"
+            "<Genre>Test</Genre>"
+            "<Year>2026</Year><Month>11</Month><Day>15</Day>"
+            "</ComicInfo>",
+        )
+        z.writestr("pages/1.png", comic_png(10, 15, (255, 0, 0)))
+        z.writestr("pages/2.png", comic_png(10, 15, (0, 255, 0)))
+        z.writestr("pages/10.png", comic_png(20, 30, (0, 0, 255)))
+        z.writestr("pages/11.png", comic_png(10, 15, (255, 255, 255)))
+        z.writestr("notes.txt", "not a page")
+        z.writestr("__MACOSX/._1.png", b"\x00\x05\x16\x07AppleDouble junk")
+    return out.getvalue()
+
+
 if __name__ == "__main__":
     here = Path(__file__).resolve().parent
     (here / "outline.pdf").write_bytes(outline())
@@ -445,3 +499,4 @@ if __name__ == "__main__":
     (here / "tiling.pdf").write_bytes(tiling())
     (here / "type3.pdf").write_bytes(type3())
     (here / "shared-names.pdf").write_bytes(shared_names())
+    (here / "comic.cbz").write_bytes(comic())

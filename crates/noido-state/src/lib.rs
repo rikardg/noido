@@ -39,8 +39,26 @@ pub struct DocKey {
 
 impl DocKey {
     pub fn new(bytes: &[u8], path: &Path) -> Self {
+        Self::from_hash(blake3::hash(bytes), path)
+    }
+
+    /// A key from the bytes' length, their first four kilobytes and their last
+    /// mebibyte. For a ZIP archive that is enough: its central directory at the end records
+    /// every entry's CRC and size, so a changed page changes the key, while
+    /// hashing the whole of a large book would read all of it. Not for a
+    /// format whose edits can leave both ends untouched.
+    pub fn sampled(bytes: &[u8], path: &Path) -> Self {
+        const END: usize = 1024 * 1024;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes[..bytes.len().min(4096)]);
+        hasher.update(&bytes[bytes.len().saturating_sub(END)..]);
+        Self::from_hash(hasher.finalize(), path)
+    }
+
+    fn from_hash(hash: blake3::Hash, path: &Path) -> Self {
         Self {
-            hash: blake3::hash(bytes),
+            hash,
             path: fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
         }
     }
@@ -765,6 +783,38 @@ mod path_tests {
         assert_eq!(
             store.state_path(&slot),
             PathBuf::from(format!("/state/docs/{hex}.toml"))
+        );
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use std::path::Path;
+
+    use super::DocKey;
+
+    #[test]
+    fn a_sampled_key_sees_the_ends_and_the_length() {
+        let path = Path::new("/papers/a.cbz");
+        let bytes = vec![0u8; 3 * 1024 * 1024];
+        let key = DocKey::sampled(&bytes, path).hex();
+        let mut changed = bytes.clone();
+        changed[2 * 1024 * 1024 + 10] = 1;
+        assert_ne!(DocKey::sampled(&changed, path).hex(), key);
+        assert_ne!(DocKey::sampled(&[bytes, vec![0]].concat(), path).hex(), key);
+    }
+
+    #[test]
+    fn a_sampled_key_leaves_the_middle_alone() {
+        // The ZIP trade: its central directory at the end changes with a
+        // page, so the middle is not read.
+        let path = Path::new("/papers/a.cbz");
+        let bytes = vec![0u8; 4 * 1024 * 1024];
+        let mut changed = bytes.clone();
+        changed[2 * 1024 * 1024] = 1;
+        assert_eq!(
+            DocKey::sampled(&changed, path).hex(),
+            DocKey::sampled(&bytes, path).hex()
         );
     }
 }

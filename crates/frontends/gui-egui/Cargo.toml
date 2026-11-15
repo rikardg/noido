@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 noido-engine.workspace = true
 engine-hayro.workspace = true
+engine-comic.workspace = true
 noido-render.workspace = true
 noido-core.workspace = true
 noido-state.workspace = true

@@ -4,11 +4,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use eframe::egui;
+use engine_comic::ComicEngine;
 use engine_hayro::HayroEngine;
 use noido_core::Target;
+use noido_engine::{Document, EngineError, PdfBytes, PdfEngine};
 use noido_render::{Linker, Renderer, TextSearcher, Thumbnailer};
 use noido_settings::{Settings, SettingsFile};
-use noido_state::{DocKey, Slot, Store};
+use noido_state::{Slot, Store};
 
 use crate::app::NoidoApp;
 use crate::info;
@@ -18,7 +20,24 @@ use crate::watch::{self, Watcher};
 /// Documents whose state is kept; older ones are forgotten.
 const REMEMBERED_DOCUMENTS: usize = 1000;
 
-/// What every document window shares: the settings and the state store.
+/// The engine for a file: hayro for a PDF, the comic engine for a ZIP. Bytes
+/// that look like neither go to hayro, whose error names them.
+#[derive(Clone, Copy, Debug, Default)]
+struct AnyEngine;
+
+impl PdfEngine for AnyEngine {
+    fn open(&self, bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+        if bytes.starts_with(b"%PDF-") {
+            HayroEngine.open(bytes)
+        } else if bytes.starts_with(b"PK\x03\x04") {
+            ComicEngine.open(bytes)
+        } else {
+            HayroEngine.open(bytes)
+        }
+    }
+}
+
+/// What every document window shares: the settings and the store.
 pub struct Shared {
     pub settings_file: Option<SettingsFile>,
     pub settings: Settings,
@@ -93,7 +112,7 @@ pub fn open(
     shared: &Shared,
 ) -> Result<Opened, String> {
     let bytes = load_document(path)?;
-    let key = DocKey::new(&bytes, path);
+    let key = crate::load::doc_key(&bytes, path);
     // Read before the window file is asked for: the entry names it.
     let session = shared.store.as_ref().map(|store| {
         let (slot, restored) = store.load(key.clone());
@@ -111,38 +130,38 @@ pub fn open(
 
     // Shares the document bytes with the renderer; opens it in the background.
     let thumbnailer = Thumbnailer::start(
-        Arc::new(HayroEngine),
+        Arc::new(AnyEngine),
         bytes.clone(),
         transforms.clone(),
         waker(ctx, viewport),
     );
     let sidebar_renderer = Renderer::start_background(
-        Arc::new(HayroEngine),
+        Arc::new(AnyEngine),
         bytes.clone(),
         transforms.clone(),
         waker(ctx, viewport),
     );
     let searcher = TextSearcher::start(
-        Arc::new(HayroEngine),
+        Arc::new(AnyEngine),
         bytes.clone(),
         transforms.clone(),
         waker(ctx, viewport),
     );
     let linker = Linker::start(
-        Arc::new(HayroEngine),
+        Arc::new(AnyEngine),
         bytes.clone(),
         transforms.clone(),
         waker(ctx, viewport),
     );
     let source = info::Source {
-        engine: Arc::new(HayroEngine),
+        engine: Arc::new(AnyEngine),
         bytes: bytes.clone(),
         // As it was given: the info page makes it absolute itself, so that
         // what it shows is decided in one place (and `..` folded there).
         path: path.to_owned(),
     };
     let (renderer, info) = Renderer::start(
-        Arc::new(HayroEngine),
+        Arc::new(AnyEngine),
         bytes,
         transforms.clone(),
         waker(ctx, viewport),
@@ -152,7 +171,7 @@ pub fn open(
     let watcher = Watcher::start(
         path,
         key,
-        Arc::new(HayroEngine),
+        Arc::new(AnyEngine),
         transforms.clone(),
         shared_waker(ctx, viewport),
     )
@@ -209,6 +228,25 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../fixtures")
             .join(name)
+    }
+
+    #[test]
+    fn a_cbz_is_opened_by_the_comic_engine() {
+        let bytes = PdfBytes::from(std::fs::read(fixture("comic.cbz")).unwrap());
+        let document = AnyEngine.open(bytes).unwrap();
+        assert_eq!(document.page_count(), 4);
+    }
+
+    #[test]
+    fn a_comic_opens_in_a_window() {
+        let ctx = egui::Context::default();
+        let shared = Shared {
+            settings_file: None,
+            settings: Settings::default(),
+            store: None,
+        };
+        let opened = open(&fixture("comic.cbz"), None, &ctx, ViewportId::ROOT, &shared).unwrap();
+        assert_eq!(opened.name, "comic.cbz");
     }
 
     #[test]
