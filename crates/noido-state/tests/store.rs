@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use noido_core::{
-    Caret, DocPoint, Highlight, HighlightColour, History, PageTransform, PageTransforms, Pins,
-    Rotation, SidebarState, SidebarTab, ViewState, ZoomMode,
+    Caret, DocPoint, Highlight, HighlightColour, History, Location, PageTransform, PageTransforms,
+    Pins, Quote, Rotation, SidebarState, SidebarTab, ViewState, ZoomMode,
 };
 use noido_state::{DocKey, DocState, Frame, Pagelet, Slot, Store};
 use tempfile::TempDir;
@@ -824,6 +824,80 @@ fn malformed_highlight_ranges_are_dropped_on_load() {
     );
     fs::write(&file, text).unwrap();
 
+    assert_eq!(loaded(&store, &key), Some(saved));
+}
+
+#[test]
+fn highlights_from_before_parts_still_load() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(3)).unwrap();
+
+    let file = docs(&dir).join(format!("{}.toml", key.hex()));
+    let mut text = fs::read_to_string(&file).unwrap();
+    text.push_str(
+        "[[highlights]]\nstart_page = 3\nstart_char = 120\nend_page = 3\nend_char = 164\n\
+         colour = \"yellow\"\n",
+    );
+    fs::write(&file, text).unwrap();
+
+    let restored = loaded(&store, &key).unwrap();
+    assert_eq!(restored.highlights.len(), 1);
+    let h = &restored.highlights[0];
+    assert_eq!(h.start, Location { part: 3, char: 120 });
+    assert_eq!(h.end, Location { part: 3, char: 164 });
+    assert_eq!(h.quote, None);
+    assert!(!h.orphaned);
+}
+
+#[test]
+fn highlights_save_with_part_names() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        highlights: vec![highlight((3, 120), (3, 164), HighlightColour::Yellow)],
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+
+    let text = fs::read_to_string(docs(&dir).join(format!("{}.toml", key.hex()))).unwrap();
+    assert!(text.contains("start_part = 3"), "{text}");
+    assert!(text.contains("end_part = 3"), "{text}");
+    for absent in [
+        "start_page",
+        "end_page",
+        "quote",
+        "prefix",
+        "suffix",
+        "orphaned",
+    ] {
+        assert!(!text.contains(absent), "{absent} in {text}");
+    }
+}
+
+#[test]
+fn quote_and_orphan_round_trip() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let mut h = highlight((1, 4), (1, 14), HighlightColour::Green);
+    h.quote = Some(Quote {
+        exact: "the nature".into(),
+        prefix: "Liberty: ".into(),
+        suffix: " of power".into(),
+    });
+    h.orphaned = true;
+    let saved = DocState {
+        highlights: vec![h],
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+
+    let text = fs::read_to_string(docs(&dir).join(format!("{}.toml", key.hex()))).unwrap();
+    assert!(text.contains("quote = \"the nature\""), "{text}");
+    assert!(text.contains("orphaned = true"), "{text}");
     assert_eq!(loaded(&store, &key), Some(saved));
 }
 
