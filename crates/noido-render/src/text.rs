@@ -548,7 +548,7 @@ impl<'a> Worker<'a> {
                         };
                         self.release_before(&mut job, usize::MAX);
                         let mut todo = Vec::new();
-                        for (i, h) in walk.finish(&counts) {
+                        for (i, h) in walk.finish(&counts, &job.items) {
                             if !h.orphaned && h.window(n).is_some() {
                                 todo.push(i);
                             }

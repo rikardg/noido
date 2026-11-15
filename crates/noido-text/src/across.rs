@@ -9,7 +9,7 @@ const QUOTE_CONTEXT: usize = 32;
 
 /// A range of text over pages, as (document page, char): `end` is one past
 /// the last character, on that character's page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: (usize, usize),
     pub end: (usize, usize),
@@ -102,8 +102,15 @@ impl<'a> Joined<'a> {
     /// [`Self::context`] with `prefix` and `suffix` already folded by
     /// [`folded_chars`], for scoring many matches against one quote.
     pub fn context_folded(&self, span: Span, prefix: &[char], suffix: &[char]) -> usize {
+        let (back, forward) = self.agreement_folded(span, prefix, suffix);
+        back + forward
+    }
+
+    /// [`Self::context_folded`] for each side: how many characters of
+    /// `prefix` agree, and how many of `suffix`.
+    pub fn agreement_folded(&self, span: Span, prefix: &[char], suffix: &[char]) -> (usize, usize) {
         let (Some(start), Some(end)) = (self.index_of(span.start), self.index_of(span.end)) else {
-            return 0;
+            return (0, 0);
         };
         let (chars, source) = (&self.folds.plain, &self.folds.plain_source);
         let before = source.partition_point(|&s| s < start);
@@ -119,7 +126,7 @@ impl<'a> Joined<'a> {
             .zip(&chars[after..])
             .take_while(|(a, b)| a == b)
             .count();
-        back + forward
+        (back, forward)
     }
 
     /// The copied text of `span`, or `None` when it isn't inside the window.

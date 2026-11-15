@@ -4,7 +4,7 @@
 //! already in memory and is the reference they must agree with.
 
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::RangeInclusive;
 
 use noido_text::{Joined, PageText, Query, Span, folded_chars, folded_len, same_text};
@@ -71,9 +71,13 @@ pub fn check(h: &Highlight, window: &Joined, fill_missing: bool) -> Check {
 }
 
 /// A place the quote was found, and how well its neighbours agree.
+#[derive(Clone, Copy)]
 struct Candidate {
     span: Span,
     context: usize,
+    /// One side's neighbours agree in full (or the quote has none), so the
+    /// highlight may move here.
+    sure: bool,
 }
 
 struct Pending {
@@ -166,23 +170,37 @@ impl Walk {
                 continue;
             };
             for &span in &found[query] {
-                let context = window.context_folded(span, &p.prefix, &p.suffix);
+                let (back, forward) = window.agreement_folded(span, &p.prefix, &p.suffix);
+                let context = back + forward;
+                let full = |side: &[char], n: usize| !side.is_empty() && n == side.len();
+                let sure = (p.prefix.is_empty() && p.suffix.is_empty())
+                    || full(&p.prefix, back)
+                    || full(&p.suffix, forward);
                 if p.best.first().is_some_and(|b| context < b.context) {
                     continue;
                 }
                 if p.best.first().is_some_and(|b| context > b.context) {
                     p.best.clear();
                 }
-                p.best.push(Candidate { span, context });
+                p.best.push(Candidate {
+                    span,
+                    context,
+                    sure,
+                });
             }
         }
     }
 
     /// Each pending highlight at its best candidate: the highest context,
     /// ties to the nearest its old start, measured in characters through
-    /// `char_counts`. Un-orphaned. With no candidate, orphaned where it
-    /// was.
-    pub fn finish(self, char_counts: &[usize]) -> Vec<(usize, Highlight)> {
+    /// `char_counts`. It moves there, un-orphaned, only if the candidate is
+    /// sure and no other highlight takes the span: one in `items` that
+    /// isn't pending and isn't orphaned, or a pending one whose candidate
+    /// there has more context (then is nearer); a twin, on the same old
+    /// span with the same quote, moves with it. Otherwise it is orphaned
+    /// where it was, keeping its quote. `items` is the whole list, by the
+    /// indices the walk was given.
+    pub fn finish(self, char_counts: &[usize], items: &[Highlight]) -> Vec<(usize, Highlight)> {
         let mut before = Vec::with_capacity(char_counts.len());
         let mut total = 0;
         for &count in char_counts {
@@ -194,17 +212,75 @@ impl Walk {
             Some(&b) => b + char,
             None => total,
         };
-        self.pending
-            .into_iter()
+        let pending: HashSet<usize> = self.pending.iter().map(|p| p.index).collect();
+        let held: HashSet<Span> = items
+            .iter()
+            .enumerate()
+            .filter(|(i, h)| !pending.contains(i) && !h.orphaned)
+            .map(|(_, h)| h.span())
+            .collect();
+        // Each pending highlight's best candidate, if it is sure and free,
+        // with its distance from the old start.
+        let chosen: Vec<Option<(Candidate, usize)>> = self
+            .pending
+            .iter()
             .map(|p| {
                 let old = global((p.highlight.start.part, p.highlight.start.char));
-                let best = p.best.iter().min_by_key(|c| {
-                    (
-                        Reverse(c.context),
-                        global(c.span.start).abs_diff(old),
-                        c.span.start,
-                    )
-                });
+                let distance = |c: &Candidate| global(c.span.start).abs_diff(old);
+                p.best
+                    .iter()
+                    .min_by_key(|c| {
+                        (
+                            Reverse(c.context),
+                            Reverse(c.sure),
+                            distance(c),
+                            c.span.start,
+                        )
+                    })
+                    .filter(|c| c.sure && !held.contains(&c.span))
+                    .map(|c| (*c, distance(c)))
+            })
+            .collect();
+        // Where several want one span, the most context, then the nearest,
+        // then the first in the list takes it.
+        let mut taker: HashMap<Span, (Reverse<usize>, usize, usize)> = HashMap::new();
+        for (p, c) in self.pending.iter().zip(&chosen) {
+            if let Some((c, d)) = c {
+                let rank = (Reverse(c.context), *d, p.index);
+                taker
+                    .entry(c.span)
+                    .and_modify(|r| *r = (*r).min(rank))
+                    .or_insert(rank);
+            }
+        }
+        // Highlights on one span with one quote (two colours, two notes)
+        // are twins: where one takes a span, the other moves with it.
+        let by_index: HashMap<usize, &Highlight> = self
+            .pending
+            .iter()
+            .map(|p| (p.index, &p.highlight))
+            .collect();
+        let twins = |a: &Highlight, b: &Highlight| {
+            a.start == b.start && a.end == b.end && a.quote == b.quote
+        };
+        let takes: Vec<bool> = self
+            .pending
+            .iter()
+            .zip(&chosen)
+            .map(|(p, c)| {
+                c.as_ref().is_some_and(|(c, _)| {
+                    taker
+                        .get(&c.span)
+                        .is_some_and(|r| twins(by_index[&r.2], &p.highlight))
+                })
+            })
+            .collect();
+        self.pending
+            .into_iter()
+            .zip(chosen)
+            .zip(takes)
+            .map(|((p, c), takes)| {
+                let best = c.map(|(c, _)| c).filter(|_| takes);
                 let mut h = p.highlight;
                 match best {
                     Some(c) => {
@@ -280,7 +356,7 @@ pub fn anchor(
             walk.page(page, &Joined::new(*w.start(), &pages[w]));
         }
         let counts: Vec<usize> = pages.iter().map(|p| p.char_count()).collect();
-        for (i, mut h) in walk.finish(&counts) {
+        for (i, mut h) in walk.finish(&counts, &items) {
             if let (false, Some(w)) = (h.orphaned, h.window(n)) {
                 requote(&mut h, &Joined::new(*w.start(), &pages[w]));
             }
@@ -414,11 +490,11 @@ mod tests {
 
     #[test]
     fn follows_text_moved_to_another_page() {
-        let old = [text(&["the cat"]), text(&["other"])];
-        let h = made(&old, (0, 0), (0, 7));
-        let new = [text(&["other"]), text(&["the cat"])];
+        let old = [text(&["zz the cat"]), text(&["other"])];
+        let h = made(&old, (0, 3), (0, 10));
+        let new = [text(&["other"]), text(&["zz the cat"])];
         let out = anchor(&[h], &refs(&new), false, true);
-        assert_eq!(span_of(&out.items[0]), ((1, 0), (1, 7)));
+        assert_eq!(span_of(&out.items[0]), ((1, 3), (1, 10)));
         assert!(out.relocated);
     }
 
@@ -517,9 +593,12 @@ mod tests {
         old.push(text(&["the cat"]));
         let h = made(&old, (5, 0), (5, 7));
         assert_eq!(h.window(2), None);
-        let new = [text(&["nothing"]), text(&["see the cat"])];
+        let new = [
+            text(&["nothing"]),
+            text(&["nothing nothing nothing nothing the cat"]),
+        ];
         let out = anchor(std::slice::from_ref(&h), &refs(&new), false, true);
-        assert_eq!(span_of(&out.items[0]), ((1, 4), (1, 11)));
+        assert_eq!(span_of(&out.items[0]), ((1, 32), (1, 39)));
         assert!(!out.items[0].orphaned);
         let gone = [text(&["nothing"]), text(&["nothing"])];
         let out = anchor(&[h], &refs(&gone), false, true);
@@ -529,16 +608,16 @@ mod tests {
 
     #[test]
     fn equal_context_goes_to_the_nearest_old_start() {
-        let pages = [text(&["the cat"]), text(&["x"]), text(&["the cat"])];
-        let h = quoted((2, 3), (2, 6), "the cat", "zzz", "");
+        let pages = [text(&["the cat."]), text(&["x"]), text(&["the cat."])];
+        let h = quoted((2, 3), (2, 6), "the cat", "zzz", ".");
         let out = anchor(&[h], &refs(&pages), false, true);
         assert_eq!(span_of(&out.items[0]), ((2, 0), (2, 7)));
     }
 
     #[test]
     fn past_the_end_counts_as_the_end_of_the_document() {
-        let pages = [text(&["the cat"]), text(&["the cat"])];
-        let h = quoted((5, 0), (5, 7), "the cat", "zzz", "");
+        let pages = [text(&["the cat."]), text(&["the cat."])];
+        let h = quoted((5, 0), (5, 7), "the cat", "zzz", ".");
         let out = anchor(&[h], &refs(&pages), false, true);
         assert_eq!(span_of(&out.items[0]), ((1, 0), (1, 7)));
     }
@@ -557,13 +636,13 @@ mod tests {
     fn anchoring_again_is_a_no_op() {
         let old = [text(&["a the cat b"])];
         let h = made(&old, (0, 2), (0, 9));
-        let new = [text(&["so the cat sat"])];
+        let new = [text(&["so a the cat sat"])];
         let first = anchor(std::slice::from_ref(&h), &refs(&new), false, true);
         assert!(first.relocated);
         let quote = first.items[0].quote.as_ref().unwrap();
         assert_eq!(
             (quote.prefix.as_str(), quote.suffix.as_str()),
-            ("so ", " sat")
+            ("so a ", " sat")
         );
         let again = anchor(&first.items, &refs(&new), false, true);
         assert_eq!(again.items, first.items);
@@ -583,6 +662,150 @@ mod tests {
         assert_eq!(h.window(4), Some(1..=3));
         assert_eq!(plain((0, 0), (0, 1)).window(10), Some(0..=1));
         assert_eq!(h.window(2), None);
+    }
+
+    #[test]
+    fn one_side_agreeing_in_full_is_enough_to_move() {
+        let old = [text(&["xx aa the cat bb yy"])];
+        let h = made(&old, (0, 6), (0, 13));
+        let prefix_kept = [text(&["more xx aa the cat zz yy"])];
+        let out = anchor(std::slice::from_ref(&h), &refs(&prefix_kept), false, true);
+        assert_eq!(span_of(&out.items[0]), ((0, 11), (0, 18)));
+        assert!(!out.items[0].orphaned);
+        let suffix_kept = [text(&["more qq the cat bb yy"])];
+        let out = anchor(&[h], &refs(&suffix_kept), false, true);
+        assert_eq!(span_of(&out.items[0]), ((0, 8), (0, 15)));
+        assert!(!out.items[0].orphaned);
+    }
+
+    #[test]
+    fn neighbours_changed_on_both_sides_orphan() {
+        let old = [text(&["xx aa the cat bb yy"])];
+        let h = made(&old, (0, 6), (0, 13));
+        let new = [text(&["xx qq the cat zz yy"])];
+        let out = anchor(std::slice::from_ref(&h), &refs(&new), false, true);
+        assert!(out.items[0].orphaned);
+        assert_eq!(out.items[0].quote, h.quote);
+        assert_eq!(span_of(&out.items[0]), span_of(&h));
+        assert!(out.relocated);
+    }
+
+    #[test]
+    fn an_empty_side_is_not_agreement() {
+        let old = [text(&["the cat sat"])];
+        let h = made(&old, (0, 0), (0, 7));
+        assert_eq!(h.quote.as_ref().unwrap().prefix, "");
+        let new = [text(&["so the cat ran"])];
+        let out = anchor(&[h], &refs(&new), false, true);
+        assert!(out.items[0].orphaned);
+    }
+
+    #[test]
+    fn the_best_match_must_be_sure_not_just_some_match() {
+        // The best match agrees on most of both sides; a weaker one agrees
+        // in full on one side only. Neither is taken.
+        let h = quoted((0, 0), (0, 7), "the cat", "abcd ", " efgh");
+        let pages = [text(&["Xbcd the cat efgX. abcd the cat qqqq"])];
+        let out = anchor(&[h], &refs(&pages), false, true);
+        assert!(out.items[0].orphaned);
+    }
+
+    #[test]
+    fn a_deleted_repeat_orphans_rather_than_taking_the_other() {
+        let first = "Waves broke on the wall. The keeper counted the ships that passed.";
+        let second = "It grew late, so he slept. The keeper counted the ships for the last time.";
+        let old = [text(&[first, second])];
+        let at = old[0].text().find("The keeper").unwrap();
+        let h = made(
+            &old,
+            (0, at),
+            (0, at + "The keeper counted the ships".len()),
+        );
+        let new = [text(&[second])];
+        let out = anchor(std::slice::from_ref(&h), &refs(&new), false, true);
+        assert!(out.items[0].orphaned);
+        assert_eq!(out.items[0].quote, h.quote);
+        let back = anchor(&out.items, &refs(&old), false, true);
+        assert_eq!(back.items, [h]);
+    }
+
+    #[test]
+    fn never_onto_a_span_another_highlight_keeps() {
+        let pages = [text(&["aa the cat bb"])];
+        let kept = made(&pages, (0, 3), (0, 10));
+        let q = kept.quote.clone().unwrap();
+        // Same quote, from a passage that is gone.
+        let gone = Highlight {
+            colour: HighlightColour::Blue,
+            ..quoted((0, 40), (0, 47), &q.exact, &q.prefix, &q.suffix)
+        };
+        let out = anchor(&[gone.clone(), kept.clone()], &refs(&pages), false, true);
+        assert!(out.items[0].orphaned);
+        assert_eq!(span_of(&out.items[0]), span_of(&gone));
+        assert_eq!(out.items[1], kept);
+    }
+
+    #[test]
+    fn two_moving_onto_one_span_the_better_neighbours_take_it() {
+        let pages = [text(&["new aa the cat bb"])];
+        let weak = quoted((0, 30), (0, 37), "the cat", "aa ", " zz");
+        let strong = quoted((0, 50), (0, 57), "the cat", "aa ", " bb");
+        let out = anchor(&[weak, strong], &refs(&pages), false, true);
+        assert!(out.items[0].orphaned);
+        assert!(!out.items[1].orphaned);
+        assert_eq!(span_of(&out.items[1]), ((0, 7), (0, 14)));
+        // Equal neighbours: the nearer old start takes it.
+        let far = quoted((0, 90), (0, 97), "the cat", "aa ", " bb");
+        let near = quoted((0, 20), (0, 27), "the cat", "aa ", " bb");
+        let out = anchor(&[far, near], &refs(&pages), false, true);
+        assert!(out.items[0].orphaned);
+        assert_eq!(span_of(&out.items[1]), ((0, 7), (0, 14)));
+    }
+
+    #[test]
+    fn identical_passages_one_deleted_lose_nothing() {
+        // Text alone can't tell which copy went: the deleted one's highlight
+        // stays on the copy that slid into its place, and the other is
+        // orphaned. Putting the passage back brings both back.
+        let p =
+            "The keeper counted the ships that passed in the bay at dawn, and wrote them down. ";
+        let both = format!("Intro. {p}{p}Outro.");
+        let old = [text(&[&both])];
+        let at = both.find("counted").unwrap();
+        let second = at + p.len();
+        let len = "counted the ships".len();
+        let a = made(&old, (0, at), (0, at + len));
+        let b = Highlight {
+            colour: HighlightColour::Blue,
+            ..made(&old, (0, second), (0, second + len))
+        };
+        let one = format!("Intro. {p}Outro.");
+        let new = [text(&[&one])];
+        let out = anchor(&[a.clone(), b.clone()], &refs(&new), false, true);
+        assert_eq!(out.items[0], a);
+        assert!(out.items[1].orphaned);
+        assert_eq!(out.items[1].quote, b.quote);
+        let back = anchor(&out.items, &refs(&old), false, true);
+        assert_eq!(back.items, [a, b]);
+    }
+
+    #[test]
+    fn two_highlights_on_one_span_move_together() {
+        let old = [text(&["aa the cat bb"])];
+        let a = made(&old, (0, 3), (0, 10));
+        let b = Highlight {
+            colour: HighlightColour::Blue,
+            ..a.clone()
+        };
+        let new = [text(&["more aa the cat bb"])];
+        let out = anchor(&[a, b], &refs(&new), false, true);
+        for h in &out.items {
+            assert!(!h.orphaned);
+            assert_eq!(span_of(h), ((0, 8), (0, 15)));
+        }
+        let again = anchor(&out.items, &refs(&new), false, true);
+        assert_eq!(again.items, out.items);
+        assert!(!again.relocated);
     }
 
     #[test]

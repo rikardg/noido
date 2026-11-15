@@ -843,6 +843,8 @@ fn the_thread_agrees_with_anchoring_in_memory() {
         highlight((1, 0), (1, 5), Some(("other", "", " page"))),
         // Without a quote.
         highlight((3, 0), (3, 2), None),
+        // The same quote as the one kept where it was, from text now gone.
+        highlight((3, 10), (3, 15), Some(("other", "", " page"))),
     ];
     searcher.anchor(asked.clone(), true, true);
     let (_, answer) = until_anchored(&searcher);
@@ -858,6 +860,8 @@ fn the_thread_agrees_with_anchoring_in_memory() {
     assert_eq!(answer, expected);
     assert!(expected.relocated);
     assert!(expected.items[1].orphaned);
+    assert!(!expected.items[0].orphaned);
+    assert!(expected.items[4].orphaned);
 }
 
 #[test]
