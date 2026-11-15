@@ -204,10 +204,24 @@ hash matches. For each highlight with a quote:
 2. Otherwise, look for `exact` in the whole document, across parts. Take
    the match whose neighbours agree most with `prefix` and `suffix`,
    then the one nearest the old offset, counted in characters through
-   the document (which usually puts the same part first).
+   the document (which usually puts the same part first). The highlight
+   moves there only if the match is sure:
+   - one side agrees in full: all of `prefix`, or all of `suffix`. An
+     empty side (the document's start or end) doesn't count, unless
+     both are empty;
+   - no other highlight holds that same span. When several highlights
+     would move onto one span, the one whose neighbours agree most
+     takes it (then the nearest). Highlights on one span with one
+     quote (two colours, two notes) move together.
 3. Otherwise, mark the highlight orphaned. It stays in the state and
    isn't drawn. It comes back if a later version of the file has the
    text again.
+
+When unsure, orphan rather than guess. An orphan keeps its quote and
+comes back when its text does, notes and all. A wrong move takes a new
+quote, so its old place is lost for good: even putting the text back
+doesn't return it. The cost is that text edited on both sides within
+the quote's neighbours is orphaned; M4's fuzzy matching is for that.
 
 Text often moves to another part unchanged: a rebuilt PDF pushes a
 paragraph onto the next page, or a passage now straddles a page break.
@@ -280,6 +294,16 @@ a page. The view of a reflowable document adds `anchor_part`,
   elsewhere on the old page: the highlight follows its text, not the
   repeat.
 - Text moved so it now straddles a page break: the highlight spans it.
+- The same words highlighted in two passages with different
+  neighbours, and the first passage deleted: its highlight is orphaned,
+  not moved onto the second; putting the passage back brings it back.
+- Two identical passages, each highlighted, one deleted: one highlight
+  stays on the remaining passage and the other is orphaned. Text alone
+  can't tell which copy went, so when the remaining one slides into the
+  deleted one's place, the deleted one's highlight stays and the other
+  is orphaned. Nothing is lost: putting the passage back brings both
+  back.
+- Text whose neighbours changed on both sides: orphaned.
 - CBZ (with the spike): view, history and pins work. Highlights don't
   exist (no text).
 - A fake reflowable engine in the core tests: locations survive a
@@ -306,3 +330,6 @@ would be a straight mapping; not planned.
 4. Reflowable text sits on virtual paper, locked by default (raw
    markdown unlocked). Across a reflow the first character in view keeps
    its height on screen.
+5. Re-anchoring moves a highlight only to a sure match (one side's
+   neighbours agree in full, and no other highlight holds the span);
+   otherwise it is orphaned, so a note is never moved to the wrong text.
