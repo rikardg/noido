@@ -119,6 +119,16 @@ impl LocationMap {
             .map(|l| (l.run.start, l.run.top))
     }
 
+    /// The last line on `page` whose top is above `y`: its start and its
+    /// top. None for the identity.
+    pub fn last_before(&self, page: usize, y: f32) -> Option<(Location, f32)> {
+        self.lines[self.pages.get(page)?.clone()]
+            .iter()
+            .rev()
+            .find(|l| l.run.top < y)
+            .map(|l| (l.run.start, l.run.top))
+    }
+
     /// The first character on `page`; None for a page without text.
     pub fn page_start(&self, page: usize) -> Option<Location> {
         if !self.reflows() {
@@ -224,6 +234,15 @@ mod tests {
         assert_eq!(map.location(1, 31), None);
         assert_eq!(map.location(2, 0), None);
         assert_eq!(map.page_start(2), None);
+    }
+
+    #[test]
+    fn last_before_is_the_last_line_starting_above() {
+        let map = two_pages();
+        assert_eq!(map.last_before(0, 500.0), Some((at(0, 40), 46.0)));
+        assert_eq!(map.last_before(0, 46.0), Some((at(0, 0), 36.0)));
+        assert_eq!(map.last_before(0, 36.0), None);
+        assert_eq!(LocationMap::identity().last_before(0, 500.0), None);
     }
 
     #[test]

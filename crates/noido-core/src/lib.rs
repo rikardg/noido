@@ -18,6 +18,8 @@ mod paper;
 mod pins;
 mod place;
 mod preview;
+#[cfg(test)]
+mod reflow_tests;
 mod selection;
 mod sidebar;
 mod target;
