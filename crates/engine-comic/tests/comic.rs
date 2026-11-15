@@ -1,11 +1,17 @@
 use engine_comic::ComicEngine;
 use noido_engine::{Document, EngineError, Format, PdfBytes, PdfEngine, PixelRect, Size};
 
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/comic.cbz");
+fn fixture_bytes(name: &str) -> PdfBytes {
+    let path = format!("{}/../../fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    PdfBytes::from(std::fs::read(path).unwrap())
+}
+
+fn open_named(name: &str) -> Box<dyn Document> {
+    ComicEngine.open(fixture_bytes(name)).unwrap()
+}
 
 fn open_fixture() -> Box<dyn Document> {
-    let bytes = PdfBytes::from(std::fs::read(FIXTURE).unwrap());
-    ComicEngine.open(bytes).unwrap()
+    open_named("comic.cbz")
 }
 
 #[test]
@@ -93,4 +99,126 @@ fn a_page_past_the_end_is_out_of_range() {
         doc.page_size(4),
         Err(EngineError::PageOutOfRange { page: 4, count: 4 })
     ));
+}
+
+#[test]
+fn opens_and_renders_a_deflated_archive() {
+    let doc = open_named("comic-deflated.cbz");
+    assert_eq!(doc.page_count(), 4);
+    let image = doc.render_page(0, 10, 15).unwrap();
+    assert_eq!(image.pixel(0, 0), [255, 0, 0, 255]);
+}
+
+#[test]
+fn alpha_is_premultiplied() {
+    let image = open_named("comic-alpha.cbz").render_page(0, 2, 2).unwrap();
+    assert_eq!(image.pixel(0, 0), [100, 50, 25, 128]);
+}
+
+#[test]
+fn a_broken_page_names_the_comic_page() {
+    let doc = open_named("comic-broken.cbz");
+    assert_eq!(doc.page_count(), 2);
+    let message = doc.render_page(1, 10, 15).unwrap_err().to_string();
+    assert!(message.contains("page 2"), "{message}");
+}
+
+#[test]
+fn a_damaged_page_keeps_its_place_and_names_itself() {
+    let doc = open_named("comic-damaged.cbz");
+    assert_eq!(doc.page_count(), 2);
+    let message = doc.render_page(1, 10, 15).unwrap_err().to_string();
+    assert!(message.contains("page 2"), "{message}");
+}
+
+#[test]
+fn a_page_over_the_pixel_cap_is_refused_before_decoding() {
+    let doc = open_named("comic-huge.cbz");
+    assert_eq!(
+        doc.page_size(0).unwrap(),
+        Size {
+            width: 8000.0,
+            height: 8000.0
+        }
+    );
+    assert!(matches!(
+        doc.render_page(0, 1, 1),
+        Err(EngineError::TooLarge {
+            width: 8000,
+            height: 8000
+        })
+    ));
+}
+
+#[test]
+fn an_archive_without_images_is_refused() {
+    let error = match ComicEngine.open(fixture_bytes("comic-empty.cbz")) {
+        Err(error) => error,
+        Ok(_) => panic!("opened an archive without images"),
+    };
+    assert!(error.to_string().contains("no images"), "{error}");
+}
+
+#[test]
+fn a_malformed_zip_is_an_open_error() {
+    let bytes = PdfBytes::from(b"PK\x03\x04not a zip".to_vec());
+    assert!(ComicEngine.open(bytes).is_err());
+}
+
+#[test]
+fn malformed_comic_info_leaves_defaults() {
+    let properties = open_named("comic-bad-info.cbz").properties();
+    assert_eq!(properties.format, Format::Comic);
+    assert_eq!(properties.title, None);
+}
+
+#[test]
+fn too_many_entries_is_refused() {
+    use std::io::Cursor;
+
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for index in 0..20_001 {
+        writer.start_file(format!("{index}"), options).unwrap();
+    }
+    let bytes = writer.finish().unwrap().into_inner();
+    let error = match ComicEngine.open(PdfBytes::from(bytes)) {
+        Err(error) => error,
+        Ok(_) => panic!("opened an archive with too many entries"),
+    };
+    assert!(error.to_string().contains("more than a comic"), "{error}");
+}
+
+#[test]
+fn a_comic_info_over_the_cap_is_ignored() {
+    use std::io::{Cursor, Write};
+
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    writer.start_file("ComicInfo.xml", options).unwrap();
+    writer.write_all(b"<ComicInfo><Title>Huge</Title>").unwrap();
+    writer.write_all(&vec![b' '; 1024 * 1024 + 1]).unwrap();
+    writer.write_all(b"</ComicInfo>").unwrap();
+    writer.start_file("1.png", options).unwrap();
+    writer.write_all(&comic_png_red()).unwrap();
+    let bytes = writer.finish().unwrap().into_inner();
+    let properties = ComicEngine
+        .open(PdfBytes::from(bytes))
+        .unwrap()
+        .properties();
+    assert_eq!(properties.format, Format::Comic);
+    assert_eq!(properties.title, None);
+}
+
+fn comic_png_red() -> Vec<u8> {
+    // A 1x1 red PNG, made with the same bytes as the fixture generator.
+    let fixture = std::fs::read(format!(
+        "{}/../../fixtures/comic-bad-info.cbz",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(fixture)).unwrap();
+    let mut png = Vec::new();
+    std::io::Read::read_to_end(&mut zip.by_name("1.png").unwrap(), &mut png).unwrap();
+    png
 }

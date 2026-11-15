@@ -438,49 +438,134 @@ def outline_deep() -> bytes:
     )
 
 
-def comic_png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
-    """A PNG of one solid colour, standard library only."""
-    row = b"\x00" + bytes(rgb) * width
-    raw = row * height
-
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        return (
-            struct.pack(">I", len(data))
-            + kind
-            + data
-            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-        )
-
+def comic_png_chunk(kind: bytes, data: bytes) -> bytes:
     return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-        + chunk(b"IDAT", zlib.compress(raw))
-        + chunk(b"IEND", b"")
+        struct.pack(">I", len(data))
+        + kind
+        + data
+        + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
     )
 
 
-def comic() -> bytes:
+def comic_png_with(width: int, height: int, color_type: int, pixel: bytes) -> bytes:
+    """A PNG of one solid colour, standard library only."""
+    raw = (b"\x00" + pixel * width) * height
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + comic_png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0))
+        + comic_png_chunk(b"IDAT", zlib.compress(raw))
+        + comic_png_chunk(b"IEND", b"")
+    )
+
+
+def comic_png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
+    return comic_png_with(width, height, 2, bytes(rgb))
+
+
+def comic_png_rgba(width: int, height: int, rgba: tuple[int, int, int, int]) -> bytes:
+    return comic_png_with(width, height, 6, bytes(rgba))
+
+
+def comic_info() -> str:
+    return (
+        "<ComicInfo>"
+        "<Title>The Test Comic</Title>"
+        "<Writer>A. Writer</Writer>"
+        "<Summary>Four pages, out of order.</Summary>"
+        "<Genre>Test</Genre>"
+        "<Year>2026</Year><Month>11</Month><Day>15</Day>"
+        "</ComicInfo>"
+    )
+
+
+def comic(compression: int = zipfile.ZIP_STORED) -> bytes:
     """A CBZ whose page names sort naturally, with metadata and junk."""
     import io
 
     out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
-        z.writestr(
-            "ComicInfo.xml",
-            "<ComicInfo>"
-            "<Title>The Test Comic</Title>"
-            "<Writer>A. Writer</Writer>"
-            "<Summary>Four pages, out of order.</Summary>"
-            "<Genre>Test</Genre>"
-            "<Year>2026</Year><Month>11</Month><Day>15</Day>"
-            "</ComicInfo>",
-        )
+    with zipfile.ZipFile(out, "w", compression) as z:
+        z.writestr("ComicInfo.xml", comic_info())
         z.writestr("pages/1.png", comic_png(10, 15, (255, 0, 0)))
         z.writestr("pages/2.png", comic_png(10, 15, (0, 255, 0)))
         z.writestr("pages/10.png", comic_png(20, 30, (0, 0, 255)))
         z.writestr("pages/11.png", comic_png(10, 15, (255, 255, 255)))
         z.writestr("notes.txt", "not a page")
         z.writestr("__MACOSX/._1.png", b"\x00\x05\x16\x07AppleDouble junk")
+    return out.getvalue()
+
+
+def comic_alpha() -> bytes:
+    """One 2x2 RGBA page: 200, 100, 50 at half alpha."""
+    import io
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("1.png", comic_png_rgba(2, 2, (200, 100, 50, 128)))
+    return out.getvalue()
+
+
+def comic_broken() -> bytes:
+    """ComicInfo, a good first page, then a page whose IDAT is corrupt."""
+    import io
+
+    broken = bytearray(comic_png(10, 15, (0, 255, 0)))
+    # IHDR is 8 signature + 25 bytes; IDAT's data starts at 41.
+    broken[45] ^= 0xFF
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("ComicInfo.xml", comic_info())
+        z.writestr("1.png", comic_png(10, 15, (255, 0, 0)))
+        z.writestr("2.png", bytes(broken))
+    return out.getvalue()
+
+
+def comic_damaged() -> bytes:
+    """A good first page, then a page with a valid PNG signature and no IHDR."""
+    import io
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("1.png", comic_png(10, 15, (255, 0, 0)))
+        z.writestr("2.png", b"\x89PNG\r\n\x1a\n\x00\x00")
+    return out.getvalue()
+
+
+def comic_empty() -> bytes:
+    """Metadata and notes, but no page at all."""
+    import io
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("ComicInfo.xml", comic_info())
+        z.writestr("notes.txt", "not a page")
+    return out.getvalue()
+
+
+def comic_huge() -> bytes:
+    """A page whose IHDR says 8000x8000, with no data to decode."""
+    import io
+
+    ihdr = struct.pack(">IIBBBBB", 8000, 8000, 8, 2, 0, 0, 0)
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + comic_png_chunk(b"IHDR", ihdr)
+        + comic_png_chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00"))
+        + comic_png_chunk(b"IEND", b"")
+    )
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("1.png", png)
+    return out.getvalue()
+
+
+def comic_bad_info() -> bytes:
+    """A page with an unclosed ComicInfo title."""
+    import io
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("ComicInfo.xml", "<ComicInfo><Title>unclosed")
+        z.writestr("1.png", comic_png(10, 15, (255, 0, 0)))
     return out.getvalue()
 
 
@@ -500,3 +585,10 @@ if __name__ == "__main__":
     (here / "type3.pdf").write_bytes(type3())
     (here / "shared-names.pdf").write_bytes(shared_names())
     (here / "comic.cbz").write_bytes(comic())
+    (here / "comic-deflated.cbz").write_bytes(comic(zipfile.ZIP_DEFLATED))
+    (here / "comic-alpha.cbz").write_bytes(comic_alpha())
+    (here / "comic-broken.cbz").write_bytes(comic_broken())
+    (here / "comic-damaged.cbz").write_bytes(comic_damaged())
+    (here / "comic-empty.cbz").write_bytes(comic_empty())
+    (here / "comic-huge.cbz").write_bytes(comic_huge())
+    (here / "comic-bad-info.cbz").write_bytes(comic_bad_info())
