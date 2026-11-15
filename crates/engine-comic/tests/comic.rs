@@ -1,5 +1,5 @@
 use engine_comic::ComicEngine;
-use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Size};
+use noido_engine::{Document, EngineError, Format, PdfBytes, PdfEngine, PixelRect, Size};
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/comic.cbz");
 
@@ -74,6 +74,7 @@ fn renders_a_tile_from_a_scaled_page() {
 #[test]
 fn reads_comic_info() {
     let properties = open_fixture().properties();
+    assert_eq!(properties.format, Format::Comic);
     assert_eq!(properties.title.as_deref(), Some("The Test Comic"));
     assert_eq!(properties.author.as_deref(), Some("A. Writer"));
     assert_eq!(

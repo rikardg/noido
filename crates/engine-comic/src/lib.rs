@@ -10,7 +10,8 @@ use std::cmp::Ordering;
 use std::io::{Cursor, Read};
 
 use noido_engine::{
-    Date, Document, EngineError, PdfBytes, PdfEngine, PixelRect, Properties, Rgba8Image, Size,
+    Date, Document, EngineError, Format, PdfBytes, PdfEngine, PixelRect, Properties, Rgba8Image,
+    Size,
 };
 use zip::ZipArchive;
 
@@ -37,7 +38,10 @@ impl PdfEngine for ComicEngine {
             )));
         }
         let mut pages = Vec::new();
-        let mut properties = Properties::default();
+        let mut properties = Properties {
+            format: Format::Comic,
+            ..Properties::default()
+        };
         let mut read_info = false;
         for index in 0..zip.len() {
             let mut entry = zip.by_index(index).map_err(zip_error)?;
@@ -296,7 +300,10 @@ fn dimensions(data: &[u8]) -> Option<(u32, u32)> {
 /// The text of the first `tag` in a ComicInfo document.
 fn parse_comic_info(xml: &str) -> Properties {
     let Ok(document) = roxmltree::Document::parse(xml) else {
-        return Properties::default();
+        return Properties {
+            format: Format::Comic,
+            ..Properties::default()
+        };
     };
     let text = |tag: &str| {
         document
@@ -318,6 +325,7 @@ fn parse_comic_info(xml: &str) -> Properties {
         utc_offset: None,
     });
     Properties {
+        format: Format::Comic,
         title: text("Title"),
         author: text("Writer"),
         subject: text("Summary"),

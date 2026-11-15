@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use hayro::hayro_syntax::object::{Array, DateTime, Dict, Name, ObjectIdentifier, Stream};
 use hayro::hayro_syntax::page::Resources;
 use hayro::hayro_syntax::{Pdf, PdfVersion};
-use noido_engine::{Date, Font, Properties};
+use noido_engine::{Date, Font, Format, Properties};
 
 use crate::pdf_string::decode_text;
 
@@ -20,6 +20,7 @@ pub(crate) fn properties(pdf: &Pdf) -> Properties {
     let text =
         |bytes: &Option<Box<[u8]>>| bytes.as_deref().map(decode_text).filter(|s| !s.is_empty());
     let mut p = Properties {
+        format: Format::Pdf,
         title: text(&info.title),
         author: text(&info.author),
         subject: text(&info.subject),

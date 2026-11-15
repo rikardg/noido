@@ -7,7 +7,7 @@ use std::sync::mpsc::Receiver;
 
 use eframe::egui;
 use noido_core::{Family, families};
-use noido_engine::{Date, PdfBytes, PdfEngine, Properties, Size};
+use noido_engine::{Date, Format, PdfBytes, PdfEngine, Properties, Size};
 use noido_render::{Counted, read_properties};
 
 use crate::icons;
@@ -156,6 +156,7 @@ fn contents(
 ) -> Option<Asked> {
     let read = page.read.as_ref();
     let properties = read.map(|(p, _)| p);
+    let comic = properties.is_some_and(|p| p.format == Format::Comic);
     let mut asked = None;
     section(ui, "File", |ui| {
         let name = page
@@ -185,19 +186,22 @@ fn contents(
         row(ui, "Modified", p.modified.map(date_text));
     });
     section(ui, "Format", |ui| {
+        row(ui, "Format", comic.then(|| "CBZ comic archive".to_owned()));
         row(
             ui,
             "Page size",
-            Some(page_size_text(sizes)).filter(|s| !s.is_empty()),
+            Some(page_size_text(sizes, comic)).filter(|s| !s.is_empty()),
         );
-        let yes = |on: bool| on.then(|| "Yes".to_owned());
-        row(
-            ui,
-            "PDF version",
-            properties.and_then(|p| p.version.clone()),
-        );
-        row(ui, "Tagged", properties.and_then(|p| yes(p.tagged)));
-        row(ui, "Outline", properties.and_then(|p| yes(p.has_outline)));
+        if !comic {
+            let yes = |on: bool| on.then(|| "Yes".to_owned());
+            row(
+                ui,
+                "PDF version",
+                properties.and_then(|p| p.version.clone()),
+            );
+            row(ui, "Tagged", properties.and_then(|p| yes(p.tagged)));
+            row(ui, "Outline", properties.and_then(|p| yes(p.has_outline)));
+        }
     });
     section(ui, "Statistics", |ui| {
         row(ui, "Pages", Some(number(sizes.len())));
@@ -211,37 +215,39 @@ fn contents(
         row(ui, "Characters", shown(|c| c.chars));
         row(ui, "Characters (no spaces)", shown(|c| c.chars_no_spaces));
     });
-    section(ui, "Fonts", |ui| match read {
-        None => row(ui, "", Some("Reading…".into())),
-        Some((_, families)) if families.is_empty() => row(ui, "", Some("None".into())),
-        Some((_, families)) => {
-            for family in families {
-                let styles: Vec<String> = family
-                    .styles
-                    .iter()
-                    .map(|s| {
-                        if s.embedded {
-                            s.name.clone()
-                        } else {
-                            format!("{} (not embedded)", s.name)
-                        }
-                    })
-                    .collect();
-                let raw: Vec<&str> = family
-                    .styles
-                    .iter()
-                    .flat_map(|s| s.raw.iter().map(String::as_str))
-                    .collect();
-                crate::theme::hover_text(
-                    ui.add(egui::Label::new(egui::RichText::new(&family.name).strong())),
-                    raw.join("\n"),
-                );
-                ui.indent(&family.name, |ui| {
-                    ui.add(egui::Label::new(styles.join(", ")).wrap());
-                });
+    if !comic {
+        section(ui, "Fonts", |ui| match read {
+            None => row(ui, "", Some("Reading…".into())),
+            Some((_, families)) if families.is_empty() => row(ui, "", Some("None".into())),
+            Some((_, families)) => {
+                for family in families {
+                    let styles: Vec<String> = family
+                        .styles
+                        .iter()
+                        .map(|s| {
+                            if s.embedded {
+                                s.name.clone()
+                            } else {
+                                format!("{} (not embedded)", s.name)
+                            }
+                        })
+                        .collect();
+                    let raw: Vec<&str> = family
+                        .styles
+                        .iter()
+                        .flat_map(|s| s.raw.iter().map(String::as_str))
+                        .collect();
+                    crate::theme::hover_text(
+                        ui.add(egui::Label::new(egui::RichText::new(&family.name).strong())),
+                        raw.join("\n"),
+                    );
+                    ui.indent(&family.name, |ui| {
+                        ui.add(egui::Label::new(styles.join(", ")).wrap());
+                    });
+                }
             }
-        }
-    });
+        });
+    }
     asked
 }
 
@@ -364,8 +370,8 @@ fn settings_row(ui: &mut egui::Ui, path: &Path) -> Option<Asked> {
 }
 
 /// "216 × 279 mm (612 × 792 pt)"; "mixed" when the pages differ by a
-/// point or more.
-fn page_size_text(sizes: &[Size]) -> String {
+/// point or more. A comic's pages are shown in pixels instead.
+fn page_size_text(sizes: &[Size], pixels: bool) -> String {
     let Some(first) = sizes.first() else {
         return String::new();
     };
@@ -375,6 +381,9 @@ fn page_size_text(sizes: &[Size]) -> String {
         .all(|s| same(s.width, first.width) && same(s.height, first.height))
     {
         return "mixed".into();
+    }
+    if pixels {
+        return format!("{} × {} px", first.width.round(), first.height.round());
     }
     let mm = |points: f32| (points / 72.0 * 25.4).round();
     format!(
@@ -450,23 +459,35 @@ mod tests {
     #[test]
     fn page_size_in_mm_and_points() {
         assert_eq!(
-            page_size_text(&[size(612.0, 792.0), size(612.0, 792.0)]),
+            page_size_text(&[size(612.0, 792.0), size(612.0, 792.0)], false),
             "216 × 279 mm (612 × 792 pt)"
         );
         assert_eq!(
-            page_size_text(&[size(595.276, 841.89)]),
+            page_size_text(&[size(595.276, 841.89)], false),
             "210 × 297 mm (595 × 842 pt)"
+        );
+    }
+
+    #[test]
+    fn comic_pages_are_shown_in_pixels() {
+        assert_eq!(
+            page_size_text(&[size(2456.0, 3375.0)], true),
+            "2456 × 3375 px"
+        );
+        assert_eq!(
+            page_size_text(&[size(10.0, 15.0), size(20.0, 30.0)], true),
+            "mixed"
         );
     }
 
     #[test]
     fn pages_of_different_sizes_are_mixed() {
         assert_eq!(
-            page_size_text(&[size(612.0, 792.0), size(595.0, 842.0)]),
+            page_size_text(&[size(612.0, 792.0), size(595.0, 842.0)], false),
             "mixed"
         );
         assert_eq!(
-            page_size_text(&[size(612.0, 792.0), size(612.4, 792.0)]),
+            page_size_text(&[size(612.0, 792.0), size(612.4, 792.0)], false),
             "216 × 279 mm (612 × 792 pt)"
         );
     }

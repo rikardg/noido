@@ -1,5 +1,5 @@
 use engine_hayro::HayroEngine;
-use noido_engine::{Date, Document, Font, PdfBytes, PdfEngine, Properties};
+use noido_engine::{Date, Document, Font, Format, PdfBytes, PdfEngine, Properties};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures");
 
@@ -17,6 +17,11 @@ fn font(name: &str, embedded: bool) -> Font {
         name: name.into(),
         embedded,
     }
+}
+
+#[test]
+fn a_pdf_says_it_is_a_pdf() {
+    assert_eq!(properties().format, Format::Pdf);
 }
 
 #[test]
@@ -90,6 +95,7 @@ fn a_bare_document_has_no_properties() {
     assert_eq!(
         p,
         Properties {
+            format: Format::Pdf,
             version: Some("1.7".into()),
             ..Properties::default()
         }

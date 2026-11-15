@@ -169,11 +169,26 @@ mod tests {
         let image = Rgba8Image::from_premultiplied(2, 1, vec![1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
         assert_eq!(image.pixel(1, 0), [5, 6, 7, 8]);
     }
+
+    #[test]
+    fn a_document_without_a_format_is_unknown() {
+        assert_eq!(Properties::default().format, Format::Unknown);
+    }
+}
+
+/// What kind of document a [`Properties`] describes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Format {
+    #[default]
+    Unknown,
+    Pdf,
+    Comic,
 }
 
 /// What a document says about itself. Fields it doesn't give are `None`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Properties {
+    pub format: Format,
     pub title: Option<String>,
     pub author: Option<String>,
     pub subject: Option<String>,

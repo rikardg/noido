@@ -6663,6 +6663,7 @@ pub(crate) mod tests {
                 embedded,
             };
             noido_engine::Properties {
+                format: noido_engine::Format::Pdf,
                 title: Some(self.0.clone()),
                 author: Some("Åsa Olson".into()),
                 created: Some(noido_engine::Date {
@@ -6683,6 +6684,66 @@ pub(crate) mod tests {
                 ],
                 ..Default::default()
             }
+        }
+    }
+
+    /// A one-page comic document, 2456 x 3375 px, with comic properties.
+    struct ComicPropsEngine;
+
+    impl PdfEngine for ComicPropsEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(ComicPropsDocument))
+        }
+    }
+
+    struct ComicPropsDocument;
+
+    impl Document for ComicPropsDocument {
+        fn page_count(&self) -> usize {
+            1
+        }
+        fn page_size(&self, _page: usize) -> Result<Size, EngineError> {
+            Ok(Size {
+                width: 2456.0,
+                height: 3375.0,
+            })
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            scale: f32,
+            rect: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            BlankDocument.render_tile(page, scale, rect)
+        }
+        fn properties(&self) -> noido_engine::Properties {
+            noido_engine::Properties {
+                format: noido_engine::Format::Comic,
+                title: Some("The Test Comic".into()),
+                ..Default::default()
+            }
+        }
+    }
+
+    /// A harness whose document is /docs/comic.cbz, 2456 x 3375 px.
+    fn with_comic_info_source() -> Harness {
+        let engine = Arc::new(ComicPropsEngine);
+        let source = crate::info::Source {
+            engine: engine.clone(),
+            bytes: PdfBytes::from(b"Comic".to_vec()),
+            path: "/docs/comic.cbz".into(),
+        };
+        Harness::build_with(engine, |app| app.with_source(source))
+    }
+
+    #[test]
+    fn comic_info_hides_pdf_rows() {
+        let mut h = with_comic_info_source();
+        h.press(egui::Key::I, Modifiers::COMMAND);
+        h.until(|h| h.text_rect("CBZ comic archive").is_some());
+        assert!(h.text_rect("2456 × 3375 px").is_some());
+        for text in ["PDF version", "Tagged", "Outline", "Fonts"] {
+            assert!(h.text_rect(text).is_none(), "{text:?} drawn");
         }
     }
 
