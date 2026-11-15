@@ -78,7 +78,7 @@ struct Args {
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..),
           conflicts_with_all = ["install", "uninstall", "app_bundle"])]
     page: Option<u32>,
-    /// Add noido to the desktop's apps for PDFs
+    /// Add noido to the desktop's apps for PDFs and comics
     #[arg(long, conflicts_with_all = ["path", "uninstall", "app_bundle"])]
     install: bool,
     /// Remove what --install added

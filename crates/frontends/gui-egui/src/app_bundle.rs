@@ -20,7 +20,7 @@ pub const APP_NAME: &str = "noido.app";
 const ICON_FILE: &str = "noido.icns";
 const ICON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/noido.icns"));
 
-/// The `Info.plist` of a bundle holding noido `version`: a viewer for PDFs
+/// The `Info.plist` of a bundle holding noido `version`: a viewer for PDFs and comics
 /// (ranked below the default) and the owner of the `noido` URL scheme.
 ///
 /// `version` is the full one, commit included (`0.1.0+69fa5bc6`). macOS
@@ -457,13 +457,13 @@ fn proceed(plan: Plan, yes: bool) -> Result<bool, String> {
 pub fn install(yes: bool) -> Result<(), String> {
     let places = Places::here()?;
     println!(
-        "This builds noido.app in ~/Applications from {}, so Finder offers noido for PDFs. Your default PDF app stays as it is.",
+        "This builds noido.app in ~/Applications from {}, so Finder offers noido for PDFs and comics. Your default apps stay as they are.",
         places.exe.display()
     );
     if proceed(plan_install(&places), yes)? {
         println!();
         println!(
-            "To open PDFs with noido by default: select a PDF in Finder, Get Info, Open With: noido, Change All\u{2026}"
+            "To open PDFs or comics with noido by default: select one in Finder, Get Info, Open With: noido, Change All\u{2026}"
         );
     }
     Ok(())

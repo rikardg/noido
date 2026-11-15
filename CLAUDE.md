@@ -17,8 +17,9 @@ is the daily driver; macOS and Windows build but are unchecked.
 - `docs/superpowers/plans/`: implementation plans for the larger ones.
 - `docs/investigations/`: write-ups of things looked into, once the
   user has made the exploration a task (see "How work goes").
-- Test PDFs: tiny generated ones in `fixtures/` (`make_fixtures.py`);
-  tests and examples use only these, so the repo stands on its own.
+- Test documents: tiny generated ones in `fixtures/` (`make_fixtures.py`),
+  PDFs and `comic.cbz`; tests and examples use only these, so the repo
+  stands on its own.
   `../testfiles/` (outside the repo; books, papers, scans) is for trying
   things by hand and for measuring; no test or example refers to it, and
   docs name its files by kind ("a network analysis paper"), not by name.
@@ -27,6 +28,7 @@ is the daily driver; macOS and Windows build but are unchecked.
 
 - `noido-engine`: the engine trait (pages, rendering, glyphs).
 - `engine-hayro`: the engine on hayro.
+- `engine-comic`: the engine on ZIP comic archives.
 - `noido-text`: lines and words from glyphs; search (folding, accents,
   de-hyphenation).
 - `noido-core`: pure, no GUI: layout (`spread_of` / `spread_pages` /

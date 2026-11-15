@@ -1,10 +1,11 @@
 # noido
 
-Early stage PDF reader with upcoming annotation functionality. Built on
+Early stage PDF and comic reader with upcoming annotation functionality. Built on
 [hayro](https://github.com/LaurenzV/hayro) and [egui](https://github.com/emilk/egui).
 
 Features:
 
+- Reads PDFs and CBZ comic archives.
 - Fast viewer.
 - Files are never modified. All edits are saved separately.
 

@@ -8,7 +8,7 @@ use std::sync::Arc;
 /// which record the file rather than open anything.
 pub type ShowFolder = std::sync::Arc<dyn Fn(&Path) + Send + Sync>;
 
-/// Picks a PDF in the desktop's own dialog: noido's window goes along
+/// Picks a PDF or comic in the desktop's own dialog: noido's window goes along
 /// as the dialog's parent, the dialog opens in the directory of the
 /// open document when there is one, and a picked file is handed to
 /// [`OnPicked`].
