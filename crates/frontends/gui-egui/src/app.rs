@@ -374,7 +374,7 @@ impl NoidoApp {
             flip_distance: 0.0,
             persistence: None,
             history: History::default(),
-            locations: noido_engine::LocationMap::identity(),
+            locations: info.locations,
             highlights: Highlights::default(),
             pins: Pins::default(),
             pagelet: None,
@@ -723,7 +723,10 @@ impl NoidoApp {
     /// filled in is the same now as later, and a walk is only skipped if
     /// nobody needed it.
     fn anchor(&mut self, fill_missing: bool, relocate: bool) {
-        if self.highlights.items().is_empty() {
+        // The text thread reads parts as pages: highlights in text that
+        // reflows are left as they are until it reads them as parts
+        // (with the first reflowable engine).
+        if self.highlights.items().is_empty() || self.locations.reflows() {
             return;
         }
         let pending = self.anchoring.sent.is_some();
@@ -1158,6 +1161,7 @@ impl NoidoApp {
             .collect();
         self.transforms.replace(fitted);
         self.engine_sizes = reload.info.engine_sizes;
+        self.locations = reload.info.locations;
         let mut view = View::new(page_sizes);
         view.set_viewport_size(width, height);
         if let Some(state) = &state {
@@ -2089,7 +2093,7 @@ impl NoidoApp {
             .and_then(|index| self.highlights.get(index))
         {
             let search = &self.search_state;
-            for page in highlight.pages() {
+            for page in highlight.pages(&self.locations) {
                 self.texts.want(page, |page| search.request_text(page));
             }
         }
@@ -2113,7 +2117,7 @@ impl NoidoApp {
             .select
             .editing
             .and_then(|index| self.highlights.get(index))
-            .map(|highlight| highlight.pages());
+            .map(|highlight| highlight.pages(&self.locations));
         let needed = |page: usize| {
             let ends = selection.is_some_and(|s| {
                 [s.anchor, s.focus].iter().any(|spot| match *spot {
@@ -2142,6 +2146,7 @@ impl NoidoApp {
         let shown = select::Pages {
             texts: &self.texts,
             layout,
+            locations: &self.locations,
             content,
             viewport: viewport.translate(content.min.to_vec2()),
         };
@@ -2186,7 +2191,7 @@ impl NoidoApp {
                             .selection
                             .and_then(|s| s.on_page(page, text.char_count()))
                     } else {
-                        highlight.on_page(page, text.char_count())
+                        highlight.on_page(page, text.char_count(), &self.locations)
                     };
                     let Some(range) = range else {
                         continue;
@@ -2550,8 +2555,9 @@ impl NoidoApp {
                 self.highlights.set_colour(index, colour);
             } else if let Some((start, end)) = self.select.selection.and_then(|s| s.carets())
                 && start < end
+                && let Some(highlight) = Highlight::from_carets(start, end, colour, &self.locations)
             {
-                self.select.editing = self.highlights.add(Highlight::new(start, end, colour));
+                self.select.editing = self.highlights.add(highlight);
                 self.anchor(true, false);
             }
         }
@@ -3648,6 +3654,127 @@ pub(crate) mod tests {
         fn render_tile(&self, _: usize, _: f32, _: PixelRect) -> Result<Rgba8Image, EngineError> {
             Ok(Rgba8Image::from_premultiplied(1, 1, vec![255; 4]).unwrap())
         }
+    }
+
+    /// Like [`BlankEngine`], its pages laid out text: part 0, 100
+    /// characters a page.
+    struct FlowEngine;
+    struct FlowDocument;
+
+    impl PdfEngine for FlowEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(FlowDocument))
+        }
+    }
+
+    impl Document for FlowDocument {
+        fn page_count(&self) -> usize {
+            BlankDocument.page_count()
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument.page_size(page)
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            s: f32,
+            r: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            BlankDocument.render_tile(page, s, r)
+        }
+        fn locations(&self) -> noido_engine::LocationMap {
+            let line = |page: usize| noido_engine::Run {
+                start: noido_engine::Location {
+                    part: 0,
+                    char: page * 100,
+                },
+                chars: 100,
+                top: 72.0,
+                bottom: 84.0,
+            };
+            noido_engine::LocationMap::from_lines((0..10).map(|page| vec![line(page)]).collect())
+        }
+    }
+
+    #[test]
+    fn highlights_in_text_that_reflows_are_not_anchored_yet() {
+        let mut h = Harness::build_with(Arc::new(FlowEngine), |app| {
+            app.with_searcher(TextSearcher::start(
+                Arc::new(FlowEngine),
+                PdfBytes::default(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            ))
+        });
+        h.app.highlights.add(Highlight::new(
+            Caret { page: 0, char: 0 },
+            Caret { page: 0, char: 5 },
+            HighlightColour::Yellow,
+        ));
+        h.app.anchor(true, true);
+        assert_eq!(h.app.anchoring.sent, None);
+    }
+
+    /// A view of [`FlowEngine`]'s document saved centred on a page it no
+    /// longer has, with an anchor at character 500.
+    fn flow_state_past_the_end() -> DocState {
+        DocState {
+            view: ViewState {
+                zoom: noido_core::ZoomMode::FitWidth,
+                scale: 1.0,
+                continuous: true,
+                dual: false,
+                odd_left: true,
+                gapless: false,
+                centre: noido_core::DocPoint {
+                    page: 40,
+                    x: 306.0,
+                    y: 400.0,
+                },
+            },
+            sidebar: SidebarState::default(),
+            history: History::default(),
+            highlights: Vec::new(),
+            pins: Pins::default(),
+            pagelet: None,
+            anchor: Some(noido_core::ViewAnchor {
+                at: noido_engine::Location { part: 0, char: 500 },
+                layout: None,
+            }),
+            transforms: noido_core::PageTransforms::default(),
+        }
+    }
+
+    #[test]
+    fn text_that_reflows_restores_through_its_anchor_and_saves_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let h = Harness::build_with(Arc::new(FlowEngine), |app| {
+            app.with_persistence(
+                Store::at(dir.path()),
+                test_slot(dir.path()),
+                Some(flow_state_past_the_end()),
+            )
+        });
+        let here = noido_engine::Location { part: 0, char: 500 };
+        assert_eq!(
+            h.app.view.first_in_view(&h.app.locations).map(|(at, _)| at),
+            Some(here)
+        );
+        assert_eq!(
+            h.app.doc_state().unwrap().anchor,
+            Some(noido_core::ViewAnchor {
+                at: here,
+                layout: None
+            })
+        );
+    }
+
+    #[test]
+    fn the_window_keeps_the_documents_location_map() {
+        let h = Harness::build_with(Arc::new(FlowEngine), |app| app);
+        assert_eq!(h.app.locations, FlowDocument.locations());
+        let pdf = Harness::new();
+        assert!(!pdf.app.locations.reflows());
     }
 
     /// Like [`BlankEngine`], with 30 pages.
