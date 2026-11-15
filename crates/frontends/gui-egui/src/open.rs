@@ -17,7 +17,7 @@ pub type Pick = Box<dyn Fn(Option<&eframe::Frame>, Option<PathBuf>, OnPicked) + 
 /// What a picked file opens in: a new window.
 pub type OnPicked = Arc<dyn Fn(&Path) + Send + Sync>;
 
-/// Picks a PDF in the desktop's own file dialog, handing it to
+/// Picks a PDF or comic in the desktop's own file dialog, handing it to
 /// `on_picked`; nothing when cancelled.
 ///
 /// The dialog is modal to noido's window: `set_parent` passes the window
@@ -29,7 +29,11 @@ pub type OnPicked = Arc<dyn Fn(&Path) + Send + Sync>;
 /// thread of its own: Mod+O returns to the window at once, and the
 /// window keeps painting while the dialog is up.
 #[cfg(not(target_os = "macos"))]
-pub fn pick_pdf(frame: Option<&eframe::Frame>, directory: Option<PathBuf>, on_picked: OnPicked) {
+pub fn pick_document(
+    frame: Option<&eframe::Frame>,
+    directory: Option<PathBuf>,
+    on_picked: OnPicked,
+) {
     // Built before the thread: borrowing the window ends here.
     let mut dialog = rfd::FileDialog::new().add_filter("PDF or comic book", &["pdf", "cbz"]);
     if let Some(frame) = frame {
@@ -45,14 +49,18 @@ pub fn pick_pdf(frame: Option<&eframe::Frame>, directory: Option<PathBuf>, on_pi
     });
 }
 
-/// Picks PDFs in AppKit's Open panel, the one the app shows by itself
-/// too, handing each to `on_picked`; nothing when cancelled. The panel
-/// filters by the PDF type, and it does not block: this returns at once,
-/// and every window keeps running while it is up. Main thread only, which
-/// every caller is on.
+/// Picks PDFs and comics in AppKit's Open panel, the one the app shows by
+/// itself too, handing each to `on_picked`; nothing when cancelled. The
+/// panel filters by the PDF and CBZ types, and it does not block: this
+/// returns at once, and every window keeps running while it is up. Main
+/// thread only, which every caller is on.
 #[cfg(target_os = "macos")]
-pub fn pick_pdf(_frame: Option<&eframe::Frame>, directory: Option<PathBuf>, on_picked: OnPicked) {
-    noido_macos::pick_pdfs(directory.as_deref(), move |paths| {
+pub fn pick_document(
+    _frame: Option<&eframe::Frame>,
+    directory: Option<PathBuf>,
+    on_picked: OnPicked,
+) {
+    noido_macos::pick_documents(directory.as_deref(), move |paths| {
         for path in paths {
             on_picked(&path);
         }

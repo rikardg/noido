@@ -401,7 +401,7 @@ impl NoidoApp {
             select: select::State::default(),
             hovered_link: None,
             clicked_link: None,
-            pick: Box::new(open::pick_pdf),
+            pick: Box::new(open::pick_document),
             requests: None,
             open: Arc::new(open::open),
             show_folder: Arc::new(open::show_folder),

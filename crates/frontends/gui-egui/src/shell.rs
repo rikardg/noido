@@ -434,7 +434,7 @@ impl Shell {
             Request::Loaded(loaded) => self.loaded(ctx, loaded),
             Request::OpenPanel => {
                 let requests = self.requests.clone();
-                crate::open::pick_pdf(
+                crate::open::pick_document(
                     None,
                     None,
                     Arc::new(move |path| {
