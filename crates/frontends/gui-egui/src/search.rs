@@ -56,8 +56,6 @@ pub enum Arrived {
 
 pub struct Search {
     searcher: Option<TextSearcher>,
-    /// Whether extraction was asked for, so a reload asks the new thread too.
-    extracting: bool,
     /// Whether the counts were asked for, so a reload asks the new thread too.
     counting: bool,
     /// What the text thread has counted so far.
@@ -85,7 +83,6 @@ impl Search {
     pub fn new() -> Search {
         Search {
             searcher: None,
-            extracting: false,
             counting: false,
             counts: None,
             hits: Hits::new(),
@@ -104,25 +101,11 @@ impl Search {
     /// Searches with `searcher` from now on, as after a reload. The counts
     /// are the old document's: they go, and the new one is asked for them.
     pub fn set_searcher(&mut self, searcher: TextSearcher) {
-        if self.extracting {
-            searcher.extract();
-        }
         if self.counting {
             searcher.count();
         }
         self.counts = None;
         self.searcher = Some(searcher);
-    }
-
-    /// Starts extracting text, once.
-    pub fn extract(&mut self) {
-        if self.extracting {
-            return;
-        }
-        self.extracting = true;
-        if let Some(searcher) = &self.searcher {
-            searcher.extract();
-        }
     }
 
     /// Asks for the document's word and character counts, once: the text
@@ -132,7 +115,6 @@ impl Search {
             return;
         }
         self.counting = true;
-        self.extracting = true;
         if let Some(searcher) = &self.searcher {
             searcher.count();
         }

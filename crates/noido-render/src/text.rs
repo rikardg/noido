@@ -55,7 +55,6 @@ impl Counted {
 }
 
 enum Command {
-    Extract,
     Search {
         generation: u64,
         query: Query,
@@ -106,13 +105,6 @@ impl TextSearcher {
             results,
             generation: 0,
         }
-    }
-
-    /// Starts extracting every page's text in the background, if not yet
-    /// started.
-    pub fn extract(&self) {
-        // A send error means the thread is gone; there is nothing to report to.
-        let _ = self.commands.send(Command::Extract);
     }
 
     /// Searches every page for `query`, starting at `from_page` and
@@ -172,13 +164,20 @@ struct Worker<'a> {
     document: &'a Transformed,
     results: &'a Sender<SearchUpdate>,
     waker: &'a dyn Fn(),
-    /// Each page's text, once extracted, with the transform it was read
-    /// with.
+    /// Each page's text that is worth holding: the text of pages the app
+    /// asked for, with the transform it was read with. A page read for a
+    /// walk — a search, the counting pass — is dropped once the walk has
+    /// used it.
     texts: Vec<Option<(PageTransform, Arc<PageText>)>>,
+    /// Whether the app holds each page's text, and so whether it is kept.
+    wanted: Vec<bool>,
+    /// Pages whose text could not be read, remembered so a walk that drops
+    /// the text does not read them — and fail — again.
+    failed: Vec<bool>,
     /// Pages whose text was asked for, to answer first.
     requests: VecDeque<usize>,
-    /// Extract every page when idle.
-    extract: bool,
+    /// The next page the counting pass reads.
+    idle: usize,
     /// Each page's counts, once counted.
     counts: Vec<Option<noido_text::Counts>>,
     /// Count every page's text.
@@ -199,8 +198,10 @@ impl<'a> Worker<'a> {
             results,
             waker,
             texts: (0..document.page_count()).map(|_| None).collect(),
+            wanted: vec![false; document.page_count()],
+            failed: vec![false; document.page_count()],
             requests: VecDeque::new(),
-            extract: false,
+            idle: 0,
             counts: (0..document.page_count()).map(|_| None).collect(),
             counting: false,
             reported: false,
@@ -238,13 +239,16 @@ impl<'a> Worker<'a> {
     fn busy(&self) -> bool {
         !self.requests.is_empty()
             || self.job.is_some()
-            || (self.extract && self.texts.iter().any(Option::is_none))
-            || (self.counting && self.counts.iter().any(Option::is_none))
+            || (self.counting && self.idle < self.idle_end())
+    }
+
+    /// Where the counting pass has to reach: every page.
+    fn idle_end(&self) -> usize {
+        self.texts.len()
     }
 
     fn apply(&mut self, command: Command) {
         match command {
-            Command::Extract => self.extract = true,
             Command::Search {
                 generation,
                 query,
@@ -270,10 +274,14 @@ impl<'a> Worker<'a> {
             Command::Cancel => self.job = None,
             Command::Text(page) => {
                 if page < self.texts.len() {
+                    self.wanted[page] = true;
                     self.requests.push_back(page);
                 }
             }
             Command::Forget(page) => {
+                if page < self.texts.len() {
+                    self.wanted[page] = false;
+                }
                 if let Some(text) = self.texts.get_mut(page) {
                     *text = None;
                 }
@@ -281,8 +289,8 @@ impl<'a> Worker<'a> {
                 // which does not change what the page says.
             }
             Command::Count => {
-                self.extract = true;
                 self.counting = true;
+                self.idle = 0;
                 self.reported = false;
                 // Pages whose text is read already — every page for a reader
                 // who searched first — are counted here, so the answer is
@@ -307,14 +315,27 @@ impl<'a> Worker<'a> {
             });
         }
         let Some(mut job) = self.job.take() else {
-            if let Some(page) = self.texts.iter().position(Option::is_none) {
-                self.text(page);
+            // One page a step, so a command still cuts in; the text is
+            // dropped as soon as it is counted, unless the app holds it.
+            if self.counting && self.idle < self.idle_end() {
+                let page = self.idle;
+                self.idle += 1;
+                if self.counts[page].is_none() {
+                    self.text(page);
+                    self.count_page(page);
+                    self.release(page);
+                }
             }
             return self.finish_counts();
         };
         let count = self.texts.len();
         let page = (job.from_page + job.searched) % count;
-        let mut hits = self.text(page).find(&job.query);
+        let text = self.text(page).clone();
+        let mut hits = text.find(&job.query);
+        // Counted on the way: a walk reads every page, so Document info
+        // costs no reads of its own afterwards.
+        self.count_page(page);
+        self.release(page);
         let room = MAX_HITS - job.found;
         let truncated = hits.len() > room;
         hits.truncate(room);
@@ -339,25 +360,28 @@ impl<'a> Worker<'a> {
         true
     }
 
-    /// `page`'s text, extracted now if not yet. A page whose text cannot be
-    /// read is remembered as having none, so the idle extract pass and later
-    /// searches do not ask for it again.
+    /// `page`'s text, read now if not held. A page whose text cannot be read
+    /// is remembered as having none, so the counting pass and later searches
+    /// do not ask for it again.
     fn text(&mut self, page: usize) -> &Arc<PageText> {
-        let document = self.document;
-        &self.texts[page]
-            .get_or_insert_with(|| {
-                // Read before the text, so a turn under way stamps it old.
-                let transform = document.transform(page);
-                let text = match crate::glyphs_on_page(document, page) {
+        if self.texts[page].is_none() {
+            // Read before the text, so a turn under way stamps it old.
+            let transform = self.document.transform(page);
+            let text = if self.failed[page] {
+                PageText::new(Vec::new())
+            } else {
+                match crate::glyphs_on_page(self.document, page) {
                     Ok(glyphs) => PageText::new(glyphs),
                     Err(e) => {
                         eprintln!("noido: text of page {}: {e}", page + 1);
+                        self.failed[page] = true;
                         PageText::new(Vec::new())
                     }
-                };
-                (transform, Arc::new(text))
-            })
-            .1
+                }
+            };
+            self.texts[page] = Some((transform, Arc::new(text)));
+        }
+        &self.texts[page].as_ref().expect("the page was just read").1
     }
 
     /// Counts `page`'s text, unless it is counted already.
@@ -365,9 +389,19 @@ impl<'a> Worker<'a> {
         if self.counts[page].is_some() {
             return;
         }
-        // Owned before `self.counts` is written: `self.text` borrows.
-        let counts = noido_text::Counts::of(self.text(page).text());
-        self.counts[page] = Some(counts);
+        // Only a page whose text is in hand: the rest are read for counting
+        // by the pass, which counts each as it reads it.
+        let Some((_, text)) = &self.texts[page] else {
+            return;
+        };
+        self.counts[page] = Some(noido_text::Counts::of(text.text()));
+    }
+
+    /// Drops `page`'s text unless the app asked for it.
+    fn release(&mut self, page: usize) {
+        if !self.wanted[page] {
+            self.texts[page] = None;
+        }
     }
 
     /// Counts every page whose text is read but whose counts are not.
