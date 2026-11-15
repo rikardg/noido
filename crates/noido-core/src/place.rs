@@ -16,6 +16,19 @@ pub enum Place {
 }
 
 impl Place {
+    /// `page` as a place to keep: its top left on a fixed page, its first
+    /// character in text that reflows (its top left if it has no text).
+    pub fn of_page(page: usize, map: &LocationMap) -> Self {
+        match map.page_start(page) {
+            Some(at) if map.reflows() => Self::Text(at),
+            _ => Self::Point(DocPoint {
+                page,
+                x: 0.0,
+                y: 0.0,
+            }),
+        }
+    }
+
     /// The page it is on now.
     pub fn page(&self, map: &LocationMap) -> Option<usize> {
         match self {
@@ -99,6 +112,19 @@ mod tests {
                 y: 0.0
             })
         );
+    }
+
+    #[test]
+    fn a_page_is_its_top_left_or_its_first_character() {
+        assert_eq!(
+            Place::of_page(3, &LocationMap::identity()),
+            Place::Point(DocPoint {
+                page: 3,
+                x: 0.0,
+                y: 0.0
+            })
+        );
+        assert_eq!(Place::of_page(1, &two_pages()), Place::Text(at(0, 120)));
     }
 
     #[test]

@@ -1248,7 +1248,9 @@ impl NoidoApp {
             saved.refit(&engine_sizes);
             self.reshape(saved, &engine_sizes);
             self.transforms.retain_below(page_count);
-            self.view.restore(&state.view);
+            // No layout settings yet: a reflowable layout's key is `None`.
+            self.view
+                .restore_in(&state.view, state.anchor.as_ref(), None, &self.locations);
             self.sidebar = state.sidebar;
             self.history = state.history.clone();
             self.highlights = Highlights::from_items(state.highlights.clone());
@@ -1259,7 +1261,10 @@ impl NoidoApp {
                 page: None,
                 ..pagelet
             });
-            self.pending_pagelet = state.pagelet.and_then(|pagelet| pagelet.page);
+            self.pending_pagelet = state
+                .pagelet
+                .and_then(|pagelet| pagelet.page)
+                .and_then(|place| place.page(&self.locations));
         }
         self.persistence = Some(Persistence {
             store,
@@ -1281,9 +1286,13 @@ impl NoidoApp {
             highlights: self.highlights.items().to_vec(),
             pins: self.pins.clone(),
             pagelet: self.pagelet.map(|pagelet| Pagelet {
-                page: self.pin_preview.as_ref().map(|preview| preview.page),
+                page: self
+                    .pin_preview
+                    .as_ref()
+                    .map(|preview| noido_core::Place::of_page(preview.page, &self.locations)),
                 ..pagelet
             }),
+            anchor: self.view.anchor(&self.locations, None),
             transforms: self.transforms.snapshot(),
         })
     }
@@ -5282,6 +5291,7 @@ pub(crate) mod tests {
             highlights: Vec::new(),
             pins: Pins::default(),
             pagelet: None,
+            anchor: None,
             transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
@@ -5346,6 +5356,7 @@ pub(crate) mod tests {
             highlights: Vec::new(),
             pins: Pins::default(),
             pagelet: None,
+            anchor: None,
             transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
@@ -5401,6 +5412,7 @@ pub(crate) mod tests {
             highlights: Vec::new(),
             pins: Pins::default(),
             pagelet: None,
+            anchor: None,
             transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
@@ -5757,6 +5769,7 @@ pub(crate) mod tests {
             highlights: Vec::new(),
             pins: Pins::default(),
             pagelet: None,
+            anchor: None,
             transforms: noido_core::PageTransforms::default(),
         };
         let mut h = Harness::build(|app| {
@@ -9687,6 +9700,7 @@ pub(crate) mod tests {
             highlights: Vec::new(),
             pins: Pins::from_sorted([2, 7]),
             pagelet: None,
+            anchor: None,
             transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
@@ -10317,7 +10331,10 @@ pub(crate) mod tests {
         open_pagelet(&mut h, 2);
         assert_eq!(
             h.app.doc_state().unwrap().pagelet.unwrap().page,
-            Some(2),
+            Some(noido_core::Place::of_page(
+                2,
+                &noido_engine::LocationMap::identity()
+            )),
             "an open pagelet is saved with its page"
         );
         let rect = h.app.pin_preview.as_ref().unwrap().rect;
@@ -10359,8 +10376,12 @@ pub(crate) mod tests {
                 x: 300.0,
                 y: 120.0,
                 width: 360.0,
-                page: Some(2),
+                page: Some(noido_core::Place::of_page(
+                    2,
+                    &noido_engine::LocationMap::identity(),
+                )),
             }),
+            anchor: None,
             transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
@@ -10399,8 +10420,12 @@ pub(crate) mod tests {
                 x: 300.0,
                 y: 0.0,
                 width: 360.0,
-                page: Some(2),
+                page: Some(noido_core::Place::of_page(
+                    2,
+                    &noido_engine::LocationMap::identity(),
+                )),
             }),
+            anchor: None,
             transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
@@ -10440,8 +10465,12 @@ pub(crate) mod tests {
                 x: 300.0,
                 y: 120.0,
                 width: 360.0,
-                page: Some(9),
+                page: Some(noido_core::Place::of_page(
+                    9,
+                    &noido_engine::LocationMap::identity(),
+                )),
             }),
+            anchor: None,
             transforms: noido_core::PageTransforms::default(),
         };
         let h = Harness::build(|app| {
@@ -10481,6 +10510,7 @@ pub(crate) mod tests {
                 width: 360.0,
                 page: None,
             }),
+            anchor: None,
             transforms: noido_core::PageTransforms::default(),
         };
         let mut h = Harness::build(|app| {
@@ -13577,6 +13607,7 @@ pub(crate) mod tests {
             highlights: Vec::new(),
             pins: Pins::default(),
             pagelet: None,
+            anchor: None,
             transforms: noido_core::PageTransforms::default(),
         }
     }
@@ -14845,6 +14876,7 @@ pub(crate) mod tests {
             highlights: vec![highlight],
             pins: Pins::default(),
             pagelet: None,
+            anchor: None,
             transforms: noido_core::PageTransforms::default(),
         };
         let first = store.load(saved_as).0;

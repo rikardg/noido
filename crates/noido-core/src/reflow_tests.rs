@@ -2,7 +2,7 @@
 
 use noido_engine::{Location, LocationMap, Run, Size};
 
-use crate::{Defaults, DocPoint, Place, StartZoom, View};
+use crate::{Defaults, DocPoint, Place, StartZoom, View, ViewAnchor, ViewState};
 
 const MARGIN_Y: f32 = 36.0;
 const LINE: f32 = 20.0;
@@ -278,4 +278,74 @@ fn reflow_at_the_top_stays_at_the_top() {
     assert_eq!(v.offset().1, 0.0, "the page's head stays in view");
     let h_now = height_of(&v, &wide, first);
     assert!(h_now < h && h_now > 0.0, "{h} → {h_now}");
+}
+
+/// A saved view of `view` centred on `page`, `y`, with an anchor at
+/// character 9000 laid out as "a".
+fn saved_at(view: &View, page: usize, y: f32) -> (ViewState, ViewAnchor) {
+    let mut state = view.state().unwrap();
+    state.centre = DocPoint { page, x: 0.0, y };
+    let anchor = ViewAnchor {
+        at: at(9000),
+        layout: Some("a".into()),
+    };
+    (state, anchor)
+}
+
+#[test]
+fn restore_uses_the_point_when_the_layout_matches() {
+    let (sizes, map) = wide();
+    let mut v = view(sizes);
+    let (state, anchor) = saved_at(&v, 3, 300.0);
+    v.restore_in(&state, Some(&anchor), Some("a"), &map);
+    assert_eq!(v.place().unwrap().page, 3);
+}
+
+#[test]
+fn restore_uses_the_anchor_when_the_layout_differs() {
+    let (sizes, map) = wide();
+    let mut v = view(sizes);
+    let (state, anchor) = saved_at(&v, 3, 300.0);
+    v.restore_in(&state, Some(&anchor), Some("b"), &map);
+    let (now, h) = v.first_in_view(&map).unwrap();
+    assert_eq!(now, at(9000));
+    assert!(h.abs() < 0.5, "{h}");
+}
+
+#[test]
+fn restore_uses_the_anchor_when_the_page_is_gone() {
+    let (sizes, map) = wide();
+    let mut v = view(sizes);
+    let (state, anchor) = saved_at(&v, 40, 300.0);
+    v.restore_in(&state, Some(&anchor), Some("a"), &map);
+    assert_eq!(v.first_in_view(&map).unwrap().0, at(9000));
+}
+
+#[test]
+fn restore_without_an_anchor_is_the_point() {
+    let mut v = view(vec![
+        Size {
+            width: 612.0,
+            height: 792.0
+        };
+        8
+    ]);
+    let (state, _) = saved_at(&v, 5, 300.0);
+    v.restore_in(&state, None, None, &LocationMap::identity());
+    assert_eq!(v.place().unwrap().page, 5);
+}
+
+#[test]
+fn the_anchor_is_the_first_character_in_view() {
+    let (sizes, map) = wide();
+    let mut v = view(sizes);
+    scroll_to(&mut v, 3, MARGIN_Y + 5.0 * LINE, 0.0);
+    assert_eq!(
+        v.anchor(&map, Some("a")),
+        Some(ViewAnchor {
+            at: at(3 * 1300 + 5 * 50),
+            layout: Some("a".into())
+        })
+    );
+    assert_eq!(v.anchor(&LocationMap::identity(), None), None);
 }

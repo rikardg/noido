@@ -3,7 +3,7 @@
 
 use noido_engine::LocationMap;
 
-use crate::{DocPoint, Place};
+use crate::Place;
 
 /// The places the reader pins, in document order, one each. A pin on a
 /// fixed page is its top left; a pin in text that reflows is the first
@@ -23,19 +23,12 @@ fn key(place: &Place) -> (usize, usize, bool) {
     }
 }
 
-fn page_top(page: usize) -> Place {
-    Place::Point(DocPoint {
-        page,
-        x: 0.0,
-        y: 0.0,
-    })
-}
-
 impl Pins {
     /// Pins on the fixed pages `pages`, in page order and without
     /// duplicates.
     pub fn from_sorted(pages: impl IntoIterator<Item = usize>) -> Self {
-        Self::from_places(pages.into_iter().map(page_top))
+        let fixed = LocationMap::identity();
+        Self::from_places(pages.into_iter().map(|page| Place::of_page(page, &fixed)))
     }
 
     /// The pins `places` names, in document order and without duplicates.
@@ -71,10 +64,7 @@ impl Pins {
             self.remove(page, map);
             return false;
         }
-        let place = match map.page_start(page) {
-            Some(at) if map.reflows() => Place::Text(at),
-            _ => page_top(page),
-        };
+        let place = Place::of_page(page, map);
         let index = self.0.partition_point(|p| key(p) < key(&place));
         self.0.insert(index, place);
         true
@@ -98,6 +88,7 @@ mod tests {
     use noido_engine::{Location, Run};
 
     use super::*;
+    use crate::DocPoint;
 
     fn fixed() -> LocationMap {
         LocationMap::identity()

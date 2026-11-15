@@ -16,7 +16,7 @@ use directories::ProjectDirs;
 use noido_core::{
     DocPoint, Highlight, HighlightColour, Highlights, History, Location, PageTransform,
     PageTransforms, Pins, Place, Quote, Rotation, SIDEBAR_DEFAULT_WIDTH, SidebarState, SidebarTab,
-    ViewState, ZoomMode,
+    ViewAnchor, ViewState, ZoomMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -130,7 +130,9 @@ pub struct Pagelet {
     pub x: f32,
     pub y: f32,
     pub width: f32,
-    pub page: Option<usize>,
+    /// The page it shows: a page's top left, or the first character of
+    /// the page in text that reflows.
+    pub page: Option<Place>,
 }
 
 /// What is remembered about a document.
@@ -142,6 +144,8 @@ pub struct DocState {
     pub highlights: Vec<Highlight>,
     pub pins: Pins,
     pub pagelet: Option<Pagelet>,
+    /// Where the view was in text that reflows; `None` on fixed pages.
+    pub anchor: Option<ViewAnchor>,
     /// How the reader turns pages.
     pub transforms: PageTransforms,
 }
@@ -491,15 +495,15 @@ struct Entry {
     // Absent from files written before history existed. Old entries carry
     // the view fields too; serde ignores them.
     #[serde(default)]
-    back: Vec<Point>,
+    back: Vec<StoredPlace>,
     #[serde(default)]
-    forward: Vec<Point>,
+    forward: Vec<StoredPlace>,
     // Absent from files written before highlights existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     highlights: Vec<StoredHighlight>,
     // Absent from files written before pins existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pins: Vec<usize>,
+    pins: Vec<StoredPin>,
     // Absent from files written before the pagelet was remembered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pagelet: Option<StoredPagelet>,
@@ -524,7 +528,7 @@ struct StoredPagelet {
     width: f32,
     /// Absent when the pagelet was closed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    page: Option<usize>,
+    page: Option<StoredPin>,
 }
 
 /// The TOML form of the document's own [`ViewState`].
@@ -542,6 +546,13 @@ struct StoredView {
     page: usize,
     x: f32,
     y: f32,
+    // The view's anchor in text that reflows; absent on fixed pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    anchor_part: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    anchor_char: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    layout: Option<String>,
 }
 
 fn yes() -> bool {
@@ -561,7 +572,7 @@ enum Zoom {
 }
 
 impl StoredView {
-    fn new(state: &ViewState) -> Self {
+    fn new(state: &ViewState, anchor: Option<&ViewAnchor>) -> Self {
         Self {
             zoom: match state.zoom {
                 ZoomMode::FitWidth => Zoom::FitWidth,
@@ -576,7 +587,20 @@ impl StoredView {
             page: state.centre.page,
             x: state.centre.x,
             y: state.centre.y,
+            anchor_part: anchor.map(|a| a.at.part),
+            anchor_char: anchor.map(|a| a.at.char),
+            layout: anchor.and_then(|a| a.layout.clone()),
         }
+    }
+
+    fn anchor(&self) -> Option<ViewAnchor> {
+        Some(ViewAnchor {
+            at: Location {
+                part: self.anchor_part?,
+                char: self.anchor_char?,
+            },
+            layout: self.layout.clone(),
+        })
     }
 
     fn state(&self) -> ViewState {
@@ -600,8 +624,86 @@ impl StoredView {
     }
 }
 
-/// The TOML form of a history entry: the place, and nothing else.
-#[derive(Serialize, Deserialize)]
+/// The TOML form of a history entry: a point on a page, or a character in
+/// text that reflows. Points first: an old entry with the view's fields
+/// too still reads as one.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(untagged)]
+enum StoredPlace {
+    Point(Point),
+    Text(StoredText),
+}
+
+impl StoredPlace {
+    fn new(place: &Place) -> Self {
+        match place {
+            Place::Point(p) => Self::Point(Point::new(p)),
+            Place::Text(at) => Self::Text(StoredText::new(at)),
+        }
+    }
+
+    fn place(&self) -> Place {
+        match self {
+            Self::Point(p) => Place::Point(p.state()),
+            Self::Text(t) => Place::Text(t.location()),
+        }
+    }
+}
+
+/// The TOML form of a pin or the pagelet's page: a page number, or a
+/// character in text that reflows.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(untagged)]
+enum StoredPin {
+    Page(usize),
+    Text(StoredText),
+}
+
+impl StoredPin {
+    fn new(place: &Place) -> Self {
+        match place {
+            Place::Point(p) => Self::Page(p.page),
+            Place::Text(at) => Self::Text(StoredText::new(at)),
+        }
+    }
+
+    fn place(&self) -> Place {
+        match self {
+            Self::Page(page) => Place::Point(DocPoint {
+                page: *page,
+                x: 0.0,
+                y: 0.0,
+            }),
+            Self::Text(t) => Place::Text(t.location()),
+        }
+    }
+}
+
+/// The TOML form of a character in text that reflows.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+struct StoredText {
+    part: usize,
+    char: usize,
+}
+
+impl StoredText {
+    fn new(at: &Location) -> Self {
+        Self {
+            part: at.part,
+            char: at.char,
+        }
+    }
+
+    fn location(&self) -> Location {
+        Location {
+            part: self.part,
+            char: self.char,
+        }
+    }
+}
+
+/// The TOML form of a point on a page.
+#[derive(Serialize, Deserialize, Clone, Copy)]
 struct Point {
     page: usize,
     x: f32,
@@ -628,23 +730,14 @@ impl Point {
 
 impl Entry {
     fn new(path: &Path, window: &str, doc: &DocState) -> Self {
-        // Points only, until places in text have a saved form.
-        let places = |places: &[Place]| {
-            places
-                .iter()
-                .filter_map(|place| match place {
-                    Place::Point(p) => Some(Point::new(p)),
-                    Place::Text(_) => None,
-                })
-                .collect()
-        };
+        let places = |places: &[Place]| places.iter().map(StoredPlace::new).collect();
         Self {
             version: VERSION,
             path: path.to_string_lossy().into_owned(),
             saved: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),
-            place: StoredView::new(&doc.view),
+            place: StoredView::new(&doc.view, doc.anchor.as_ref()),
             sidebar_open: doc.sidebar.open,
             sidebar_width: doc.sidebar.width,
             sidebar_tab: match doc.sidebar.last {
@@ -658,21 +751,12 @@ impl Entry {
             back: places(doc.history.back_entries()),
             forward: places(doc.history.forward_entries()),
             highlights: doc.highlights.iter().map(StoredHighlight::new).collect(),
-            // Pages only, until pins in text have a saved form.
-            pins: doc
-                .pins
-                .places()
-                .iter()
-                .filter_map(|place| match place {
-                    Place::Point(p) => Some(p.page),
-                    Place::Text(_) => None,
-                })
-                .collect(),
+            pins: doc.pins.places().iter().map(StoredPin::new).collect(),
             pagelet: doc.pagelet.map(|pagelet| StoredPagelet {
                 x: pagelet.x,
                 y: pagelet.y,
                 width: pagelet.width,
-                page: pagelet.page,
+                page: pagelet.page.as_ref().map(StoredPin::new),
             }),
             pages: doc
                 .transforms
@@ -688,7 +772,7 @@ impl Entry {
     }
 
     fn state(&self) -> DocState {
-        let states = |points: &[Point]| points.iter().map(|p| Place::Point(p.state())).collect();
+        let states = |places: &[StoredPlace]| places.iter().map(StoredPlace::place).collect();
         let tab = match self.sidebar_tab.as_str() {
             "outline" => SidebarTab::Outline,
             "pins" => SidebarTab::Pins,
@@ -713,13 +797,14 @@ impl Entry {
             )
             .items()
             .to_vec(),
-            pins: Pins::from_sorted(self.pins.iter().copied()),
+            pins: Pins::from_places(self.pins.iter().map(StoredPin::place)),
             pagelet: self.pagelet.map(|pagelet| Pagelet {
                 x: pagelet.x,
                 y: pagelet.y,
                 width: pagelet.width,
-                page: pagelet.page,
+                page: pagelet.page.as_ref().map(StoredPin::place),
             }),
+            anchor: self.place.anchor(),
             // Angles other than a quarter turn are dropped.
             transforms: {
                 let mut transforms =

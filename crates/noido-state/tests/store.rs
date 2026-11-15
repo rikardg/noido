@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use noido_core::{
     Caret, DocPoint, Highlight, HighlightColour, History, Location, PageTransform, PageTransforms,
-    Pins, Place, Quote, Rotation, SidebarState, SidebarTab, ViewState, ZoomMode,
+    Pins, Place, Quote, Rotation, SidebarState, SidebarTab, ViewAnchor, ViewState, ZoomMode,
 };
 use noido_state::{DocKey, DocState, Frame, Pagelet, Slot, Store};
 use tempfile::TempDir;
@@ -29,6 +29,7 @@ fn state(page: usize) -> DocState {
         highlights: Vec::new(),
         pins: Pins::default(),
         pagelet: None,
+        anchor: None,
         transforms: PageTransforms::default(),
     }
 }
@@ -537,7 +538,7 @@ fn the_pagelets_place_round_trips() {
             x: 12.0,
             y: 34.0,
             width: 400.0,
-            page: Some(4),
+            page: Some(point_on(4)),
         }),
         ..state(3)
     };
@@ -548,7 +549,7 @@ fn the_pagelets_place_round_trips() {
             x: 12.0,
             y: 34.0,
             width: 400.0,
-            page: Some(4),
+            page: Some(point_on(4)),
         })
     );
 }
@@ -1131,4 +1132,145 @@ fn a_hand_written_recent_list_stops_at_ten() {
     let recent = store.load_recent();
     assert_eq!(recent.len(), 10);
     assert_eq!(recent, files[..10].to_vec());
+}
+
+/// A PDF's state with history, pins and an open pagelet, as saved.
+fn pdf_state() -> DocState {
+    DocState {
+        history: History::from_parts(vec![point(1), point(7)], vec![point(9)]),
+        pins: Pins::from_sorted([2, 7]),
+        pagelet: Some(Pagelet {
+            x: 300.0,
+            y: 120.0,
+            width: 360.0,
+            page: Some(point_on(2)),
+        }),
+        ..state(3)
+    }
+}
+
+/// A pin or the pagelet's page: a page's top left.
+fn point_on(page: usize) -> Place {
+    Place::Point(DocPoint {
+        page,
+        x: 0.0,
+        y: 0.0,
+    })
+}
+
+fn text(char: usize) -> Place {
+    Place::Text(Location { part: 0, char })
+}
+
+/// The saved file's text without its `saved = …` time.
+fn saved_text(store: &Store, key: &DocKey) -> String {
+    fs::read_to_string(store.state_path(&slot(store, key)))
+        .unwrap()
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with("saved = "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_pdf_state_file_is_written_as_before() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &pdf_state()).unwrap();
+    let window = slot(&store, &key).key().hex();
+    let expected = format!(
+        "version = 1
+path = \"/papers/a.pdf\"
+zoom = \"custom\"
+scale = 1.5
+continuous = false
+dual = true
+odd_left = true
+gapless = false
+page = 3
+x = 10.0
+y = 20.5
+sidebar_open = false
+sidebar_width = 260.0
+sidebar_tab = \"thumbnails\"
+window = \"{window}\"
+pins = [2, 7]
+[[back]]
+page = 1
+x = 10.0
+y = 20.5
+[[back]]
+page = 7
+x = 10.0
+y = 20.5
+[[forward]]
+page = 9
+x = 10.0
+y = 20.5
+[pagelet]
+x = 300.0
+y = 120.0
+width = 360.0
+page = 2"
+    );
+    assert_eq!(saved_text(&store, &key), expected);
+    assert_eq!(loaded(&store, &key), Some(pdf_state()));
+}
+
+#[test]
+fn text_places_round_trip() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"epub a", Path::new("/books/a.epub"));
+    let saved = DocState {
+        history: History::from_parts(vec![text(40), point(1)], vec![text(900)]),
+        pins: Pins::from_places([text(1300), text(2600)]),
+        pagelet: Some(Pagelet {
+            x: 300.0,
+            y: 120.0,
+            width: 360.0,
+            page: Some(text(1300)),
+        }),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    assert_eq!(loaded(&store, &key), Some(saved));
+    let file = saved_text(&store, &key);
+    assert!(file.contains("part = 0\nchar = 40"), "{file}");
+}
+
+#[test]
+fn a_view_anchor_round_trips() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"epub a", Path::new("/books/a.epub"));
+    let saved = DocState {
+        anchor: Some(ViewAnchor {
+            at: Location { part: 2, char: 640 },
+            layout: Some("paperback serif 11".into()),
+        }),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    assert_eq!(loaded(&store, &key), Some(saved));
+    let file = saved_text(&store, &key);
+    assert!(
+        file.contains("anchor_part = 2\nanchor_char = 640\nlayout = \"paperback serif 11\""),
+        "{file}"
+    );
+}
+
+#[test]
+fn a_pin_list_of_pages_and_text_round_trips() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"md a", Path::new("/notes/a.md"));
+    // A page without text (an image) pinned as a page, beside text pins.
+    let saved = DocState {
+        pins: Pins::from_places([point_on(0), text(0), text(1300)]),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    assert_eq!(loaded(&store, &key), Some(saved));
 }
