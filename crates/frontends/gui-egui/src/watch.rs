@@ -13,7 +13,7 @@ use noido_state::DocKey;
 use notify::event::{AccessKind, AccessMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode};
 
-use crate::load::load_document;
+use crate::load::{doc_key, load_document};
 
 /// How long the file must stay unchanged before it is read: LaTeX tools
 /// write the file in several steps.
@@ -99,7 +99,7 @@ fn open_new(
     waker: &Waker,
 ) -> Option<Reload> {
     let bytes = load_document(path).ok()?;
-    let key = DocKey::new(&bytes, path);
+    let key = doc_key(&bytes, path);
     if key.hex() == current.hex() {
         return None;
     }

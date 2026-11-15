@@ -1,0 +1,23 @@
+[package]
+name = "engine-comic"
+description = "noido comic-archive engine (CBZ)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+noido-engine.workspace = true
+zip.workspace = true
+image.workspace = true
+fast_image_resize = "6.1"
+roxmltree.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+blake3.workspace = true
+noido-state.workspace = true

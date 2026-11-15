@@ -6,10 +6,22 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use noido_engine::PdfBytes;
+use noido_state::DocKey;
 
 /// Files at least this large are mapped through a clone where the file
 /// system can make one. Below it the bytes are not worth a temporary inode.
 pub const MAPPED_FROM: u64 = 8 * 1024 * 1024;
+
+/// The key a document's state is kept under. A ZIP is sampled at its ends:
+/// its central directory at the end names every entry, and hashing a large
+/// comic whole would read the whole of it before the first page appears.
+pub fn doc_key(bytes: &PdfBytes, path: &Path) -> DocKey {
+    if bytes.starts_with(b"PK\x03\x04") {
+        DocKey::sampled(bytes, path)
+    } else {
+        DocKey::new(bytes, path)
+    }
+}
 
 /// Reads the file at `path`, with a user-facing message on failure.
 pub fn load_document(path: &Path) -> Result<PdfBytes, String> {
@@ -144,6 +156,25 @@ mod tests {
         std::fs::write(&path, b"").unwrap();
         let err = load_with(&path, 0, || None).unwrap_err();
         assert!(err.ends_with(": file is empty"), "{err}");
+    }
+
+    #[test]
+    fn a_zip_key_leaves_the_middle_alone_and_a_pdf_key_does_not() {
+        let path = Path::new("/papers/a");
+        let zip = |middle: u8| {
+            let mut bytes = vec![0u8; 3 * 1024 * 1024];
+            bytes[..4].copy_from_slice(b"PK\x03\x04");
+            bytes[1_500_000] = middle;
+            PdfBytes::from(bytes)
+        };
+        assert_eq!(doc_key(&zip(0), path).hex(), doc_key(&zip(1), path).hex());
+        let pdf = |middle: u8| {
+            let mut bytes = vec![0u8; 3 * 1024 * 1024];
+            bytes[..5].copy_from_slice(b"%PDF-");
+            bytes[1_500_000] = middle;
+            PdfBytes::from(bytes)
+        };
+        assert_ne!(doc_key(&pdf(0), path).hex(), doc_key(&pdf(1), path).hex());
     }
 
     #[test]

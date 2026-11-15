@@ -60,11 +60,11 @@ const START_POLL: Duration = Duration::from_millis(50);
 #[command(
     name = "noido",
     version = env!("NOIDO_VERSION"),
-    about = "PDF reader and note taker",
+    about = "PDF and comic reader, and note taker",
     group = clap::ArgGroup::new("install_or_uninstall").args(["install", "uninstall"])
 )]
 struct Args {
-    /// PDF file, or a file: or noido: link, to open
+    /// PDF or CBZ file, or a file: or noido: link, to open
     #[cfg_attr(
         target_os = "macos",
         arg(required_unless_present_any = ["install", "uninstall", "app_bundle", "foreground"])

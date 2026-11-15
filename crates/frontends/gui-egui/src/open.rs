@@ -31,7 +31,7 @@ pub type OnPicked = Arc<dyn Fn(&Path) + Send + Sync>;
 #[cfg(not(target_os = "macos"))]
 pub fn pick_pdf(frame: Option<&eframe::Frame>, directory: Option<PathBuf>, on_picked: OnPicked) {
     // Built before the thread: borrowing the window ends here.
-    let mut dialog = rfd::FileDialog::new().add_filter("PDF document", &["pdf"]);
+    let mut dialog = rfd::FileDialog::new().add_filter("PDF or comic book", &["pdf", "cbz"]);
     if let Some(frame) = frame {
         dialog = dialog.set_parent(frame);
     }
