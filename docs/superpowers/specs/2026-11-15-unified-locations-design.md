@@ -139,19 +139,27 @@ the window can't ask it where a location is. The engine hands the
 mapping over as a value instead, as it hands over page sizes:
 
 ```rust
-/// Whether pages come from layout (EPUB, markdown) rather than the file.
-fn reflows(&self) -> bool { false }
-/// Where each page's characters sit in the parts: per page, runs of
-/// characters, each starting at a `Location`. The default makes each
-/// page its own part.
+/// Where each page's characters sit in the parts: per page, its lines,
+/// each a run of characters starting at a `Location`, with its top and
+/// bottom on the page. The default makes each page its own part.
 fn locations(&self) -> LocationMap { LocationMap::identity() }
 ```
 
 `LocationMap` answers `location(page, char) -> Location` and
 `page_char(Location) -> Option<(usize, usize)>`, and the window keeps
-the current one beside the page sizes, replaced on every reflow. It
-arrives with L3, where text first reflows. In L2 the conversion is the
-identity, written as `From` between `Caret` and `Location`.
+the current one beside the page sizes, replaced on every reflow. Since
+each run is a line with its height on the page, the window finds the
+first character in view, and where its line is after a reflow, from the
+map alone, without waiting for page text. Whether a document reflows is
+the map's to say (`LocationMap::reflows()`): the identity map doesn't.
+It arrives with L3, where text first reflows. In L2 the conversion is
+the identity, written as `From` between `Caret` and `Location`.
+
+L3 is the core and the saved forms. Three things wait for the first
+reflowable engine, which brings their first caller: the render thread
+laying out again on request; what the layout key holds (L3 stores and
+compares it as an opaque string); and re-anchoring highlights in
+reflowable parts.
 
 The view, history, pins and the pagelet move to `Place` in L3 as well.
 For PDF their saved form is the same either way.
