@@ -92,7 +92,10 @@ jobs:
               run: |
                   set -eu
                   short=$(printf '%s' "$SHA" | cut -c1-8)
-                  stamp=$(date -u +%Y%m%d-%H%M)
+                  # Seconds, because the tag is the cask's version: two
+                  # presses inside one minute would otherwise be ordered by
+                  # the hash alone.
+                  stamp=$(date -u +%Y%m%d-%H%M%S)
                   tag="snapshot-$stamp-$short"
                   # The notes link to the archives this run uploaded, by the
                   # names in dist/, so a build that lost one fails here rather
