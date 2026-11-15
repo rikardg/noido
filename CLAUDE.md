@@ -17,6 +17,14 @@ is the daily driver; macOS and Windows build but are unchecked.
 - `docs/superpowers/plans/`: implementation plans for the larger ones.
 - `docs/investigations/`: write-ups of things looked into, once the
   user has made the exploration a task (see "How work goes").
+- `rikardg/homebrew-tap`: the snapshot cask for macOS;
+  `brew install --cask rikardg/tap/noido-snapshot` taps it and records
+  Homebrew's trust in one step (`brew trust --cask …` is only needed for
+  the short name after `brew tap`). Its hourly workflow reads this
+  repo's snapshot releases and rewrites the cask; nothing here pushes to
+  it, and it never needs a token. It strips `com.apple.quarantine` from
+  the bundle, which is why an unsigned snapshot opens without a prompt:
+  see `docs/superpowers/specs/2026-11-14-homebrew-snapshot-design.md`.
 - Test documents: tiny generated ones in `fixtures/` (`make_fixtures.py`),
   PDFs and `comic.cbz`; tests and examples use only these, so the repo
   stands on its own.

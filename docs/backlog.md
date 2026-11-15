@@ -214,9 +214,8 @@ when it is fixed.
   window handles). Only helps when the launcher supplies a token (file
   managers and the desktop do; terminals and editors often don't).
   Today the running window only asks for attention.
-- **Releases with dist:** versioning, a hand-written changelog, a
-  Homebrew formula, released from GitHub's Actions page after a dry run.
-  After the macOS port. See
+- **Releases with dist:** versioning, a hand-written changelog, released
+  from GitHub's Actions page after a dry run. After the macOS port. See
   `docs/investigations/2026-10-26-versioning-and-releases.md`.
 - **Bringing the window forward on Windows, checked on Windows:** the
   foreground rules may need `AllowSetForegroundWindow` from the second
