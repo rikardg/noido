@@ -3,8 +3,9 @@ name: Snapshot
 # One button press: build Linux and macOS, and add a pre-release to the
 # release list. Nothing is versioned by hand; the tag carries the time and the
 # commit, and each binary stamps the commit it came from into --version.
-# Tagged releases, the Homebrew formula and the macOS app stay with the
-# planned dist workflow (docs/investigations/2026-10-26-versioning-and-releases.md).
+# Tagged releases and the stable channel stay with the planned dist
+# workflow (docs/investigations/2026-10-26-versioning-and-releases.md); the
+# macOS app bundle here feeds the snapshot cask in rikardg/homebrew-tap.
 
 on:
     workflow_dispatch:
@@ -63,6 +64,10 @@ jobs:
               with:
                   tool: just
             - run: just snapshot ${{ matrix.target }}
+            # The macOS legs also pack the bundle the cask installs. The
+            # Linux leg has no use for one.
+            - run: just app-zip ${{ matrix.target }}
+              if: contains(matrix.target, 'apple-darwin')
             - uses: actions/upload-artifact@v7
               with:
                   name: ${{ matrix.target }}
@@ -108,9 +113,22 @@ jobs:
                           *x86_64-apple-darwin*) mac_intel=${f#dist/} ;;
                       esac
                   done
-                  for asset in "$linux" "$mac_arm" "$mac_intel"; do
+                  # The cask installs the bundle, so a release without one is
+                  # a release the tap cannot use: fail here instead of
+                  # publishing a dead source.
+                  app_arm= app_intel= app_arm_sha= app_intel_sha=
+                  for f in dist/*.app.zip dist/*.app.zip.sha256; do
+                      case "$f" in
+                          *aarch64-apple-darwin*.sha256) app_arm_sha=${f#dist/} ;;
+                          *x86_64-apple-darwin*.sha256) app_intel_sha=${f#dist/} ;;
+                          *aarch64-apple-darwin*) app_arm=${f#dist/} ;;
+                          *x86_64-apple-darwin*) app_intel=${f#dist/} ;;
+                      esac
+                  done
+                  for asset in "$linux" "$mac_arm" "$mac_intel" "$app_arm" "$app_intel" \
+                               "$app_arm_sha" "$app_intel_sha"; do
                       if [ -z "$asset" ]; then
-                          echo "dist/ is missing an archive: linux=$linux arm=$mac_arm intel=$mac_intel" >&2
+                          echo "dist/ is missing an archive: linux=$linux arm=$mac_arm intel=$mac_intel app_arm=$app_arm app_intel=$app_intel app_arm_sha=$app_arm_sha app_intel_sha=$app_intel_sha" >&2
                           exit 1
                       fi
                   done
@@ -131,6 +149,18 @@ jobs:
                   **macOS, Intel**
 
                       curl -fLO $release/$mac_intel
+
+                  **macOS app, Apple Silicon** (the Homebrew cask installs this)
+
+                      curl -fLO $release/$app_arm
+
+                  **macOS app, Intel** (the Homebrew cask installs this)
+
+                      curl -fLO $release/$app_intel
+
+                  The app bundles are what \`rikardg/tap/noido-snapshot\`
+                  installs; the cask's updater reads their names from this
+                  page.
 
                   Use \`curl\` to avoid the download being quarantined on macOS, or clear the quarantine attribute with:
 
