@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use noido_core::{
     Caret, DocPoint, Highlight, HighlightColour, History, Location, PageTransform, PageTransforms,
-    Pins, Quote, Rotation, SidebarState, SidebarTab, ViewState, ZoomMode,
+    Pins, Place, Quote, Rotation, SidebarState, SidebarTab, ViewState, ZoomMode,
 };
 use noido_state::{DocKey, DocState, Frame, Pagelet, Slot, Store};
 use tempfile::TempDir;
@@ -49,12 +49,12 @@ fn highlight(start: (usize, usize), end: (usize, usize), colour: HighlightColour
 }
 
 /// A history entry: just a place on a page.
-fn point(page: usize) -> DocPoint {
-    DocPoint {
+fn point(page: usize) -> Place {
+    Place::Point(DocPoint {
         page,
         x: 10.0,
         y: 20.5,
-    }
+    })
 }
 
 /// The state `store` has for `key`.
@@ -742,11 +742,11 @@ fn an_old_history_entry_loads_as_its_point() {
             ..Default::default()
         },
         history: History::from_parts(
-            vec![DocPoint {
+            vec![Place::Point(DocPoint {
                 page: 50,
                 x: 288.0,
                 y: 411.3435,
-            }],
+            })],
             vec![],
         ),
         ..state(3)

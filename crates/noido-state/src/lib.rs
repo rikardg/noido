@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use directories::ProjectDirs;
 use noido_core::{
     DocPoint, Highlight, HighlightColour, Highlights, History, Location, PageTransform,
-    PageTransforms, Pins, Quote, Rotation, SIDEBAR_DEFAULT_WIDTH, SidebarState, SidebarTab,
+    PageTransforms, Pins, Place, Quote, Rotation, SIDEBAR_DEFAULT_WIDTH, SidebarState, SidebarTab,
     ViewState, ZoomMode,
 };
 use serde::{Deserialize, Serialize};
@@ -470,7 +470,7 @@ struct Entry {
     /// Seconds since the Unix epoch.
     saved: u64,
     #[serde(flatten)]
-    place: Place,
+    place: StoredView,
     // Absent from files written before the sidebar existed.
     #[serde(default)]
     sidebar_open: bool,
@@ -529,7 +529,7 @@ struct StoredPagelet {
 
 /// The TOML form of the document's own [`ViewState`].
 #[derive(Serialize, Deserialize)]
-struct Place {
+struct StoredView {
     zoom: Zoom,
     scale: f32,
     continuous: bool,
@@ -560,7 +560,7 @@ enum Zoom {
     Custom,
 }
 
-impl Place {
+impl StoredView {
     fn new(state: &ViewState) -> Self {
         Self {
             zoom: match state.zoom {
@@ -628,14 +628,23 @@ impl Point {
 
 impl Entry {
     fn new(path: &Path, window: &str, doc: &DocState) -> Self {
-        let places = |points: &[DocPoint]| points.iter().map(Point::new).collect();
+        // Points only, until places in text have a saved form.
+        let places = |places: &[Place]| {
+            places
+                .iter()
+                .filter_map(|place| match place {
+                    Place::Point(p) => Some(Point::new(p)),
+                    Place::Text(_) => None,
+                })
+                .collect()
+        };
         Self {
             version: VERSION,
             path: path.to_string_lossy().into_owned(),
             saved: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),
-            place: Place::new(&doc.view),
+            place: StoredView::new(&doc.view),
             sidebar_open: doc.sidebar.open,
             sidebar_width: doc.sidebar.width,
             sidebar_tab: match doc.sidebar.last {
@@ -670,7 +679,7 @@ impl Entry {
     }
 
     fn state(&self) -> DocState {
-        let states = |points: &[Point]| points.iter().map(Point::state).collect();
+        let states = |points: &[Point]| points.iter().map(|p| Place::Point(p.state())).collect();
         let tab = match self.sidebar_tab.as_str() {
             "outline" => SidebarTab::Outline,
             "pins" => SidebarTab::Pins,
