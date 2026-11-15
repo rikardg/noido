@@ -318,7 +318,10 @@ fn pins_round_trip_and_stay_sorted() {
         ..state(3)
     };
     store.save(&slot(&store, &key), &saved).unwrap();
-    assert_eq!(loaded(&store, &key).unwrap().pins.pages(), [2, 5, 9]);
+    assert_eq!(
+        loaded(&store, &key).unwrap().pins,
+        Pins::from_sorted([2, 5, 9])
+    );
 }
 
 #[test]
@@ -344,7 +347,10 @@ fn duplicate_pins_are_dropped_on_load() {
         format!("{}\npins = [7, 2, 7]\n", fs::read_to_string(&file).unwrap()),
     )
     .unwrap();
-    assert_eq!(loaded(&store, &key).unwrap().pins.pages(), [2, 7]);
+    assert_eq!(
+        loaded(&store, &key).unwrap().pins,
+        Pins::from_sorted([2, 7])
+    );
 }
 
 fn turned(rotation: Rotation) -> PageTransform {

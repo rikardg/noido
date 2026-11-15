@@ -115,6 +115,8 @@ pub struct Input<'a> {
     pub current_entry: Option<usize>,
     /// The pages the reader pinned.
     pub pins: &'a Pins,
+    /// Where the pins' characters are now.
+    pub locations: &'a noido_engine::LocationMap,
     /// How the reader turns pages, for the right-click menu's check.
     pub transforms: &'a noido_render::Transforms,
     /// The page the pagelet shows, if it is open.
@@ -1010,7 +1012,7 @@ impl SidebarView {
             // The pin, over the page's corner: a press on it pins or
             // unpins, on both tabs, and does not click the card.
             let pin = pin_rect(rect);
-            let pinned = input.pins.contains(page);
+            let pinned = input.pins.contains(page, input.locations);
             let response = ui.interact(pin, id.with("pin"), Sense::click());
             if response.clicked() {
                 toggled = Some(page);
@@ -1086,7 +1088,7 @@ impl SidebarView {
         ui.spacing_mut().scroll.kinetic.rubber_band = false;
         let pinned: Vec<usize> = input
             .pins
-            .pages()
+            .pages(input.locations)
             .iter()
             .copied()
             .filter(|&page| input.layout.page_size(page).is_some())

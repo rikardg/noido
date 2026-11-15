@@ -1166,7 +1166,7 @@ impl NoidoApp {
             // Clamps to the last page when pages were lost.
             view.restore(state);
         }
-        self.pins.retain_below(page_count);
+        self.pins.retain_below(page_count, &self.locations);
         if self
             .pin_preview
             .as_ref()
@@ -1255,7 +1255,8 @@ impl NoidoApp {
             self.history = state.history.clone();
             self.highlights = Highlights::from_items(state.highlights.clone());
             self.pins = state.pins.clone();
-            self.pins.retain_below(self.view.layout().page_count());
+            self.pins
+                .retain_below(self.view.layout().page_count(), &self.locations);
             self.pagelet = state.pagelet.map(|pagelet| Pagelet {
                 page: None,
                 ..pagelet
@@ -3256,6 +3257,7 @@ impl NoidoApp {
                 outline: self.links.outline.as_mut(),
                 current_entry,
                 pins: &self.pins,
+                locations: &self.locations,
                 preview: self.pin_preview.as_ref().map(|preview| preview.page),
                 transforms: &self.transforms,
             };
@@ -3286,7 +3288,7 @@ impl NoidoApp {
                 self.browse = output.browsing;
             }
             if let Some(page) = output.toggle_pin {
-                let pinned = self.pins.toggle(page);
+                let pinned = self.pins.toggle(page, &self.locations);
                 if !pinned
                     && self
                         .pin_preview
@@ -9606,13 +9608,13 @@ pub(crate) mod tests {
         let mut h = sidebar_on(Arc::new(BlankEngine));
         h.click(pin_rect(&h, 2).center());
         h.frames(2, vec![]);
-        assert!(h.app.pins.contains(2));
+        assert!(h.app.pins.contains(2, &h.app.locations));
         assert_eq!(h.app.chosen, None, "it navigated");
         assert_eq!(h.app.current_page(), Some(0));
         // Again unpins.
         h.click(pin_rect(&h, 2).center());
         h.frames(2, vec![]);
-        assert!(!h.app.pins.contains(2));
+        assert!(!h.app.pins.contains(2, &h.app.locations));
     }
 
     #[test]
@@ -9658,7 +9660,10 @@ pub(crate) mod tests {
         // The middle of the card, clear of the pin.
         h.click(thumb_rect(&h, 2).center());
         h.frames(2, vec![]);
-        assert!(h.app.pins.pages().is_empty(), "the card click pinned");
+        assert!(
+            h.app.pins.pages(&h.app.locations).is_empty(),
+            "the card click pinned"
+        );
         assert_eq!(h.app.current_page(), Some(2));
     }
 
@@ -9689,7 +9694,7 @@ pub(crate) mod tests {
         let h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), Some(restored))
         });
-        assert_eq!(h.app.pins.pages(), [2, 7]);
+        assert_eq!(h.app.pins.pages(&h.app.locations), [2, 7]);
     }
 
     /// A harness with pins set, the sidebar open, on the Pins tab.
@@ -9747,7 +9752,7 @@ pub(crate) mod tests {
         h.click(pin_rect(&h, 2).center());
         // Longer than the double-click window.
         h.frames(40, vec![]);
-        assert!(!h.app.pins.contains(2));
+        assert!(!h.app.pins.contains(2, &h.app.locations));
         assert!(h.app.pin_preview.is_none(), "it previewed");
         assert!(drawn_pages(&h).is_empty(), "the card stayed");
     }
@@ -10270,7 +10275,10 @@ pub(crate) mod tests {
         click_tab(&mut h, SidebarTab::Thumbnails);
         h.click(pin_rect(&h, 2).center());
         h.frames(40, vec![]);
-        assert!(h.app.pins.contains(2), "the pin did not pin");
+        assert!(
+            h.app.pins.contains(2, &h.app.locations),
+            "the pin did not pin"
+        );
         assert!(h.app.pin_preview.is_none(), "the pin opened the pagelet");
     }
 
@@ -10762,7 +10770,7 @@ pub(crate) mod tests {
         click_tab(&mut h, SidebarTab::Thumbnails);
         h.click(pin_rect(&h, 2).center());
         h.frames(2, vec![]);
-        assert!(!h.app.pins.contains(2));
+        assert!(!h.app.pins.contains(2, &h.app.locations));
         assert!(h.app.pin_preview.is_none());
     }
 
@@ -10772,7 +10780,11 @@ pub(crate) mod tests {
         open_pagelet(&mut h, 9);
         h.reload(Arc::new(SizedEngine::letter(3)), recompiled_key());
         h.frames(2, vec![]);
-        assert!(h.app.pins.pages().is_empty(), "{:?}", h.app.pins.pages());
+        assert!(
+            h.app.pins.pages(&h.app.locations).is_empty(),
+            "{:?}",
+            h.app.pins.pages(&h.app.locations)
+        );
         assert!(h.app.pin_preview.is_none());
     }
 

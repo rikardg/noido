@@ -658,7 +658,16 @@ impl Entry {
             back: places(doc.history.back_entries()),
             forward: places(doc.history.forward_entries()),
             highlights: doc.highlights.iter().map(StoredHighlight::new).collect(),
-            pins: doc.pins.pages().to_vec(),
+            // Pages only, until pins in text have a saved form.
+            pins: doc
+                .pins
+                .places()
+                .iter()
+                .filter_map(|place| match place {
+                    Place::Point(p) => Some(p.page),
+                    Place::Text(_) => None,
+                })
+                .collect(),
             pagelet: doc.pagelet.map(|pagelet| StoredPagelet {
                 x: pagelet.x,
                 y: pagelet.y,
