@@ -14,9 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
 use noido_core::{
-    Caret, DocPoint, Highlight, HighlightColour, Highlights, History, PageTransform,
-    PageTransforms, Pins, Rotation, SIDEBAR_DEFAULT_WIDTH, SidebarState, SidebarTab, ViewState,
-    ZoomMode,
+    DocPoint, Highlight, HighlightColour, Highlights, History, Location, PageTransform,
+    PageTransforms, Pins, Quote, Rotation, SIDEBAR_DEFAULT_WIDTH, SidebarState, SidebarTab,
+    ViewState, ZoomMode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -702,36 +702,61 @@ impl Entry {
 /// The TOML form of a highlight.
 #[derive(Serialize, Deserialize)]
 struct StoredHighlight {
-    start_page: usize,
+    // The aliases are the names before parts: read until TODO M5; the old
+    // names went out with L2.
+    #[serde(alias = "start_page")]
+    start_part: usize,
     start_char: usize,
-    end_page: usize,
+    #[serde(alias = "end_page")]
+    end_part: usize,
     end_char: usize,
     colour: StoredColour,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    suffix: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    orphaned: bool,
 }
 
 impl StoredHighlight {
     fn new(highlight: &Highlight) -> Self {
+        let quote = highlight.quote.as_ref();
         Self {
-            start_page: highlight.start.part,
+            start_part: highlight.start.part,
             start_char: highlight.start.char,
-            end_page: highlight.end.part,
+            end_part: highlight.end.part,
             end_char: highlight.end.char,
             colour: StoredColour::new(&highlight.colour),
+            quote: quote.map(|q| q.exact.clone()),
+            prefix: quote.map(|q| q.prefix.clone()).filter(|p| !p.is_empty()),
+            suffix: quote.map(|q| q.suffix.clone()).filter(|p| !p.is_empty()),
+            orphaned: highlight.orphaned,
         }
     }
 
     fn highlight(&self) -> Highlight {
-        Highlight::new(
-            Caret {
-                page: self.start_page,
+        Highlight {
+            start: Location {
+                part: self.start_part,
                 char: self.start_char,
             },
-            Caret {
-                page: self.end_page,
+            end: Location {
+                part: self.end_part,
                 char: self.end_char,
             },
-            self.colour.colour(),
-        )
+            colour: self.colour.colour(),
+            // A quote loads only with its exact text; a missing prefix
+            // or suffix is empty.
+            quote: self.quote.as_ref().map(|exact| Quote {
+                exact: exact.clone(),
+                prefix: self.prefix.clone().unwrap_or_default(),
+                suffix: self.suffix.clone().unwrap_or_default(),
+            }),
+            orphaned: self.orphaned,
+        }
     }
 }
 
