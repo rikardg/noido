@@ -1,0 +1,23 @@
+[package]
+name = "typeset"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = ["typst", "parley"]
+typst = ["dep:typst", "dep:typst-layout", "dep:typst-render", "dep:typst-assets"]
+parley = ["dep:parley", "dep:skrifa", "dep:hypher"]
+
+[dependencies]
+tiny-skia = "0.12"
+typst = { version = "0.15.1", optional = true }
+typst-layout = { version = "0.15.1", optional = true }
+typst-render = { version = "0.15.1", optional = true }
+typst-assets = { version = "0.15.1", features = ["fonts"], optional = true }
+parley = { version = "0.13", default-features = false, features = ["std"], optional = true }
+skrifa = { version = "0.49", optional = true }
+hypher = { version = "0.1.8", optional = true }
+
+[profile.release]
+debug = false
