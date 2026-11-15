@@ -226,6 +226,8 @@ pub struct Pages<'a> {
 
 #[derive(Default)]
 pub struct State {
+    /// A highlight was resized since last [`State::take_resized`].
+    resized: bool,
     /// With the select tool on, a plain drag selects.
     pub tool: bool,
     pub selection: Option<Selection>,
@@ -270,6 +272,11 @@ pub struct State {
 }
 
 impl State {
+    /// Whether a highlight was resized since last asked.
+    pub fn take_resized(&mut self) -> bool {
+        std::mem::take(&mut self.resized)
+    }
+
     /// Drops the selection and any drag: a new version of the document.
     pub fn clear(&mut self) {
         self.selection = None;
@@ -306,7 +313,9 @@ impl State {
             .and_then(|s| s.carets());
         match selected {
             Some((start, end)) => {
-                highlights.set_range(index, start, end);
+                if highlights.set_range(index, start, end) {
+                    self.resized = true;
+                }
                 self.selection = Some(Selection {
                     anchor: Spot::At(start),
                     focus: Spot::At(end),

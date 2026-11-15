@@ -122,6 +122,17 @@ pub struct Incoming {
     pub take: Box<dyn FnMut() -> Vec<std::ffi::OsString> + Send>,
 }
 
+/// Asking the text thread to find the highlights again, and what is
+/// owed from it.
+#[derive(Default)]
+struct Anchoring {
+    /// The list last sent; an answer to any other is out of date.
+    sent: Option<Vec<Highlight>>,
+    /// Whether the request under way lets highlights without a quote take
+    /// one.
+    fill: bool,
+}
+
 pub struct NoidoApp {
     renderer: Renderer,
     /// How the reader turns pages, shared with every thread's document.
@@ -207,6 +218,8 @@ pub struct NoidoApp {
     sidebar_opened_by_search: bool,
     /// The text thread, and the current query's hits.
     search_state: Search,
+    /// The text thread's work on finding the highlights again.
+    anchoring: Anchoring,
     /// Where the title bar's parts were drawn last frame.
     bar: titlebar::Rects,
     /// Esc is down, by noido's count; see `fresh_escape`.
@@ -380,6 +393,7 @@ impl NoidoApp {
             search: String::new(),
             sidebar_opened_by_search: false,
             search_state: Search::new(),
+            anchoring: Anchoring::default(),
             bar: titlebar::Rects::default(),
             escape_down: false,
             escape_fullscreen: None,
@@ -466,6 +480,7 @@ impl NoidoApp {
     /// Searches the document's text with `searcher`.
     pub fn with_searcher(mut self, searcher: TextSearcher) -> Self {
         self.search_state.set_searcher(searcher);
+        self.anchor_opened();
         self
     }
 
@@ -675,6 +690,61 @@ impl NoidoApp {
             && let Some(current) = self.search_state.hits.current()
         {
             self.go_to_hit(current);
+        }
+    }
+
+    /// Anchors the highlights a document opened with, once both the saved
+    /// state and the text thread are in place. A document whose file was
+    /// edited since the state was saved takes no new quotes: its quotes
+    /// come from text that is no longer there.
+    fn anchor_opened(&mut self) {
+        if let Some(persistence) = &self.persistence {
+            let fill = !persistence.slot.edited();
+            self.anchor(fill);
+        }
+    }
+
+    /// Asks the text thread to find the highlights again. A request still
+    /// under way is replaced, and `fill_missing` is kept only if both
+    /// meant it.
+    fn anchor(&mut self, fill_missing: bool) {
+        if self.highlights.items().is_empty() {
+            return;
+        }
+        let fill = fill_missing && (self.anchoring.sent.is_none() || self.anchoring.fill);
+        let items = self.highlights.items().to_vec();
+        if self.search_state.anchor(items.clone(), fill) {
+            self.anchoring = Anchoring {
+                sent: Some(items),
+                fill,
+            };
+        }
+    }
+
+    /// Asks for anchoring after a highlight was resized, and takes in the
+    /// answers.
+    fn update_anchoring(&mut self) {
+        if self.select.take_resized() {
+            self.anchor(true);
+        }
+        for (asked, answer) in self.search_state.take_anchored() {
+            if self.anchoring.sent.as_ref() != Some(&asked) {
+                // A newer answer is coming.
+                continue;
+            }
+            if asked == self.highlights.items() {
+                self.highlights.anchored(answer.items, answer.relocated);
+                if answer.relocated {
+                    // The selection and the edited highlight are at the old place.
+                    self.select.clear();
+                }
+                self.anchoring = Anchoring::default();
+            } else {
+                // Changed in a way that sent nothing, a colour or a removal.
+                let fill = self.anchoring.fill;
+                self.anchoring.sent = None;
+                self.anchor(fill);
+            }
         }
     }
 
@@ -1104,6 +1174,8 @@ impl NoidoApp {
         }
         self.sidebar_view.replace(reload.sidebar, page_count);
         self.search_state.set_searcher(reload.searcher);
+        self.anchoring = Anchoring::default();
+        self.anchor(false);
         self.links.set_linker(reload.linker, page_count);
         self.texts.reset(page_count);
         self.select.clear();
@@ -1177,6 +1249,7 @@ impl NoidoApp {
             changed: None,
             warned: false,
         });
+        self.anchor_opened();
         self
     }
 
@@ -1595,11 +1668,13 @@ impl NoidoApp {
             Action::Undo => {
                 if self.highlights.undo() {
                     self.select.clear();
+                    self.anchor(true);
                 }
             }
             Action::Redo => {
                 if self.highlights.redo() {
                     self.select.clear();
+                    self.anchor(true);
                 }
             }
             Action::Copy => self.copy_selection(ctx),
@@ -2449,6 +2524,7 @@ impl NoidoApp {
                 && start < end
             {
                 self.select.editing = self.highlights.add(Highlight::new(start, end, colour));
+                self.anchor(true);
             }
         }
         if delete && let Some(index) = self.select.editing {
@@ -3108,6 +3184,7 @@ impl NoidoApp {
         }
         self.title_bar(ui, parent);
         self.update_search(&ctx);
+        self.update_anchoring();
         for (page, text, transform) in self.search_state.take_texts() {
             // Read before the page last turned.
             if transform == self.transforms.get(page) {
@@ -11501,6 +11578,12 @@ pub(crate) mod tests {
             }
         }
 
+        fn close_gate(&self) {
+            if let Some(gate) = &self.gate {
+                *gate.0.lock().unwrap() = false;
+            }
+        }
+
         fn calls(&self) -> usize {
             self.calls.load(std::sync::atomic::Ordering::SeqCst)
         }
@@ -14451,8 +14534,19 @@ pub(crate) mod tests {
         assert_eq!(selected_on(&h, 0), Some(0..7));
         assert!(h.app.select.bar_rect.is_some(), "the bar stays open");
         assert!(h.app.select.delete_rect.is_some(), "the bar offers delete");
+        // The quote may arrive from the text thread at any time.
+        let items: Vec<_> = h
+            .app
+            .highlights
+            .items()
+            .iter()
+            .map(|i| Highlight {
+                quote: None,
+                ..i.clone()
+            })
+            .collect();
         assert_eq!(
-            h.app.highlights.items(),
+            items,
             [Highlight::new(
                 Caret { page: 0, char: 0 },
                 Caret { page: 0, char: 7 },
@@ -14481,6 +14575,290 @@ pub(crate) mod tests {
             "not at {zoomed:?}"
         );
         assert!(!rects.iter().any(|r| r.contains(at)), "still at {at:?}");
+    }
+
+    // ---- Anchoring highlights ----
+
+    fn quotes(h: &Harness) -> Vec<Option<String>> {
+        h.app
+            .highlights
+            .items()
+            .iter()
+            .map(|i| i.quote.as_ref().map(|q| q.exact.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn made_highlight_gains_a_quote() {
+        let (mut h, _) = selecting();
+        highlight_the_cat(&mut h);
+        h.until(|h| h.app.highlights.items()[0].quote.is_some());
+        assert_eq!(quotes(&h), vec![Some("the cat".to_owned())]);
+    }
+
+    #[test]
+    fn reload_moves_a_highlight_with_its_text() {
+        let (mut h, _) = selecting();
+        highlight_the_cat(&mut h);
+        h.until(|h| h.app.highlights.items()[0].quote.is_some());
+        let moved =
+            TextEngine::new(&[&["so the cat sat", "on the mat"], &["a dog"], &["one more"]]);
+        h.reload(Arc::new(moved), recompiled_key());
+        h.until(|h| h.app.highlights.items()[0].start.char == 3);
+        let item = &h.app.highlights.items()[0];
+        assert_eq!((item.start.char, item.end.char), (3, 10));
+        assert!(!item.orphaned);
+    }
+
+    #[test]
+    fn reload_orphans_a_highlight_whose_text_went() {
+        let (mut h, _) = selecting();
+        highlight_the_cat(&mut h);
+        h.until(|h| h.app.highlights.items()[0].quote.is_some());
+        let gone = TextEngine::new(&[&["a dog sat", "on the mat"], &["a dog"], &["one more"]]);
+        h.reload(Arc::new(gone), recompiled_key());
+        h.until(|h| h.app.highlights.items()[0].orphaned);
+        assert!(h.app.highlights.items()[0].orphaned);
+        h.frames(2, vec![]);
+        let dark = h.ctx.global_style().visuals.dark_mode;
+        let fill = select::highlight_fill(HighlightColour::Yellow, dark);
+        assert!(filled_with(&h, fill).is_empty(), "still drawn");
+        assert_eq!(h.app.doc_state().unwrap().highlights.len(), 1);
+    }
+
+    #[test]
+    fn reload_with_fewer_pages_keeps_drawing() {
+        let (mut h, _) = selecting();
+        h.app.highlights.add(Highlight::new(
+            Caret { page: 2, char: 0 },
+            Caret { page: 2, char: 3 },
+            HighlightColour::Yellow,
+        ));
+        h.app.anchor(true);
+        h.until(|h| h.app.highlights.items()[0].quote.is_some());
+        let shorter = TextEngine::new(&[&["the cat sat", "on the mat"]]);
+        h.reload(Arc::new(shorter), recompiled_key());
+        h.until(|h| {
+            let item = &h.app.highlights.items()[0];
+            item.orphaned || item.start.part == 0
+        });
+        let item = &h.app.highlights.items()[0];
+        assert!(item.orphaned || item.start.part == 0, "{item:?}");
+    }
+
+    #[test]
+    fn change_during_anchoring_is_kept() {
+        let engine =
+            TextEngine::new(&[&["the cat sat", "on the mat"], &["a dog"], &["one more"]]).gated();
+        engine.open_gate();
+        let mut h = searching(&engine);
+        h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
+        // The text thread forgets the page, and reads it again behind the gate.
+        h.app.search_state.forget(0);
+        engine.close_gate();
+        highlight_the_cat(&mut h);
+        // A second highlight, on the line below, while the first waits.
+        h.app.select.clear();
+        drag_text(&mut h, 0, (73.0, 115.0), (100.0, 115.0), Modifiers::SHIFT);
+        h.frames(1, vec![]);
+        let index = HighlightColour::ALL.len() - 1;
+        let swatch = h.app.select.swatches[index].expect("the bar offers the colours");
+        h.click(swatch.center());
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.items().len(), 2);
+        engine.open_gate();
+        h.until(|h| h.app.highlights.items().iter().all(|i| i.quote.is_some()));
+        assert!(quotes(&h).iter().all(Option::is_some), "{:?}", quotes(&h));
+        assert_eq!(h.app.highlights.items().len(), 2);
+    }
+
+    /// A gated `selecting()`: the text thread reads page 0 again behind a
+    /// closed gate, so anchoring waits until it opens.
+    fn selecting_gated() -> (Harness, TextEngine) {
+        let engine =
+            TextEngine::new(&[&["the cat sat", "on the mat"], &["a dog"], &["one more"]]).gated();
+        engine.open_gate();
+        let mut h = searching(&engine);
+        h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
+        h.app.search_state.forget(0);
+        engine.close_gate();
+        (h, engine)
+    }
+
+    /// Makes a second highlight on "on the" with the last swatch.
+    fn highlight_on_the(h: &mut Harness) {
+        h.app.select.clear();
+        drag_text(h, 0, (73.0, 115.0), (100.0, 115.0), Modifiers::SHIFT);
+        h.frames(1, vec![]);
+        let index = HighlightColour::ALL.len() - 1;
+        let swatch = h.app.select.swatches[index].expect("the bar offers the colours");
+        h.click(swatch.center());
+        h.frames(1, vec![]);
+    }
+
+    #[test]
+    fn a_colour_changed_during_anchoring_is_kept() {
+        let (mut h, engine) = selecting_gated();
+        highlight_the_cat(&mut h);
+        assert_eq!(h.app.select.editing, Some(0));
+        let swatch = h.app.select.swatches[1].expect("the bar offers the colours");
+        h.click(swatch.center());
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.items()[0].colour, HighlightColour::ALL[1]);
+        engine.open_gate();
+        h.until(|h| h.app.highlights.items()[0].quote.is_some());
+        assert!(h.app.highlights.items()[0].quote.is_some(), "no quote");
+        assert_eq!(h.app.highlights.items()[0].colour, HighlightColour::ALL[1]);
+    }
+
+    #[test]
+    fn a_removal_during_anchoring_is_kept() {
+        let (mut h, engine) = selecting_gated();
+        highlight_the_cat(&mut h);
+        highlight_on_the(&mut h);
+        assert_eq!(h.app.highlights.items().len(), 2);
+        let delete = h.app.select.delete_rect.expect("the bar offers delete");
+        h.click(delete.center());
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.items().len(), 1);
+        engine.open_gate();
+        h.until(|h| h.app.highlights.items()[0].quote.is_some());
+        assert_eq!(h.app.highlights.items().len(), 1);
+        assert_eq!(quotes(&h), vec![Some("the cat".to_owned())]);
+    }
+
+    #[test]
+    fn a_relocation_drops_editing() {
+        let (mut h, _) = selecting();
+        highlight_the_cat(&mut h);
+        h.until(|h| h.app.highlights.items()[0].quote.is_some());
+        let moved =
+            TextEngine::new(&[&["so the cat sat", "on the mat"], &["a dog"], &["one more"]])
+                .gated();
+        h.reload(Arc::new(moved.clone()), recompiled_key());
+        let (start, end) = {
+            let item = &h.app.highlights.items()[0];
+            (item.start, item.end)
+        };
+        h.app.select.editing = Some(0);
+        h.app.select.selection = Some(noido_core::Selection {
+            anchor: noido_core::Spot::At(start.into()),
+            focus: noido_core::Spot::At(end.into()),
+        });
+        moved.open_gate();
+        h.until(|h| h.app.highlights.items()[0].start.char == 3);
+        assert_eq!(h.app.highlights.items()[0].start.char, 3);
+        assert_eq!(h.app.select.editing, None);
+        assert_eq!(h.app.select.selection, None);
+    }
+
+    /// A harness for a document opened with `highlight` saved, its file
+    /// `edited` since or not.
+    fn opened_with(
+        engine: TextEngine,
+        highlight: Highlight,
+        edited: bool,
+    ) -> (Harness, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let saved_as = if edited {
+            DocKey::new(b"the old version", std::path::Path::new("/test.pdf"))
+        } else {
+            test_key()
+        };
+        let state = DocState {
+            view: ViewState {
+                zoom: noido_core::ZoomMode::FitWidth,
+                scale: 1.0,
+                continuous: true,
+                dual: false,
+                odd_left: true,
+                gapless: false,
+                centre: noido_core::DocPoint {
+                    page: 0,
+                    x: 306.0,
+                    y: 400.0,
+                },
+            },
+            sidebar: SidebarState::default(),
+            history: History::default(),
+            highlights: vec![highlight],
+            pins: Pins::default(),
+            pagelet: None,
+            transforms: noido_core::PageTransforms::default(),
+        };
+        let first = store.load(saved_as).0;
+        store.save(&first, &state).unwrap();
+        let (slot, restored) = store.load(test_key());
+        assert_eq!(slot.edited(), edited);
+        let searcher = engine.clone();
+        let path = dir.path().to_owned();
+        let h = Harness::build_with(Arc::new(engine), move |app| {
+            app.with_searcher(TextSearcher::start(
+                Arc::new(searcher),
+                PdfBytes::default(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            ))
+            .with_persistence(Store::at(&path), slot, restored)
+        });
+        (h, dir)
+    }
+
+    fn the_cat() -> Highlight {
+        Highlight::new(
+            Caret { page: 0, char: 0 },
+            Caret { page: 0, char: 7 },
+            HighlightColour::Yellow,
+        )
+    }
+
+    #[test]
+    fn opening_fills_a_missing_quote() {
+        let engine = TextEngine::new(&[&["the cat sat", "on the mat"], &["a dog"], &["one more"]]);
+        let (mut h, _dir) = opened_with(engine, the_cat(), false);
+        h.until(|h| h.app.highlights.items()[0].quote.is_some());
+        assert_eq!(quotes(&h), vec![Some("the cat".to_owned())]);
+    }
+
+    #[test]
+    fn opening_an_edited_file_takes_no_new_quote() {
+        let engine =
+            TextEngine::new(&[&["the cat sat", "on the mat"], &["a dog"], &["one more"]]).gated();
+        let (mut h, _dir) = opened_with(engine.clone(), the_cat(), true);
+        assert!(h.app.anchoring.sent.is_some(), "anchoring was asked for");
+        engine.open_gate();
+        h.until(|h| h.app.anchoring.sent.is_none());
+        assert!(h.app.anchoring.sent.is_none(), "never answered");
+        assert_eq!(quotes(&h), vec![None]);
+    }
+
+    #[test]
+    fn a_resized_highlight_gets_a_quote_for_its_new_range() {
+        let (mut h, _) = selecting();
+        highlight_the_cat(&mut h);
+        h.until(|h| h.app.highlights.items()[0].quote.is_some());
+        h.frames(1, vec![]);
+        let end = h.app.select.handles[1].expect("the end's handle shows");
+        let step = screen_pos(&h, 0, 126.0, 95.0).x - screen_pos(&h, 0, 114.0, 95.0).x;
+        h.drag(end, vec2(step, 0.0));
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.items()[0].end.char, 9);
+        h.until(|h| h.app.highlights.items()[0].quote.is_some());
+        assert_eq!(quotes(&h), vec![Some("the cat s".to_owned())]);
+    }
+
+    #[test]
+    fn undo_to_a_list_without_a_quote_fills_it_again() {
+        let (mut h, engine) = selecting_gated();
+        highlight_the_cat(&mut h);
+        highlight_on_the(&mut h);
+        engine.open_gate();
+        h.until(|h| h.app.highlights.items().iter().all(|i| i.quote.is_some()));
+        // The list before the second highlight was kept without a quote.
+        h.press(egui::Key::Z, Modifiers::COMMAND);
+        h.until(|h| h.app.highlights.items().len() == 1 && h.app.anchoring.sent.is_none());
+        assert_eq!(quotes(&h), vec![Some("the cat".to_owned())]);
     }
 
     #[test]

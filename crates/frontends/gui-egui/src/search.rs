@@ -3,7 +3,7 @@
 //! characters.
 
 use eframe::egui::Color32;
-use noido_core::Hits;
+use noido_core::{Anchored, Highlight, Hits};
 use std::sync::Arc;
 
 use noido_core::PageTransform;
@@ -77,6 +77,8 @@ pub struct Search {
     pub at_hit: bool,
     /// Pages' text that arrived, for [`Search::take_texts`].
     texts: Vec<(usize, Arc<PageText>, PageTransform)>,
+    /// Anchoring answers that arrived, for [`Search::take_anchored`].
+    anchored: Vec<(Vec<Highlight>, Anchored)>,
 }
 
 impl Search {
@@ -95,6 +97,7 @@ impl Search {
             first: First::Done,
             at_hit: false,
             texts: Vec::new(),
+            anchored: Vec::new(),
         }
     }
 
@@ -261,6 +264,7 @@ impl Search {
                     transform,
                 } => self.texts.push((page, text, transform)),
                 SearchUpdate::Counts(counted) => self.counts = Some(counted),
+                SearchUpdate::Anchored { asked, answer } => self.anchored.push((asked, answer)),
                 _ => {}
             }
         }
@@ -280,6 +284,22 @@ impl Search {
         if let Some(searcher) = &self.searcher {
             searcher.forget(page);
         }
+    }
+
+    /// Asks the text thread to find `highlights` again; the answer comes
+    /// through [`Search::take_anchored`]. `false` with no text thread.
+    pub fn anchor(&self, highlights: Vec<Highlight>, fill_missing: bool) -> bool {
+        let Some(searcher) = &self.searcher else {
+            return false;
+        };
+        searcher.anchor(highlights, fill_missing);
+        true
+    }
+
+    /// The anchoring answers that arrived since last asked, each with the
+    /// list that was asked about.
+    pub fn take_anchored(&mut self) -> Vec<(Vec<Highlight>, Anchored)> {
+        std::mem::take(&mut self.anchored)
     }
 
     /// The pages' text that arrived since last asked, each with the

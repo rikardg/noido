@@ -75,11 +75,18 @@ impl DocKey {
 pub struct Slot {
     key: DocKey,
     window: String,
+    edited: bool,
 }
 
 impl Slot {
     pub fn key(&self) -> &DocKey {
         &self.key
+    }
+
+    /// Whether the state was found by the document's path under another
+    /// hash: the file was edited since the state was saved.
+    pub fn edited(&self) -> bool {
+        self.edited
     }
 }
 
@@ -186,9 +193,11 @@ impl Store {
     /// edited in place), in which case its state file is re-filed under the
     /// new hash. Missing, unreadable or unknown entries give no state.
     pub fn load(&self, key: DocKey) -> (Slot, Option<DocState>) {
+        let mut by_path = false;
         let found = match read_entry(&self.state_file(&key)) {
             Some(entry) => Some((key.hex(), entry)),
             None => self.find_by_path(&key.path).inspect(|(old_hex, _)| {
+                by_path = true;
                 // Best effort: the state is returned even if re-filing fails.
                 let _ = fs::rename(
                     self.docs.join(format!("{old_hex}{STATE_SUFFIX}")),
@@ -199,11 +208,25 @@ impl Store {
         match found {
             Some((hex, entry)) => {
                 let window = entry.window.clone().unwrap_or(hex);
-                (Slot { key, window }, Some(entry.state()))
+                (
+                    Slot {
+                        key,
+                        window,
+                        edited: by_path,
+                    },
+                    Some(entry.state()),
+                )
             }
             None => {
                 let window = key.hex();
-                (Slot { key, window }, None)
+                (
+                    Slot {
+                        key,
+                        window,
+                        edited: false,
+                    },
+                    None,
+                )
             }
         }
     }

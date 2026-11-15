@@ -163,6 +163,17 @@ fn path_fallback_refiles_state_and_keeps_window() {
 }
 
 #[test]
+fn load_by_path_is_edited() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let before = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &before), &state(4)).unwrap();
+    assert!(!slot(&store, &before).edited());
+    let edited = DocKey::new(b"pdf a, edited", Path::new("/papers/a.pdf"));
+    assert!(slot(&store, &edited).edited());
+}
+
+#[test]
 fn garbage_and_unknown_version_ignored() {
     let dir = TempDir::new().unwrap();
     let store = Store::at(dir.path());
