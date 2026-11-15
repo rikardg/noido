@@ -42,6 +42,16 @@ pub struct ViewState {
     pub centre: DocPoint,
 }
 
+/// Where a view of text that reflows was, beside its [`ViewState`]: the
+/// first character in view, and the layout it was laid out in. Its centre
+/// point holds only in the same layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewAnchor {
+    pub at: Location,
+    /// The layout settings' key; `None` for a layout without settings.
+    pub layout: Option<String>,
+}
+
 /// Offset distance, in UI points, within which the view counts as being at
 /// the top or bottom edge.
 const EDGE_EPSILON: f32 = 0.5;
@@ -316,6 +326,38 @@ impl View {
             self.layout.arrange(scale, self.viewport.0, self.viewport.1);
         }
         self.restore_place(&state.centre);
+    }
+
+    /// Restores a snapshot with its anchor, for the document laid out as
+    /// `layout` with characters where `map` says: the centre point if it
+    /// was saved in this layout and its page is still there, otherwise the
+    /// anchor's line at the top of the view. Without an anchor, as
+    /// [`View::restore`].
+    pub fn restore_in(
+        &mut self,
+        state: &ViewState,
+        anchor: Option<&ViewAnchor>,
+        layout: Option<&str>,
+        map: &LocationMap,
+    ) {
+        self.restore(state);
+        if let Some(anchor) = anchor
+            && (anchor.layout.as_deref() != layout || state.centre.page >= self.layout.page_count())
+        {
+            self.go_to_place(&Place::Text(anchor.at), map);
+        }
+    }
+
+    /// The anchor to save beside [`View::state`] in text that reflows,
+    /// laid out as `layout`; `None` on fixed pages.
+    pub fn anchor(&self, map: &LocationMap, layout: Option<&str>) -> Option<ViewAnchor> {
+        match self.here(map)? {
+            Place::Text(at) => Some(ViewAnchor {
+                at,
+                layout: layout.map(str::to_owned),
+            }),
+            Place::Point(_) => None,
+        }
     }
 
     /// Restores just the place, keeping the current zoom and arrangement.
