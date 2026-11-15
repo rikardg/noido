@@ -1,16 +1,17 @@
 //! The text thread: extracts page text on its own copy of the document,
 //! keeps it, and searches it, so the window never waits for either.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 
-use noido_core::PageTransform;
+use noido_core::{AnchorCheck, Anchored, Highlight, PageTransform, Walk, check, requote};
 use noido_engine::{Document, PdfBytes, PdfEngine};
 
 use crate::{Transformed, Transforms, open_transformed};
-use noido_text::{PageText, Query, TextHit};
+use noido_text::{Joined, PageText, Query, TextHit};
 
 /// The most hits a search finds; past that it stops. One letter on a long
 /// book would otherwise give a million.
@@ -36,6 +37,13 @@ pub enum SearchUpdate {
     },
     /// The document's counts, once every page is counted.
     Counts(Counted),
+    /// Highlights anchored against the document's text. `asked` is the
+    /// list [`TextSearcher::anchor`] was given, to compare with the
+    /// window's current list.
+    Anchored {
+        asked: Vec<Highlight>,
+        answer: Anchored,
+    },
 }
 
 /// What the text thread has counted: the pages that went into the totals,
@@ -64,6 +72,10 @@ enum Command {
     Text(usize),
     Forget(usize),
     Count,
+    Anchor {
+        highlights: Vec<Highlight>,
+        fill_missing: bool,
+    },
 }
 
 /// Handle to the text thread. Dropping it stops the thread after its
@@ -139,6 +151,17 @@ impl TextSearcher {
         let _ = self.commands.send(Command::Count);
     }
 
+    /// Finds the highlights' text again in the document, a few pages at a
+    /// time, replacing an anchoring under way; answered with one
+    /// [`SearchUpdate::Anchored`]. With `fill_missing`, highlights without
+    /// a quote take one from the text where they are.
+    pub fn anchor(&self, highlights: Vec<Highlight>, fill_missing: bool) {
+        let _ = self.commands.send(Command::Anchor {
+            highlights,
+            fill_missing,
+        });
+    }
+
     /// Drops `page`'s text, so it is read again when next needed: after
     /// the page was turned.
     pub fn forget(&self, page: usize) {
@@ -158,6 +181,35 @@ struct Job {
     /// How many pages are searched.
     searched: usize,
     found: usize,
+}
+
+/// Where an anchoring is.
+enum Phase {
+    /// Checking each highlight where it was, `next` being the one in hand.
+    Check {
+        next: usize,
+        pending: Vec<(usize, Highlight)>,
+    },
+    /// Walking every page for the highlights that need searching.
+    Walk {
+        walk: Walk,
+        page: usize,
+        counts: Vec<usize>,
+    },
+    /// Giving the highlights found a quote of their new place.
+    Requote { todo: Vec<usize>, next: usize },
+}
+
+/// An anchoring under way, holding only the pages its step needs.
+struct AnchorJob {
+    asked: Vec<Highlight>,
+    items: Vec<Highlight>,
+    fill_missing: bool,
+    /// A page it read could not be read.
+    failed: bool,
+    /// The pages of the window in hand.
+    held: BTreeMap<usize, Arc<PageText>>,
+    phase: Phase,
 }
 
 struct Worker<'a> {
@@ -185,6 +237,7 @@ struct Worker<'a> {
     /// The walk's one report has gone out.
     reported: bool,
     job: Option<Job>,
+    anchoring: Option<AnchorJob>,
 }
 
 impl<'a> Worker<'a> {
@@ -206,6 +259,7 @@ impl<'a> Worker<'a> {
             counting: false,
             reported: false,
             job: None,
+            anchoring: None,
         }
     }
 
@@ -239,6 +293,7 @@ impl<'a> Worker<'a> {
     fn busy(&self) -> bool {
         !self.requests.is_empty()
             || self.job.is_some()
+            || self.anchoring.is_some()
             || (self.counting && self.idle < self.idle_end())
     }
 
@@ -288,6 +343,23 @@ impl<'a> Worker<'a> {
                 // The counts stay: the text is read again for a reshape,
                 // which does not change what the page says.
             }
+            Command::Anchor {
+                highlights,
+                fill_missing,
+            } => {
+                self.drop_anchoring();
+                self.anchoring = Some(AnchorJob {
+                    items: highlights.clone(),
+                    asked: highlights,
+                    fill_missing,
+                    failed: false,
+                    held: BTreeMap::new(),
+                    phase: Phase::Check {
+                        next: 0,
+                        pending: Vec::new(),
+                    },
+                });
+            }
             Command::Count => {
                 self.counting = true;
                 self.idle = 0;
@@ -315,6 +387,9 @@ impl<'a> Worker<'a> {
             });
         }
         let Some(mut job) = self.job.take() else {
+            if self.anchoring.is_some() {
+                return self.anchor_step();
+            }
             // One page a step, so a command still cuts in; the text is
             // dropped as soon as it is counted, unless the app holds it.
             if self.counting && self.idle < self.idle_end() {
@@ -358,6 +433,180 @@ impl<'a> Worker<'a> {
         }
         self.job = Some(job);
         true
+    }
+
+    /// Lets go of the pages an anchoring under way holds.
+    fn drop_anchoring(&mut self) {
+        if let Some(job) = self.anchoring.take() {
+            for page in job.held.into_keys() {
+                self.release(page);
+            }
+        }
+    }
+
+    /// Reads `page` into the window in hand.
+    fn read_into(&mut self, job: &mut AnchorJob, page: usize) {
+        let text = self.text(page).clone();
+        job.failed |= self.failed[page];
+        job.held.insert(page, text);
+    }
+
+    /// Lets go of the held pages before `first`.
+    fn release_before(&mut self, job: &mut AnchorJob, first: usize) {
+        let gone: Vec<usize> = job.held.range(..first).map(|(&p, _)| p).collect();
+        for page in gone {
+            job.held.remove(&page);
+            self.release(page);
+        }
+    }
+
+    /// The first page of `window` not held yet.
+    fn missing(job: &AnchorJob, window: &RangeInclusive<usize>) -> Option<usize> {
+        window.clone().find(|p| !job.held.contains_key(p))
+    }
+
+    /// The held pages of `window`, joined.
+    fn joined<'j>(
+        held: &'j BTreeMap<usize, Arc<PageText>>,
+        window: &RangeInclusive<usize>,
+    ) -> Joined<'j> {
+        let pages: Vec<&PageText> = window.clone().map(|p| &*held[&p]).collect();
+        Joined::new(*window.start(), &pages)
+    }
+
+    /// One step of the anchoring, reading at most one page, so a command
+    /// still cuts in. It mirrors `noido_core::anchor`, a few pages at a
+    /// time; false once nobody listens.
+    fn anchor_step(&mut self) -> bool {
+        let Some(mut job) = self.anchoring.take() else {
+            return true;
+        };
+        let n = self.texts.len();
+        loop {
+            match &mut job.phase {
+                Phase::Check { next, pending } => {
+                    let i = *next;
+                    if i >= job.asked.len() {
+                        if pending.is_empty() || job.failed {
+                            return self.answer(job);
+                        }
+                        let pending = std::mem::take(pending);
+                        job.phase = Phase::Walk {
+                            walk: Walk::new(pending),
+                            page: 0,
+                            counts: vec![0; n],
+                        };
+                        continue;
+                    }
+                    let h = job.asked[i].clone();
+                    let Some(window) = h.window(n) else {
+                        if h.quote.is_some() {
+                            pending.push((i, h));
+                        }
+                        *next += 1;
+                        continue;
+                    };
+                    if let Some(page) = Self::missing(&job, &window) {
+                        self.read_into(&mut job, page);
+                        break;
+                    }
+                    let joined = Self::joined(&job.held, &window);
+                    let checked = check(&h, &joined, job.fill_missing);
+                    if let Phase::Check { next, pending } = &mut job.phase {
+                        *next += 1;
+                        if matches!(checked, AnchorCheck::Search) {
+                            pending.push((i, h));
+                        }
+                    }
+                    if let AnchorCheck::Keep(kept) = checked {
+                        job.items[i] = kept;
+                    }
+                    self.release_before(&mut job, usize::MAX);
+                }
+                Phase::Walk { walk, page, .. } => {
+                    if job.failed {
+                        // Nothing found is trusted: they keep their places.
+                        self.release_before(&mut job, usize::MAX);
+                        return self.answer(job);
+                    }
+                    let k = *page;
+                    if k >= n {
+                        let Phase::Walk { walk, counts, .. } = std::mem::replace(
+                            &mut job.phase,
+                            Phase::Requote {
+                                todo: Vec::new(),
+                                next: 0,
+                            },
+                        ) else {
+                            unreachable!("the phase was just matched");
+                        };
+                        self.release_before(&mut job, usize::MAX);
+                        let mut todo = Vec::new();
+                        for (i, h) in walk.finish(&counts) {
+                            if !h.orphaned && h.window(n).is_some() {
+                                todo.push(i);
+                            }
+                            job.items[i] = h;
+                        }
+                        job.phase = Phase::Requote { todo, next: 0 };
+                        continue;
+                    }
+                    let window = walk.window(k, n);
+                    if let Some(p) = Self::missing(&job, &window) {
+                        self.read_into(&mut job, p);
+                        let chars = job.held[&p].char_count();
+                        if let Phase::Walk { counts, .. } = &mut job.phase {
+                            counts[p] = chars;
+                        }
+                        break;
+                    }
+                    let joined = Self::joined(&job.held, &window);
+                    if let Phase::Walk { walk, page, .. } = &mut job.phase {
+                        walk.page(k, &joined);
+                        *page += 1;
+                    }
+                    // The next window starts a page before the next page.
+                    self.release_before(&mut job, k);
+                }
+                Phase::Requote { todo, next } => {
+                    let Some(&i) = todo.get(*next) else {
+                        return self.answer(job);
+                    };
+                    let window = job.items[i]
+                        .window(n)
+                        .expect("only highlights with a window are listed");
+                    if let Some(page) = Self::missing(&job, &window) {
+                        self.read_into(&mut job, page);
+                        break;
+                    }
+                    let joined = Self::joined(&job.held, &window);
+                    requote(&mut job.items[i], &joined);
+                    if let Phase::Requote { next, .. } = &mut job.phase {
+                        *next += 1;
+                    }
+                    self.release_before(&mut job, usize::MAX);
+                }
+            }
+        }
+        self.anchoring = Some(job);
+        true
+    }
+
+    /// Sends the anchoring's one answer.
+    fn answer(&mut self, mut job: AnchorJob) -> bool {
+        self.release_before(&mut job, usize::MAX);
+        let relocated = job
+            .items
+            .iter()
+            .zip(&job.asked)
+            .any(|(a, b)| a.start != b.start || a.end != b.end || a.orphaned != b.orphaned);
+        self.send(SearchUpdate::Anchored {
+            asked: job.asked,
+            answer: Anchored {
+                items: job.items,
+                relocated,
+            },
+        })
     }
 
     /// `page`'s text, read now if not held. A page whose text cannot be read

@@ -2,10 +2,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use noido_core::{Highlight, HighlightColour, Location, Quote, anchor};
 use noido_engine::{
     Document, EngineError, Glyph, PdfBytes, PdfEngine, PixelRect, Point, Quad, Rgba8Image, Size,
 };
 use noido_render::{Counted, MAX_HITS, SearchUpdate, TextSearcher};
+use noido_text::PageText;
 
 /// A document whose pages each hold one line of text.
 #[derive(Clone)]
@@ -420,7 +422,9 @@ fn newer_search_drops_older() {
             SearchUpdate::Page { generation, .. } | SearchUpdate::Done { generation, .. } => {
                 *generation
             }
-            SearchUpdate::Text { .. } | SearchUpdate::Counts(_) => continue,
+            SearchUpdate::Text { .. } | SearchUpdate::Counts(_) | SearchUpdate::Anchored { .. } => {
+                continue;
+            }
         };
         assert_eq!(generation, second);
     }
@@ -693,4 +697,165 @@ fn forgotten_text_is_read_again_turned() {
     assert_eq!(transform.rotation, Rotation::R90);
     let line = text.line_rect_of(0).unwrap();
     assert!(line.height > line.width, "{line:?}");
+}
+
+fn highlight(
+    start: (usize, usize),
+    end: (usize, usize),
+    quote: Option<(&str, &str, &str)>,
+) -> Highlight {
+    Highlight {
+        start: Location {
+            part: start.0,
+            char: start.1,
+        },
+        end: Location {
+            part: end.0,
+            char: end.1,
+        },
+        colour: HighlightColour::Green,
+        quote: quote.map(|(exact, prefix, suffix)| Quote {
+            exact: exact.into(),
+            prefix: prefix.into(),
+            suffix: suffix.into(),
+        }),
+        orphaned: false,
+    }
+}
+
+/// The answer to the anchoring that was asked for, once it arrives.
+fn until_anchored(searcher: &TextSearcher) -> (Vec<Highlight>, noido_core::Anchored) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        while let Some(update) = searcher.try_recv() {
+            if let SearchUpdate::Anchored { asked, answer } = update {
+                return (asked, answer);
+            }
+        }
+        assert!(Instant::now() < deadline, "no anchoring within 5 s");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// `count` pages, `page N text`, with `moved` on page 40.
+fn numbered(count: usize, moved: Option<&str>) -> TextEngine {
+    let mut pages: Vec<String> = (0..count).map(|i| format!("page {i} text")).collect();
+    if let Some(moved) = moved {
+        pages[40] = moved.into();
+    }
+    let pages: Vec<&str> = pages.iter().map(String::as_str).collect();
+    TextEngine::new(&pages)
+}
+
+#[test]
+fn anchor_answers_with_quotes_filled() {
+    let engine = TextEngine::new(&["the cat sat", "a dog ran"]);
+    let searcher = start(&engine);
+    let asked = vec![highlight((0, 0), (0, 7), None)];
+    searcher.anchor(asked.clone(), true);
+    let (got, answer) = until_anchored(&searcher);
+    assert_eq!(got, asked);
+    assert_eq!(answer.items[0].quote.as_ref().unwrap().exact, "the cat");
+    assert!(!answer.relocated);
+}
+
+#[test]
+fn unchanged_highlights_read_only_their_pages() {
+    let engine = numbered(50, None);
+    let searcher = start(&engine);
+    let asked = vec![highlight((20, 0), (20, 4), Some(("page", "", " 20")))];
+    searcher.anchor(asked, false);
+    let (_, answer) = until_anchored(&searcher);
+    assert!(!answer.relocated);
+    assert!(engine.calls() <= 3, "{} page reads", engine.calls());
+}
+
+#[test]
+fn anchoring_keeps_no_page_it_was_not_asked_for() {
+    let engine = numbered(50, Some("see xyzzy now"));
+    let searcher = start(&engine);
+    let asked = vec![highlight((5, 0), (5, 5), Some(("xyzzy", "", "")))];
+    searcher.anchor(asked, false);
+    until_anchored(&searcher);
+    let reads = engine.calls();
+    searcher.request_text(7);
+    wait_for(|| engine.calls() > reads);
+}
+
+#[test]
+fn moved_text_is_found_by_the_walk() {
+    let engine = numbered(50, Some("see xyzzy now"));
+    let searcher = start(&engine);
+    let asked = vec![highlight((5, 0), (5, 5), Some(("xyzzy", "", "")))];
+    searcher.anchor(asked, false);
+    let (_, answer) = until_anchored(&searcher);
+    let h = &answer.items[0];
+    assert_eq!(
+        ((h.start.part, h.start.char), (h.end.part, h.end.char)),
+        ((40, 4), (40, 9))
+    );
+    assert!(!h.orphaned);
+    assert!(answer.relocated);
+}
+
+#[test]
+fn unreadable_page_moves_nothing() {
+    let mut engine = TextEngine::new(&["one", "two", "three"]);
+    engine.failing = Some(1);
+    let searcher = start(&engine);
+    let asked = vec![highlight((0, 0), (0, 4), Some(("gone", "", "")))];
+    searcher.anchor(asked.clone(), false);
+    let (_, answer) = until_anchored(&searcher);
+    assert_eq!(answer.items, asked);
+    assert!(!answer.relocated);
+}
+
+#[test]
+fn newer_anchor_replaces_one_under_way() {
+    let engine = TextEngine::new(&["the cat sat", "a dog ran"]).gated();
+    let searcher = start(&engine);
+    let first = vec![highlight((0, 0), (0, 1), None)];
+    let second = vec![highlight((0, 0), (0, 2), None)];
+    searcher.anchor(first, true);
+    searcher.anchor(second.clone(), true);
+    engine.open_gate();
+    let (asked, _) = until_anchored(&searcher);
+    assert_eq!(asked, second);
+    std::thread::sleep(Duration::from_millis(50));
+    while let Some(update) = searcher.try_recv() {
+        assert!(
+            !matches!(update, SearchUpdate::Anchored { .. }),
+            "a second answer"
+        );
+    }
+}
+
+#[test]
+fn the_thread_agrees_with_anchoring_in_memory() {
+    let engine = TextEngine::new(&["so the cat sat. one", "other page", "gone entirely", "tail"]);
+    let searcher = start(&engine);
+    let asked = vec![
+        // Moved on its page.
+        highlight((0, 0), (0, 7), Some(("the cat", "", " sat"))),
+        // Not there any more.
+        highlight((2, 2), (2, 9), Some(("the dog", "x ", " ran"))),
+        // Where it was.
+        highlight((1, 0), (1, 5), Some(("other", "", " page"))),
+        // Without a quote.
+        highlight((3, 0), (3, 2), None),
+    ];
+    searcher.anchor(asked.clone(), true);
+    let (_, answer) = until_anchored(&searcher);
+    let texts: Vec<PageText> = (0..engine.page_count())
+        .map(|p| {
+            let size = engine.page_size(p).unwrap();
+            let glyphs = engine.text(p).unwrap();
+            PageText::new(noido_text::on_page(glyphs, size.width, size.height))
+        })
+        .collect();
+    let refs: Vec<&PageText> = texts.iter().collect();
+    let expected = anchor(&asked, &refs, true);
+    assert_eq!(answer, expected);
+    assert!(expected.relocated);
+    assert!(expected.items[1].orphaned);
 }
