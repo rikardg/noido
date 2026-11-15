@@ -421,7 +421,7 @@ mod tests {
         highlights.add(highlight((0, 8), (0, 9), HighlightColour::Green));
         assert!(highlights.undo());
         assert!(highlights.redo());
-        let result = crate::anchor(highlights.items(), &[&new], false);
+        let result = crate::anchor(highlights.items(), &[&new], false, true);
         assert!(result.relocated);
         highlights.anchored(result.items, result.relocated);
         assert!(!highlights.undo());

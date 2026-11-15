@@ -75,6 +75,7 @@ enum Command {
     Anchor {
         highlights: Vec<Highlight>,
         fill_missing: bool,
+        relocate: bool,
     },
 }
 
@@ -154,11 +155,13 @@ impl TextSearcher {
     /// Finds the highlights' text again in the document, a few pages at a
     /// time, replacing an anchoring under way; answered with one
     /// [`SearchUpdate::Anchored`]. With `fill_missing`, highlights without
-    /// a quote take one from the text where they are.
-    pub fn anchor(&self, highlights: Vec<Highlight>, fill_missing: bool) {
+    /// a quote take one from the text where they are. Only with `relocate`
+    /// are those that moved searched for in the whole document.
+    pub fn anchor(&self, highlights: Vec<Highlight>, fill_missing: bool, relocate: bool) {
         let _ = self.commands.send(Command::Anchor {
             highlights,
             fill_missing,
+            relocate,
         });
     }
 
@@ -205,6 +208,7 @@ struct AnchorJob {
     asked: Vec<Highlight>,
     items: Vec<Highlight>,
     fill_missing: bool,
+    relocate: bool,
     /// A page it read could not be read.
     failed: bool,
     /// The pages of the window in hand.
@@ -346,12 +350,14 @@ impl<'a> Worker<'a> {
             Command::Anchor {
                 highlights,
                 fill_missing,
+                relocate,
             } => {
                 self.drop_anchoring();
                 self.anchoring = Some(AnchorJob {
                     items: highlights.clone(),
                     asked: highlights,
                     fill_missing,
+                    relocate,
                     failed: false,
                     held: BTreeMap::new(),
                     phase: Phase::Check {
@@ -487,7 +493,7 @@ impl<'a> Worker<'a> {
                 Phase::Check { next, pending } => {
                     let i = *next;
                     if i >= job.asked.len() {
-                        if pending.is_empty() || job.failed {
+                        if pending.is_empty() || job.failed || !job.relocate {
                             return self.answer(job);
                         }
                         let pending = std::mem::take(pending);
