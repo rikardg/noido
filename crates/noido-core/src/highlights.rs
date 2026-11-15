@@ -9,6 +9,8 @@ use noido_text::PageText;
 use crate::selection::range_on_page;
 use crate::{Caret, DocPoint};
 
+pub use noido_engine::Location;
+
 /// How many changes [`Highlights::undo`] can step back through.
 pub const UNDO_LIMIT: usize = 100;
 
@@ -35,22 +37,50 @@ impl HighlightColour {
 
 /// A coloured run of characters, from `start` (included) to `end`
 /// (excluded) in document order; `start < end` always holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Highlight {
-    pub start: Caret,
-    pub end: Caret,
+    pub start: Location,
+    pub end: Location,
     pub colour: HighlightColour,
+    /// The text it was made over, to find it again if the text moves.
+    pub quote: Option<Quote>,
+    /// Whether it could not be found again: kept, but not drawn and not
+    /// hit.
+    pub orphaned: bool,
+}
+
+/// The text a highlight covers, with some around it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Quote {
+    pub exact: String,
+    pub prefix: String,
+    pub suffix: String,
 }
 
 impl Highlight {
-    /// The highlighted characters on `page`, given its char count.
+    /// A highlight from `start` to `end`, with no quote, not orphaned.
+    pub fn new(start: Caret, end: Caret, colour: HighlightColour) -> Self {
+        Self {
+            start: start.into(),
+            end: end.into(),
+            colour,
+            quote: None,
+            orphaned: false,
+        }
+    }
+
+    /// The highlighted characters on `page`, given its char count; none
+    /// for an orphaned highlight.
     pub fn on_page(&self, page: usize, char_count: usize) -> Option<Range<usize>> {
-        range_on_page(self.start, self.end, page, char_count)
+        if self.orphaned {
+            return None;
+        }
+        range_on_page(self.start.into(), self.end.into(), page, char_count)
     }
 
     /// The pages from start to end.
     pub fn pages(&self) -> RangeInclusive<usize> {
-        self.start.page..=self.end.page
+        self.start.part..=self.end.part
     }
 }
 
@@ -77,8 +107,18 @@ impl Highlights {
         &self.items
     }
 
-    pub fn get(&self, index: usize) -> Option<Highlight> {
-        self.items.get(index).copied()
+    pub fn get(&self, index: usize) -> Option<&Highlight> {
+        self.items.get(index)
+    }
+
+    /// Replaces the list with `items` without an undo step; with
+    /// `relocated`, the old history no longer fits and is cleared.
+    pub fn anchored(&mut self, items: Vec<Highlight>, relocated: bool) {
+        self.items = items;
+        if relocated {
+            self.undo.clear();
+            self.redo.clear();
+        }
     }
 
     /// Adds `highlight` as one change, keeping its index; `None`, and no
@@ -112,12 +152,15 @@ impl Highlights {
         let Some(current) = self.get(index) else {
             return false;
         };
+        let (start, end): (Location, Location) = (start.into(), end.into());
         if start >= end || (current.start, current.end) == (start, end) {
             return false;
         }
         self.record();
-        self.items[index].start = start;
-        self.items[index].end = end;
+        let item = &mut self.items[index];
+        item.start = start;
+        item.end = end;
+        item.quote = None;
         true
     }
 
@@ -166,7 +209,7 @@ impl Highlights {
         };
         let span = |h: &Highlight| {
             (
-                h.end.page - h.start.page,
+                h.end.part - h.start.part,
                 h.end.char.saturating_sub(h.start.char),
             )
         };
@@ -204,11 +247,20 @@ mod tests {
     }
 
     fn highlight(start: (usize, usize), end: (usize, usize), colour: HighlightColour) -> Highlight {
-        Highlight {
-            start: at(start.0, start.1),
-            end: at(end.0, end.1),
-            colour,
+        Highlight::new(at(start.0, start.1), at(end.0, end.1), colour)
+    }
+
+    fn quote(exact: &str) -> Quote {
+        Quote {
+            exact: exact.into(),
+            prefix: String::new(),
+            suffix: String::new(),
         }
+    }
+
+    fn orphan(mut h: Highlight) -> Highlight {
+        h.orphaned = true;
+        h
     }
 
     #[test]
@@ -222,11 +274,12 @@ mod tests {
 
         let empty = highlight((0, 4), (0, 4), HighlightColour::Yellow);
         let backwards = highlight((2, 3), (0, 4), HighlightColour::Yellow);
-        let mut highlights = Highlights::from_items(vec![spanning, empty, backwards]);
-        assert_eq!(highlights.items(), &[spanning]);
-        assert_eq!(highlights.add(empty), None);
-        assert_eq!(highlights.add(backwards), None);
-        assert_eq!(highlights.items(), &[spanning]);
+        let mut highlights =
+            Highlights::from_items(vec![spanning.clone(), empty.clone(), backwards.clone()]);
+        assert_eq!(highlights.items(), std::slice::from_ref(&spanning));
+        assert_eq!(highlights.add(empty.clone()), None);
+        assert_eq!(highlights.add(backwards.clone()), None);
+        assert_eq!(highlights.items(), std::slice::from_ref(&spanning));
     }
 
     #[test]
@@ -240,12 +293,12 @@ mod tests {
 
         assert!(highlights.set_range(0, at(0, 9), at(0, 2)));
         let green = highlight((0, 2), (0, 9), HighlightColour::Green);
-        assert_eq!(highlights.get(0), Some(green));
+        assert_eq!(highlights.get(0), Some(&green));
 
         assert!(!highlights.set_range(0, at(0, 4), at(0, 4)));
-        assert_eq!(highlights.get(0), Some(green));
+        assert_eq!(highlights.get(0), Some(&green));
 
-        assert_eq!(highlights.remove(0), Some(green));
+        assert_eq!(highlights.remove(0), Some(green.clone()));
         assert!(highlights.items().is_empty());
         assert_eq!(highlights.remove(0), None);
     }
@@ -259,30 +312,30 @@ mod tests {
         let added = highlight((0, 0), (0, 5), HighlightColour::Yellow);
         let blue = highlight((0, 0), (0, 5), HighlightColour::Blue);
         let resized = highlight((0, 1), (0, 3), HighlightColour::Blue);
-        assert_eq!(highlights.add(added), Some(0));
+        assert_eq!(highlights.add(added.clone()), Some(0));
         assert!(highlights.set_colour(0, HighlightColour::Blue));
         assert!(highlights.set_range(0, at(0, 1), at(0, 3)));
-        assert_eq!(highlights.remove(0), Some(resized));
+        assert_eq!(highlights.remove(0), Some(resized.clone()));
         assert!(highlights.items().is_empty());
 
         // Back through the remove, the resize, the recolour and the add.
         assert!(highlights.undo());
-        assert_eq!(highlights.items(), &[resized]);
+        assert_eq!(highlights.items(), std::slice::from_ref(&resized));
         assert!(highlights.undo());
-        assert_eq!(highlights.items(), &[blue]);
+        assert_eq!(highlights.items(), std::slice::from_ref(&blue));
         assert!(highlights.undo());
-        assert_eq!(highlights.items(), &[added]);
+        assert_eq!(highlights.items(), std::slice::from_ref(&added));
         assert!(highlights.undo());
         assert!(highlights.items().is_empty());
         assert!(!highlights.undo());
 
         // And forward through them again.
         assert!(highlights.redo());
-        assert_eq!(highlights.items(), &[added]);
+        assert_eq!(highlights.items(), std::slice::from_ref(&added));
         assert!(highlights.redo());
-        assert_eq!(highlights.items(), &[blue]);
+        assert_eq!(highlights.items(), std::slice::from_ref(&blue));
         assert!(highlights.redo());
-        assert_eq!(highlights.items(), &[resized]);
+        assert_eq!(highlights.items(), std::slice::from_ref(&resized));
         assert!(highlights.redo());
         assert!(highlights.items().is_empty());
         assert!(!highlights.redo());
@@ -290,12 +343,12 @@ mod tests {
         // A new change after an undo drops what could have been redone.
         assert!(highlights.undo());
         let pink = highlight((1, 0), (1, 2), HighlightColour::Pink);
-        assert_eq!(highlights.add(pink), Some(1));
+        assert_eq!(highlights.add(pink.clone()), Some(1));
         assert!(!highlights.redo());
-        assert_eq!(highlights.items(), &[resized, pink]);
+        assert_eq!(highlights.items(), &[resized.clone(), pink.clone()]);
 
         // Changes that change nothing record no step.
-        let mut highlights = Highlights::from_items(vec![blue]);
+        let mut highlights = Highlights::from_items(vec![blue.clone()]);
         assert!(!highlights.set_colour(0, HighlightColour::Blue));
         assert!(!highlights.set_range(0, at(0, 0), at(0, 5)));
         assert!(!highlights.undo());
@@ -322,15 +375,59 @@ mod tests {
         let mut highlights = Highlights::default();
         let line = highlight((0, 0), (0, 11), HighlightColour::Yellow);
         let word = highlight((0, 4), (0, 7), HighlightColour::Green);
-        assert_eq!(highlights.add(line), Some(0));
-        assert_eq!(highlights.add(word), Some(1));
+        assert_eq!(highlights.add(line.clone()), Some(0));
+        assert_eq!(highlights.add(word.clone()), Some(1));
 
         assert_eq!(highlights.at_point(point(95.0, 95.0), &text), Some(1));
         assert_eq!(highlights.at_point(point(75.0, 95.0), &text), Some(0));
         assert_eq!(highlights.at_point(point(300.0, 400.0), &text), None);
 
         // Two equal ranges: the newer wins.
-        let twins = Highlights::from_items(vec![line, word, word]);
+        let twins = Highlights::from_items(vec![line.clone(), word.clone(), word.clone()]);
         assert_eq!(twins.at_point(point(95.0, 95.0), &text), Some(2));
+    }
+
+    #[test]
+    fn orphaned_highlight_is_not_on_any_page() {
+        let h = orphan(highlight((0, 0), (0, 7), HighlightColour::Yellow));
+        assert_eq!(h.on_page(0, 20), None);
+        assert_eq!(h.pages(), 0..=0);
+    }
+
+    #[test]
+    fn orphaned_highlight_is_not_hit() {
+        let text = PageText::new(page(&["the cat sat", "on the mat"]));
+        let h = orphan(highlight((0, 4), (0, 7), HighlightColour::Green));
+        let highlights = Highlights::from_items(vec![h]);
+        assert_eq!(highlights.at_point(point(95.0, 95.0), &text), None);
+    }
+
+    #[test]
+    fn set_range_drops_the_quote() {
+        let mut h = highlight((0, 2), (0, 5), HighlightColour::Yellow);
+        h.quote = Some(quote("llo"));
+        let mut highlights = Highlights::from_items(vec![h]);
+        assert!(highlights.set_range(0, at(0, 2), at(0, 9)));
+        assert_eq!(highlights.get(0).unwrap().quote, None);
+    }
+
+    #[test]
+    fn anchored_keeps_history_unless_relocated() {
+        let mut highlights = Highlights::default();
+        highlights.add(highlight((0, 0), (0, 3), HighlightColour::Yellow));
+        highlights.add(highlight((0, 5), (0, 8), HighlightColour::Green));
+        let mut with_quotes = highlights.items().to_vec();
+        for h in &mut with_quotes {
+            h.quote = Some(quote("x"));
+        }
+        highlights.anchored(with_quotes.clone(), false);
+        assert_eq!(highlights.items(), with_quotes.as_slice());
+        assert!(highlights.undo());
+
+        let moved = vec![highlight((0, 1), (0, 4), HighlightColour::Yellow)];
+        highlights.anchored(moved.clone(), true);
+        assert_eq!(highlights.items(), moved.as_slice());
+        assert!(!highlights.undo());
+        assert!(!highlights.redo());
     }
 }

@@ -35,17 +35,17 @@ fn state(page: usize) -> DocState {
 
 /// A highlight from `start` to `end`, each a page and a char.
 fn highlight(start: (usize, usize), end: (usize, usize), colour: HighlightColour) -> Highlight {
-    Highlight {
-        start: Caret {
+    Highlight::new(
+        Caret {
             page: start.0,
             char: start.1,
         },
-        end: Caret {
+        Caret {
             page: end.0,
             char: end.1,
         },
         colour,
-    }
+    )
 }
 
 /// A history entry: just a place on a page.

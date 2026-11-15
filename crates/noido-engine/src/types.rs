@@ -230,3 +230,11 @@ pub struct Font {
     /// the reader's system stands in.
     pub embedded: bool,
 }
+
+/// A place in a document's text: before character `char` of text part
+/// `part` (a page, for a PDF), in document order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Location {
+    pub part: usize,
+    pub char: usize,
+}

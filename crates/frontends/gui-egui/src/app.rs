@@ -2448,7 +2448,7 @@ impl NoidoApp {
             } else if let Some((start, end)) = self.select.selection.and_then(|s| s.carets())
                 && start < end
             {
-                self.select.editing = self.highlights.add(Highlight { start, end, colour });
+                self.select.editing = self.highlights.add(Highlight::new(start, end, colour));
             }
         }
         if delete && let Some(index) = self.select.editing {
@@ -11279,11 +11279,11 @@ pub(crate) mod tests {
             "a mark before the highlight was made"
         );
 
-        h.app.highlights.add(Highlight {
-            start: Caret { page: 0, char: 0 },
-            end: Caret { page: 0, char: 7 },
-            colour: HighlightColour::Yellow,
-        });
+        h.app.highlights.add(Highlight::new(
+            Caret { page: 0, char: 0 },
+            Caret { page: 0, char: 7 },
+            HighlightColour::Yellow,
+        ));
         h.frames(2, vec![]);
         let thumb = sidebar_thumb(&h, 0);
         let marks = marks_in(&h, thumb, fill);
@@ -11315,11 +11315,11 @@ pub(crate) mod tests {
         let (mut h, engine) = selecting();
         h.press(egui::Key::F9, Modifiers::NONE);
         h.until(|h| drawn_pages(h).contains(&1));
-        h.app.highlights.add(Highlight {
-            start: Caret { page: 0, char: 5 },
-            end: Caret { page: 1, char: 3 },
-            colour: HighlightColour::Blue,
-        });
+        h.app.highlights.add(Highlight::new(
+            Caret { page: 0, char: 5 },
+            Caret { page: 1, char: 3 },
+            HighlightColour::Blue,
+        ));
         h.until(|h| matches!(h.app.texts.get(1), noido_core::PageTextState::Known(_)));
         h.frames(2, vec![]);
         let dark = h.ctx.global_style().visuals.dark_mode;
@@ -11343,11 +11343,11 @@ pub(crate) mod tests {
         let mut h = searching(&engine);
         h.press(egui::Key::F9, Modifiers::NONE);
         h.frames(2, vec![]);
-        h.app.highlights.add(Highlight {
-            start: Caret { page: 0, char: 0 },
-            end: Caret { page: 0, char: 7 },
-            colour: HighlightColour::Green,
-        });
+        h.app.highlights.add(Highlight::new(
+            Caret { page: 0, char: 0 },
+            Caret { page: 0, char: 7 },
+            HighlightColour::Green,
+        ));
         h.frames(2, vec![]);
         let dark = h.ctx.global_style().visuals.dark_mode;
         let fill = select::highlight_fill(HighlightColour::Green, dark);
@@ -11370,11 +11370,11 @@ pub(crate) mod tests {
         let (mut h, _) = selecting();
         h.press(egui::Key::F9, Modifiers::NONE);
         h.until(|h| drawn_pages(h).contains(&0));
-        h.app.highlights.add(Highlight {
-            start: Caret { page: 0, char: 0 },
-            end: Caret { page: 0, char: 7 },
-            colour: HighlightColour::Pink,
-        });
+        h.app.highlights.add(Highlight::new(
+            Caret { page: 0, char: 0 },
+            Caret { page: 0, char: 7 },
+            HighlightColour::Pink,
+        ));
         h.frames(2, vec![]);
         let dark = h.ctx.global_style().visuals.dark_mode;
         let fill = select::highlight_fill(HighlightColour::Pink, dark);
@@ -14453,11 +14453,11 @@ pub(crate) mod tests {
         assert!(h.app.select.delete_rect.is_some(), "the bar offers delete");
         assert_eq!(
             h.app.highlights.items(),
-            [Highlight {
-                start: Caret { page: 0, char: 0 },
-                end: Caret { page: 0, char: 7 },
-                colour: HighlightColour::Yellow,
-            }]
+            [Highlight::new(
+                Caret { page: 0, char: 0 },
+                Caret { page: 0, char: 7 },
+                HighlightColour::Yellow
+            )]
         );
     }
 
@@ -14569,11 +14569,9 @@ pub(crate) mod tests {
         let caret = |char| Caret { page: 0, char };
         // "the cat sat": a highlight long enough that its end sits well
         // away from a click near its start.
-        h.app.highlights.add(Highlight {
-            start: caret(0),
-            end: caret(11),
-            colour: HighlightColour::Yellow,
-        });
+        h.app
+            .highlights
+            .add(Highlight::new(caret(0), caret(11), HighlightColour::Yellow));
         let click = screen_pos(&h, 0, 75.0, 95.0);
         h.click(click);
         h.frames(1, vec![]);
@@ -14642,11 +14640,9 @@ pub(crate) mod tests {
     fn clicking_a_highlight_keeps_the_bar_by_the_mouse() {
         let (mut h, _) = selecting();
         let caret = |char| Caret { page: 0, char };
-        h.app.highlights.add(Highlight {
-            start: caret(0),
-            end: caret(21),
-            colour: HighlightColour::Yellow,
-        });
+        h.app
+            .highlights
+            .add(Highlight::new(caret(0), caret(21), HighlightColour::Yellow));
         let click = screen_pos(&h, 0, 127.0, 95.0);
         h.click(click);
         h.frames(2, vec![]);
@@ -14686,11 +14682,9 @@ pub(crate) mod tests {
     fn bar_goes_above_a_highlights_start_handle_let_go() {
         let (mut h, _) = selecting();
         let caret = |char| Caret { page: 0, char };
-        h.app.highlights.add(Highlight {
-            start: caret(0),
-            end: caret(11),
-            colour: HighlightColour::Yellow,
-        });
+        h.app
+            .highlights
+            .add(Highlight::new(caret(0), caret(11), HighlightColour::Yellow));
         h.click(screen_pos(&h, 0, 127.0, 95.0));
         h.frames(1, vec![]);
         let knob = h.app.select.handles[0].expect("the start's handle shows");
@@ -14757,11 +14751,9 @@ pub(crate) mod tests {
     /// A highlight over the two lines, clicked so that its bar is by the mouse.
     fn two_line_highlight(h: &mut Harness, click: (f32, f32)) {
         let caret = |char| Caret { page: 0, char };
-        h.app.highlights.add(Highlight {
-            start: caret(0),
-            end: caret(21),
-            colour: HighlightColour::Yellow,
-        });
+        h.app
+            .highlights
+            .add(Highlight::new(caret(0), caret(21), HighlightColour::Yellow));
         h.click(screen_pos(h, 0, click.0, click.1));
         h.frames(2, vec![]);
         assert_eq!(h.app.select.editing, Some(0));
@@ -14820,11 +14812,9 @@ pub(crate) mod tests {
         let mut h = searching(&engine);
         h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
         let caret = |char| Caret { page: 0, char };
-        h.app.highlights.add(Highlight {
-            start: caret(0),
-            end: caret(55),
-            colour: HighlightColour::Yellow,
-        });
+        h.app
+            .highlights
+            .add(Highlight::new(caret(0), caret(55), HighlightColour::Yellow));
         h.frames(2, vec![]);
         h.click(screen_pos(&h, 0, 80.0, 155.0));
         h.frames(2, vec![]);
@@ -14906,11 +14896,9 @@ pub(crate) mod tests {
     fn bar_goes_below_a_shift_click_extending_a_highlight_downwards() {
         let (mut h, _) = selecting();
         let caret = |char| Caret { page: 0, char };
-        h.app.highlights.add(Highlight {
-            start: caret(0),
-            end: caret(7),
-            colour: HighlightColour::Yellow,
-        });
+        h.app
+            .highlights
+            .add(Highlight::new(caret(0), caret(7), HighlightColour::Yellow));
         h.click(screen_pos(&h, 0, 80.0, 95.0));
         h.frames(2, vec![]);
         past_double_click(&mut h);
@@ -14928,11 +14916,11 @@ pub(crate) mod tests {
         let (mut h, _) = selecting();
         let caret = |char| Caret { page: 0, char };
         // Only the second line.
-        h.app.highlights.add(Highlight {
-            start: caret(12),
-            end: caret(21),
-            colour: HighlightColour::Yellow,
-        });
+        h.app.highlights.add(Highlight::new(
+            caret(12),
+            caret(21),
+            HighlightColour::Yellow,
+        ));
         h.click(screen_pos(&h, 0, 110.0, 115.0));
         h.frames(2, vec![]);
         assert_eq!(h.app.select.editing, Some(0));
@@ -15110,11 +15098,9 @@ pub(crate) mod tests {
     fn clicking_a_highlight_moves_the_bar_off_a_handle_it_would_cover() {
         let (mut h, _) = selecting();
         let caret = |char| Caret { page: 0, char };
-        h.app.highlights.add(Highlight {
-            start: caret(0),
-            end: caret(21),
-            colour: HighlightColour::Yellow,
-        });
+        h.app
+            .highlights
+            .add(Highlight::new(caret(0), caret(21), HighlightColour::Yellow));
         // On the second line, the bar over the mouse lands on the first's knob.
         h.click(screen_pos(&h, 0, 110.0, 115.0));
         h.frames(2, vec![]);
@@ -15165,11 +15151,9 @@ pub(crate) mod tests {
     fn bar_follows_the_clicked_line_when_the_view_moves() {
         let (mut h, _) = selecting();
         let caret = |char| Caret { page: 0, char };
-        h.app.highlights.add(Highlight {
-            start: caret(0),
-            end: caret(11),
-            colour: HighlightColour::Yellow,
-        });
+        h.app
+            .highlights
+            .add(Highlight::new(caret(0), caret(11), HighlightColour::Yellow));
         let click = screen_pos(&h, 0, 75.0, 95.0);
         h.click(click);
         h.frames(1, vec![]);
@@ -15208,11 +15192,9 @@ pub(crate) mod tests {
     fn bar_hides_when_the_clicked_line_leaves_the_view() {
         let (mut h, _) = selecting();
         let caret = |char| Caret { page: 0, char };
-        h.app.highlights.add(Highlight {
-            start: caret(0),
-            end: caret(11),
-            colour: HighlightColour::Yellow,
-        });
+        h.app
+            .highlights
+            .add(Highlight::new(caret(0), caret(11), HighlightColour::Yellow));
         h.click(screen_pos(&h, 0, 75.0, 95.0));
         h.frames(1, vec![]);
         assert!(h.app.select.bar_rect.is_some(), "the bar is drawn");
@@ -15581,11 +15563,11 @@ pub(crate) mod tests {
         let index = h
             .app
             .highlights
-            .add(Highlight {
-                start: Caret { page: 0, char: 0 },
-                end: Caret { page: 1, char: 3 },
-                colour: HighlightColour::Yellow,
-            })
+            .add(Highlight::new(
+                Caret { page: 0, char: 0 },
+                Caret { page: 1, char: 3 },
+                HighlightColour::Yellow,
+            ))
             .expect("the highlight is added");
         h.app.select.editing = Some(index);
         h.app.select.selection = Some(noido_core::Selection {
@@ -15604,16 +15586,12 @@ pub(crate) mod tests {
         let (mut h, _) = selecting();
         let caret = |char| Caret { page: 0, char };
         let colour = HighlightColour::Yellow;
-        h.app.highlights.add(Highlight {
-            start: caret(0),
-            end: caret(11),
-            colour,
-        });
-        h.app.highlights.add(Highlight {
-            start: caret(4),
-            end: caret(7),
-            colour: HighlightColour::Green,
-        });
+        h.app
+            .highlights
+            .add(Highlight::new(caret(0), caret(11), colour));
+        h.app
+            .highlights
+            .add(Highlight::new(caret(4), caret(7), HighlightColour::Green));
         // A point inside both highlights picks the shorter one.
         let cat = screen_pos(&h, 0, 99.0, 95.0);
         h.click(cat);
@@ -15638,11 +15616,11 @@ pub(crate) mod tests {
     #[test]
     fn link_and_highlight_plain_click_follows_link_shift_click_selects_highlight() {
         let mut h = linking_text();
-        h.app.highlights.add(Highlight {
-            start: Caret { page: 0, char: 0 },
-            end: Caret { page: 0, char: 10 },
-            colour: HighlightColour::Yellow,
-        });
+        h.app.highlights.add(Highlight::new(
+            Caret { page: 0, char: 0 },
+            Caret { page: 0, char: 10 },
+            HighlightColour::Yellow,
+        ));
         click_link(&mut h, 0, 100.0, 96.0);
         assert_eq!(h.app.chosen, Some(5));
         assert_eq!(h.app.select.editing, None);
@@ -15700,11 +15678,11 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| {
             app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), None)
         });
-        h.app.highlights.add(Highlight {
-            start: Caret { page: 0, char: 0 },
-            end: Caret { page: 0, char: 7 },
-            colour: HighlightColour::Yellow,
-        });
+        h.app.highlights.add(Highlight::new(
+            Caret { page: 0, char: 0 },
+            Caret { page: 0, char: 7 },
+            HighlightColour::Yellow,
+        ));
         h.frames(150, vec![]);
         assert_eq!(
             store.load(test_key()).1.unwrap().highlights,
@@ -17218,11 +17196,11 @@ pub(crate) mod tests {
     #[test]
     fn a_highlight_follows_its_text_when_scaled() {
         let mut h = fitting(&mixed_engine());
-        h.app.highlights.add(Highlight {
-            start: Caret { page: 4, char: 0 },
-            end: Caret { page: 4, char: 7 },
-            colour: HighlightColour::Yellow,
-        });
+        h.app.highlights.add(Highlight::new(
+            Caret { page: 4, char: 0 },
+            Caret { page: 4, char: 7 },
+            HighlightColour::Yellow,
+        ));
         h.app.arrival = Some((Target::Page(4), false));
         h.frames(4, vec![]);
         h.until(|h| matches!(h.app.texts.get(4), noido_core::PageTextState::Known(_)));
