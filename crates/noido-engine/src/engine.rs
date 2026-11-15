@@ -35,10 +35,12 @@ pub trait Document {
         rect: PixelRect,
     ) -> Result<Rgba8Image, EngineError>;
 
-    /// Renders the whole of `page` stretched to fill exactly `width` ×
+    /// Renders the whole of `page` stretched to fill up to `width` ×
     /// `height` pixels, on a white background, so no edge pixel is partly
-    /// background. By default, `render_tile` at the width's scale, which
-    /// may leave the last row partly background.
+    /// background. A raster engine may return fewer pixels rather than
+    /// upscale; the renderer treats that as the page's render. By default,
+    /// `render_tile` at the width's scale, which may leave the last row
+    /// partly background.
     fn render_page(&self, page: usize, width: u32, height: u32) -> Result<Rgba8Image, EngineError> {
         let size = self.page_size(page)?;
         let rect = PixelRect {

@@ -19,10 +19,16 @@ use zip::ZipArchive;
 const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
 /// A page's image with more pixels than this is refused, so a zip bomb or a
 /// stray poster scan cannot take the render thread down.
-const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+const MAX_PIXELS: u64 = 32 * 1024 * 1024;
 /// A ridiculous number of entries is not a comic, and listing them all would
 /// be work an archive should not be able to ask for.
 const MAX_ENTRIES: usize = 20_000;
+/// ComicInfo.xml is a few kilobytes; a megabyte is already generous, and the
+/// read must be bounded even when the entry's declared size lies.
+const MAX_COMIC_INFO_BYTES: u64 = 1024 * 1024;
+/// How much of an entry is read looking for an image header. A real header is
+/// in the first few kilobytes; this only bounds a hostile or unusual entry.
+const MAX_HEADER_BYTES: u64 = 8 * 1024 * 1024;
 
 /// A CBZ document engine.
 #[derive(Clone, Copy, Debug, Default)]
@@ -54,33 +60,40 @@ impl PdfEngine for ComicEngine {
             }
             if is_comic_info(&name) {
                 if !read_info {
-                    let mut xml = String::new();
-                    if entry.read_to_string(&mut xml).is_ok() {
+                    if let Some(xml) = read_capped(&mut entry, MAX_COMIC_INFO_BYTES) {
                         properties = parse_comic_info(&xml);
                     }
                     read_info = true;
                 }
                 continue;
             }
-            if entry.size() > MAX_ENTRY_BYTES {
-                continue;
-            }
-            let Some((width, height)) = image_size(&mut entry) else {
-                continue;
-            };
-            pages.push(Page {
-                index,
-                name,
-                size: Size {
+            let size = match sniff(&mut entry, &name) {
+                Sniffed::Image { width, height } => Size {
                     width: width as f32,
                     height: height as f32,
                 },
+                // Keep the entry in the book so its place, number and spread
+                // pairing stay right; rendering it reports the failure.
+                Sniffed::Unreadable => Size {
+                    width: 1.0,
+                    height: 1.0,
+                },
+                Sniffed::NotAnImage => continue,
+            };
+            pages.push(Page {
+                index,
+                number: 0,
+                name,
+                size,
             });
         }
         if pages.is_empty() {
             return Err(EngineError::Open("no images in the archive".into()));
         }
         pages.sort_by(|a, b| natural_cmp(&a.name, &b.name).then(a.index.cmp(&b.index)));
+        for (number, page) in pages.iter_mut().enumerate() {
+            page.number = number;
+        }
         Ok(Box::new(ComicDocument {
             bytes,
             pages,
@@ -92,6 +105,8 @@ impl PdfEngine for ComicEngine {
 struct Page {
     /// The entry's index in the archive.
     index: usize,
+    /// The page's place in the book, 0-based, after natural sorting.
+    number: usize,
     name: String,
     size: Size,
 }
@@ -120,28 +135,39 @@ impl ComicDocument {
         if entry.size() > MAX_ENTRY_BYTES {
             return Err(EngineError::Render(format!(
                 "page {} is {} MB, too large",
-                page.index + 1,
+                page.number + 1,
                 entry.size() / (1024 * 1024)
             )));
         }
         let mut data = Vec::with_capacity(entry.size() as usize);
         entry
             .read_to_end(&mut data)
-            .map_err(|e| EngineError::Render(format!("page {}: {e}", page.index + 1)))?;
+            .map_err(|e| EngineError::Render(format!("page {}: {e}", page.number + 1)))?;
         let decoded = image::load_from_memory(&data)
-            .map_err(|e| EngineError::Render(format!("page {}: {e}", page.index + 1)))?;
+            .map_err(|e| EngineError::Render(format!("page {}: {e}", page.number + 1)))?;
         let mut rgba = decoded.into_rgba8();
         let pixels = u64::from(rgba.width()) * u64::from(rgba.height());
         if pixels > MAX_PIXELS {
             return Err(EngineError::Render(format!(
                 "page {} is {} megapixels, too large",
-                page.index + 1,
+                page.number + 1,
                 pixels / 1_000_000
             )));
         }
         premultiply(&mut rgba);
         Ok(rgba)
     }
+}
+
+/// Refuses a page whose declared image is over the pixel cap before any
+/// pixels are allocated.
+fn check_size(page: &Page) -> Result<(), EngineError> {
+    let width = page.size.width.max(0.0).round() as u32;
+    let height = page.size.height.max(0.0).round() as u32;
+    if u64::from(width) * u64::from(height) > MAX_PIXELS {
+        return Err(EngineError::TooLarge { width, height });
+    }
+    Ok(())
 }
 
 impl Document for ComicDocument {
@@ -159,7 +185,9 @@ impl Document for ComicDocument {
         scale: f32,
         rect: PixelRect,
     ) -> Result<Rgba8Image, EngineError> {
-        let image = self.decode(self.page(page)?)?;
+        let page = self.page(page)?;
+        check_size(page)?;
+        let image = self.decode(page)?;
         let scale = scale.max(0.0);
         let width = ((image.width() as f32 * scale).round() as u32).max(1);
         let height = ((image.height() as f32 * scale).round() as u32).max(1);
@@ -185,7 +213,9 @@ impl Document for ComicDocument {
     }
 
     fn render_page(&self, page: usize, width: u32, height: u32) -> Result<Rgba8Image, EngineError> {
-        let image = self.decode(self.page(page)?)?;
+        let page = self.page(page)?;
+        check_size(page)?;
+        let image = self.decode(page)?;
         let (source_width, source_height) = image.dimensions();
         // Never upscale: the extra pixels carry no detail, and the reader
         // pays for them in texture budget.
@@ -270,23 +300,73 @@ fn is_comic_info(name: &str) -> bool {
         .is_some_and(|file| file.eq_ignore_ascii_case("ComicInfo.xml"))
 }
 
+/// What an archive entry looks like from its first bytes.
+enum Sniffed {
+    /// A readable image header, with the image's size.
+    Image { width: u32, height: u32 },
+    /// The entry looks like an image but its header could not be read; keep
+    /// it as a page that fails, rather than making the page disappear.
+    Unreadable,
+    /// Not an image, so not a page.
+    NotAnImage,
+}
+
+/// Reads at most `cap` bytes from `entry` as UTF-8. `None` when the entry is
+/// larger than the cap, is not UTF-8, or cannot be read.
+fn read_capped(entry: &mut impl Read, cap: u64) -> Option<String> {
+    let mut bytes = Vec::new();
+    entry.take(cap + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > cap {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 /// The image's size from as much of its header as it takes, without decoding
-/// the pixels. An entry that is not an image gives `None`.
-fn image_size(entry: &mut impl Read) -> Option<(u32, u32)> {
+/// the pixels. An image whose header cannot be read is `Unreadable`, not
+/// skipped; a non-image is `NotAnImage`.
+fn sniff(entry: &mut impl Read, name: &str) -> Sniffed {
     let mut data = Vec::new();
     for more in [4_096u64, 64 * 1024, 4 * 1024 * 1024] {
         let before = data.len();
-        entry.take(more).read_to_end(&mut data).ok()?;
-        if let Some(size) = dimensions(&data) {
-            return Some(size);
+        if entry.take(more).read_to_end(&mut data).is_err() {
+            break;
+        }
+        if let Some((width, height)) = dimensions(&data) {
+            return Sniffed::Image { width, height };
         }
         // The entry ended: reading more would tell us nothing.
         if data.len() == before {
             break;
         }
     }
-    entry.read_to_end(&mut data).ok()?;
-    dimensions(&data)
+    let remaining = MAX_HEADER_BYTES.saturating_sub(data.len() as u64);
+    if remaining > 0
+        && entry.take(remaining).read_to_end(&mut data).is_ok()
+        && let Some((width, height)) = dimensions(&data)
+    {
+        return Sniffed::Image { width, height };
+    }
+    if looks_like_image(&data) || looks_like_image_name(name) {
+        Sniffed::Unreadable
+    } else {
+        Sniffed::NotAnImage
+    }
+}
+
+fn looks_like_image(data: &[u8]) -> bool {
+    image::guess_format(data).is_ok()
+}
+
+fn looks_like_image_name(name: &str) -> bool {
+    matches!(
+        name.rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tif" | "tiff"
+    )
 }
 
 fn dimensions(data: &[u8]) -> Option<(u32, u32)> {
@@ -394,6 +474,28 @@ mod tests {
         assert_eq!(natural_cmp("page2", "page02"), Ordering::Less);
         assert_eq!(natural_cmp("pages/1.png", "pages/10.png"), Ordering::Less);
         assert_eq!(natural_cmp("page2a", "page2b"), Ordering::Less);
+    }
+
+    #[test]
+    fn a_capped_read_refuses_text_over_its_cap() {
+        use std::io::Cursor;
+
+        let mut over = Cursor::new(vec![b'a'; 9]);
+        assert_eq!(read_capped(&mut over, 8), None);
+        let mut under = Cursor::new(b"abcd".to_vec());
+        assert_eq!(read_capped(&mut under, 8).as_deref(), Some("abcd"));
+    }
+
+    #[test]
+    fn sniffing_a_non_image_stops_at_the_header_cap() {
+        use std::io::Cursor;
+
+        let mut reader = Cursor::new(vec![0u8; (MAX_HEADER_BYTES * 2) as usize]);
+        assert!(matches!(
+            sniff(&mut reader, "notes.txt"),
+            Sniffed::NotAnImage
+        ));
+        assert_eq!(reader.position(), MAX_HEADER_BYTES);
     }
 
     #[test]
