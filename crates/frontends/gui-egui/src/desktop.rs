@@ -1,6 +1,6 @@
 //! `noido --install` / `--uninstall`: register noido with the Linux desktop
-//! through a `.desktop` file, so file managers offer it for PDFs. The
-//! default PDF app is the user's to choose; this never touches it.
+//! through a `.desktop` file, so file managers offer it for PDFs and comics.
+//! The default apps are the user's to choose; this never touches them.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -257,9 +257,9 @@ impl Places {
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn install(yes: bool) -> Result<(), String> {
     let places = Places::here()?;
-    println!("This adds noido to your desktop's apps for PDFs, launching");
+    println!("This adds noido to your desktop's apps for PDFs and comics, launching");
     println!(
-        "{}. Your default PDF app stays as it is.",
+        "{}. Your default apps stay as they are.",
         places.exe.display()
     );
     proceed(plan_install(&places)?, yes)
