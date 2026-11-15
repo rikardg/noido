@@ -214,15 +214,57 @@ fn reading_starts_only_when_counting_is_asked() {
 }
 
 #[test]
-fn a_document_already_extracted_is_counted_at_once() {
+fn a_document_searched_is_counted_without_reading_again() {
+    // A walk reads every page anyway; counting it on the way means Document
+    // info costs nothing in reads afterwards.
     let engine = TextEngine::new(&["a", "b"]);
-    let searcher = start(&engine);
-    searcher.extract();
-    wait_for(|| engine.calls() == 2);
+    let mut searcher = start(&engine);
+    let generation = searcher.search("a", 0);
+    until_done(&searcher, generation);
     searcher.count();
     let counted = until_counted(&searcher);
     assert_eq!(counted.counted, 2);
     assert_eq!(engine.calls(), 2, "the pages were read again");
+}
+
+#[test]
+fn a_page_read_for_a_search_is_not_kept() {
+    let engine = TextEngine::new(&["the cat", "the cat sat"]);
+    let mut searcher = start(&engine);
+    let generation = searcher.search("cat", 0);
+    until_done(&searcher, generation);
+    assert_eq!(engine.calls(), 2);
+    // Asking for a page the walk read reads it again: the walk holds
+    // nothing, so a book does not stay in memory after a query.
+    searcher.request_text(0);
+    wait_for(|| engine.calls() == 3);
+}
+
+#[test]
+fn a_page_the_app_asked_for_is_kept_through_a_search() {
+    let engine = TextEngine::new(&["the cat", "the cat sat"]);
+    let mut searcher = start(&engine);
+    searcher.request_text(0);
+    wait_for(|| engine.calls() == 1);
+    let generation = searcher.search("cat", 0);
+    until_done(&searcher, generation);
+    assert_eq!(engine.calls(), 2, "the page on screen was read again");
+    // And it is still there: the walk left what the app holds alone.
+    searcher.request_text(0);
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(engine.calls(), 2);
+}
+
+#[test]
+fn a_second_search_reads_the_pages_again() {
+    let engine = TextEngine::new(&["the cat", "the cat sat", "a cat"]);
+    let mut searcher = start(&engine);
+    let generation = searcher.search("cat", 0);
+    until_done(&searcher, generation);
+    assert_eq!(engine.calls(), 3);
+    let generation = searcher.search("dog", 0);
+    until_done(&searcher, generation);
+    assert_eq!(engine.calls(), 6, "the walk kept what it read");
 }
 
 #[test]
@@ -233,10 +275,14 @@ fn a_page_read_again_keeps_its_counts() {
     let searcher = start(&engine);
     searcher.count();
     until_counted(&searcher);
+    assert_eq!(engine.calls(), 2);
     searcher.forget(0);
+    searcher.request_text(0);
     wait_for(|| engine.calls() == 3);
     std::thread::sleep(Duration::from_millis(50));
-    assert!(searcher.try_recv().is_none(), "reported again");
+    while let Some(update) = searcher.try_recv() {
+        assert!(!matches!(update, SearchUpdate::Counts(_)), "counted again");
+    }
 }
 
 #[test]
@@ -320,16 +366,6 @@ fn nothing_extracted_until_asked() {
     let _searcher = start(&engine);
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(engine.calls(), 0);
-}
-
-#[test]
-fn extract_reads_every_page_in_background() {
-    let engine = TextEngine::new(&["a", "b", "c"]);
-    let searcher = start(&engine);
-    searcher.extract();
-    wait_for(|| engine.calls() == 3);
-    std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(engine.calls(), 3);
 }
 
 #[test]
@@ -444,10 +480,17 @@ fn panicking_page_has_no_hits_and_is_not_extracted_again() {
     assert_eq!(pages(&updates), [(0, 1), (1, 0), (2, 1)]);
 
     // The failed page is remembered as having no text, so the next search
-    // does not panic on it all over again.
+    // does not panic on it all over again: it reads the two pages it let go
+    // and not the one that failed.
+    let calls = engine.calls();
     let generation = searcher.search("cat", 0);
-    until_done(&searcher, generation);
-    assert_eq!(engine.calls(), 3);
+    let updates = until_done(&searcher, generation);
+    assert_eq!(pages(&updates), [(0, 1), (1, 0), (2, 1)]);
+    assert_eq!(
+        engine.calls(),
+        calls + 2,
+        "the page that cannot be read was read again"
+    );
 }
 
 #[test]
@@ -488,14 +531,17 @@ fn empty_document_is_done_at_once() {
 }
 
 #[test]
-fn text_cached_across_searches() {
+fn a_page_asked_for_is_cached_across_searches() {
     let engine = TextEngine::new(&["a", "b", "c"]);
     let mut searcher = start(&engine);
+    // The page on screen: read for the app, and kept for it.
+    searcher.request_text(1);
+    wait_for(|| engine.calls() == 1);
     let generation = searcher.search("a", 0);
     until_done(&searcher, generation);
     let generation = searcher.search("b", 1);
     until_done(&searcher, generation);
-    assert_eq!(engine.calls(), 3);
+    assert_eq!(engine.calls(), 5, "page 1 was read again");
 }
 
 #[test]

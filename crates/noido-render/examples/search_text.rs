@@ -1,6 +1,6 @@
 //! Times text search on a real file. Usage: `search_text <file.pdf> <query>…`.
-//! Each query searches from the first page; the first one also extracts
-//! every page's text.
+//! Each query searches from the first page, and so reads the pages again:
+//! nothing is kept between them.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

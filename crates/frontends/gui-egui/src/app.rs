@@ -8,7 +8,7 @@ use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, Vec2, pos2, v
 use noido_core::{
     Action, Defaults, Direction, DragKind, Highlight, HighlightColour, Highlights, History, Keep,
     Key, KeyPress, Keymap, MAX_RENDER_SIDE, PageRect, PageTextState, Pins, RenderTracker,
-    SidebarState, THUMBNAIL_BUDGET, Target, View, ViewState, drag_kind, fit_page, page_point,
+    SidebarState, Spot, THUMBNAIL_BUDGET, Target, View, ViewState, drag_kind, fit_page, page_point,
     render_bytes, render_scale, window_keep, window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
@@ -756,6 +756,14 @@ impl NoidoApp {
     #[cfg(test)]
     fn with_texture_budget(mut self, bytes: u64) -> Self {
         self.texture_budget = bytes;
+        self
+    }
+
+    /// Keeps at most `bytes` of page text, for a test that wants a budget
+    /// small enough to see.
+    #[cfg(test)]
+    fn with_text_budget(mut self, bytes: usize) -> Self {
+        self.texts = self.texts.with_budget(bytes);
         self
     }
 
@@ -1540,9 +1548,6 @@ impl NoidoApp {
                 self.search_focus_requested = true;
             }
         }
-        if output.focused {
-            self.search_state.extract();
-        }
         if output.left {
             // The reader moved on; the sidebar is theirs now.
             self.sidebar_opened_by_search = false;
@@ -1994,6 +1999,30 @@ impl NoidoApp {
                     self.texts.want(p.page, |page| search.request_text(page));
                 }
             }
+        }
+        // The pages the reader can reach keep their text; what was wanted
+        // longest ago goes when the budget is over, and the text thread
+        // forgets it too. What is needed whole stays: a copy's pages, a
+        // highlight being edited, a selection's ends.
+        let selection = self.select.selection;
+        let copying = self.select.copy_pending.and_then(|s| s.pages());
+        let editing = self
+            .select
+            .editing
+            .and_then(|index| self.highlights.get(index))
+            .map(|highlight| highlight.pages());
+        let needed = |page: usize| {
+            let ends = selection.is_some_and(|s| {
+                [s.anchor, s.focus].iter().any(|spot| match *spot {
+                    Spot::At(caret) => caret.page == page,
+                    Spot::Waiting(p) => p.page == page,
+                })
+            });
+            ends || copying.as_ref().is_some_and(|pages| pages.contains(&page))
+                || editing.as_ref().is_some_and(|pages| pages.contains(&page))
+        };
+        for page in self.texts.evict(visible.clone(), needed) {
+            self.search_state.forget(page);
         }
         // A press that took a handle is not a click on a link under it.
         let on_handle = self
@@ -11539,26 +11568,164 @@ pub(crate) mod tests {
         assert_eq!(engine.calls(), visible);
     }
 
+    /// The harness of [`searching`], keeping only `bytes` of page text.
+    fn searching_with_text(engine: &TextEngine, bytes: usize) -> Harness {
+        let searcher = engine.clone();
+        Harness::build_with(Arc::new(engine.clone()), move |app| {
+            app.with_searcher(TextSearcher::start(
+                Arc::new(searcher),
+                PdfBytes::default(),
+                noido_render::Transforms::default(),
+                Box::new(|| {}),
+            ))
+            .with_text_budget(bytes)
+        })
+    }
+
     #[test]
-    fn first_focus_extracts() {
+    fn first_focus_reads_no_more_than_the_page_shown() {
         let engine = TextEngine::cats();
         let mut h = searching(&engine);
+        h.frames(10, vec![]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        h.frames(2, vec![]);
+        let shown = engine.calls();
+        assert!(shown > 0 && shown < 10, "opening read {shown} pages");
+        // The field takes focus to be typed into; the reading is the walk's
+        // work, when there is a query.
         focus_search(&mut h);
-        h.until(|_| engine.calls() == 10);
-        assert_eq!(engine.calls(), 10);
+        h.frames(5, vec![]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        h.frames(2, vec![]);
+        assert_eq!(engine.calls(), shown, "focusing the field read the book");
+    }
+
+    /// Twelve hundred and eighty pages of prose: more text than the budget
+    /// holds by an order of magnitude.
+    fn prose() -> TextEngine {
+        const LINE: &str = "the quick brown fox jumps over the lazy dog, and then it does it again";
+        let page: [&str; 20] = [LINE; 20];
+        let pages: Vec<&[&str]> = (0..1_280).map(|_| &page[..]).collect();
+        TextEngine::new(&pages)
+    }
+
+    #[test]
+    fn a_book_read_through_keeps_only_what_the_budget_holds() {
+        let engine = prose();
+        let mut h = searching_with_text(&engine, 1 << 20);
+        h.until(|h| matches!(h.app.texts.get(0), PageTextState::Known(_)));
+        go_to(&mut h, 40);
+        h.until(|h| h.centre().page >= 40);
+        h.frames(2, vec![]);
+        let kept = h.app.texts.retained_bytes();
+        assert!(
+            kept <= 1 << 20,
+            "{kept} bytes of text kept after forty pages, on a megabyte budget"
+        );
+        assert!(kept > 0, "the page on screen has no text");
+    }
+
+    #[test]
+    fn a_search_leaves_the_app_holding_only_the_page_shown() {
+        // The walk's own half — that it reads pages without keeping them —
+        // is the text thread's, and the searcher tests pin it. This is the
+        // app's: a query does not fill `Texts`, however many pages it reads.
+        let engine = prose();
+        let mut h = searching_with_text(&engine, 1 << 20);
+        search_for(&mut h, "lazy");
+        h.frames(2, vec![]);
+        assert!(
+            engine.calls() > 100,
+            "the search read only {} pages",
+            engine.calls()
+        );
+        let kept = h.app.texts.retained_bytes();
+        assert!(
+            kept <= 1 << 20,
+            "{kept} bytes of text kept after searching, on a megabyte budget"
+        );
+        assert!(kept > 0, "the page on screen has no text");
+    }
+
+    #[test]
+    fn a_copy_of_more_pages_than_the_budget_holds_finishes() {
+        let engine = prose();
+        // A megabyte holds about eighteen of these pages; the copy spans
+        // sixty.
+        let mut h = searching_with_text(&engine, 1 << 20);
+        h.frames(2, vec![]);
+        let selection = noido_core::Selection {
+            anchor: noido_core::Spot::At(noido_core::Caret { page: 0, char: 0 }),
+            focus: noido_core::Spot::At(noido_core::Caret { page: 60, char: 5 }),
+        };
+        h.app.select.selection = Some(selection);
+        h.frames(1, vec![egui::Event::Copy]);
+        // The copy needs every page of the selection at once, so the budget
+        // has to give way rather than the copy re-reading for ever.
+        h.until(|h| h.app.select.copy_pending.is_none());
+        assert!(
+            h.app.select.copy_pending.is_none(),
+            "the copy of sixty pages never finished"
+        );
+        assert!(!h.copied.is_empty(), "nothing was copied");
+        let calls = engine.calls();
+        h.frames(10, vec![]);
+        assert_eq!(
+            engine.calls(),
+            calls,
+            "the text thread is still being read after the copy finished"
+        );
+    }
+
+    #[test]
+    fn text_of_a_page_out_of_reach_is_let_go() {
+        let engine = TextEngine::cats();
+        // Room for barely one page: only what is on screen stays.
+        let mut h = searching_with_text(&engine, 200);
+        h.until(|h| matches!(h.app.texts.get(0), PageTextState::Known(_)));
+        go_to(&mut h, 3);
+        h.until(|h| h.centre().page >= 3);
+        h.until(|h| matches!(h.app.texts.get(3), PageTextState::Known(_)));
+        h.frames(2, vec![]);
+        assert!(
+            matches!(h.app.texts.get(0), PageTextState::Unknown),
+            "page 1's text stayed with the reader on page {}",
+            h.centre().page
+        );
+        assert!(
+            matches!(h.app.texts.get(3), PageTextState::Known(_)),
+            "the page on screen lost its text"
+        );
+
+        // Back to it: read again, since the thread was told to forget it.
+        let calls = engine.calls();
+        while h.centre().page > 0 {
+            h.press(egui::Key::PageUp, Modifiers::NONE);
+        }
+        h.until(|h| matches!(h.app.texts.get(0), PageTextState::Known(_)));
+        assert!(
+            engine.calls() > calls,
+            "page 1's text came back without being read again"
+        );
     }
 
     #[test]
     fn reload_brings_new_searcher() {
         let engine = TextEngine::cats();
         let mut h = searching(&engine);
+        h.frames(5, vec![]);
+        let old = engine.calls();
         let new = TextEngine::cats();
         h.reload(Arc::new(new.clone()), recompiled_key());
-        focus_search(&mut h);
-        h.until(|_| new.calls() == 10);
-        assert_eq!(new.calls(), 10);
-        // The old version only ever read the pages shown, for selecting.
-        assert!(engine.calls() < 10, "{}", engine.calls());
+        // A query is read by the new version's thread; the old one is not
+        // asked again.
+        search_for(&mut h, "cat");
+        assert!(
+            new.calls() >= 10,
+            "the new version was searched on {} pages",
+            new.calls()
+        );
+        assert_eq!(engine.calls(), old, "the old version was read again");
     }
 
     /// Types `text` into the search field and waits for the search to finish.

@@ -90,6 +90,17 @@ impl PageText {
         self.chars.len()
     }
 
+    /// What holding this page costs, in bytes: the struct and the buffers it
+    /// owns, the folded forms included once it has been searched. An
+    /// estimate of the heap behind it, for a cache that keeps a budget.
+    pub fn memory_bytes(&self) -> usize {
+        std::mem::size_of::<PageText>()
+            + self.text.capacity()
+            + self.chars.capacity() * std::mem::size_of::<CharInfo>()
+            + self.bounds.capacity() * std::mem::size_of::<Rect>()
+            + self.forms.get().map_or(0, Forms::memory_bytes)
+    }
+
     /// The line character `char` is on; a newline is on the line it ends.
     pub fn line_of(&self, char: usize) -> usize {
         self.chars[char].line
@@ -951,6 +962,29 @@ mod tests {
         assert_eq!(page.text(), "ab cd");
         assert!(page.glyph_bounds(1).is_some());
         assert_eq!(page.glyph_bounds(2), None);
+    }
+
+    #[test]
+    fn a_page_costs_what_it_holds() {
+        let page = PageText::new(page(&["the cat sat", "on the mat"]));
+        let parts = std::mem::size_of::<PageText>()
+            + page.text.capacity()
+            + page.chars.capacity() * std::mem::size_of::<CharInfo>()
+            + page.bounds.capacity() * std::mem::size_of::<Rect>();
+        assert_eq!(page.memory_bytes(), parts);
+
+        // Searching it folds both forms and keeps them: the page costs more
+        // from then on, which is what a budget has to see. The two folded
+        // character lists alone are four bytes a character each.
+        let before = page.memory_bytes();
+        let query = crate::Query::new("cat").unwrap();
+        assert_eq!(page.find(&query).len(), 1);
+        let after = page.memory_bytes();
+        let folded = 2 * page.char_count() * std::mem::size_of::<char>();
+        assert!(
+            after >= before + folded,
+            "{after} bytes after searching, {before} before: the forms are not counted"
+        );
     }
 
     #[test]

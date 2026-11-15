@@ -183,6 +183,17 @@ pub(crate) fn line_end_hyphen(chars: &[char], i: usize) -> Option<(Hyphen, usize
 }
 
 impl Forms {
+    /// The bytes the folded forms and their source indices hold.
+    pub(crate) fn memory_bytes(&self) -> usize {
+        let folded = |f: &Folded| {
+            f.chars.capacity() * std::mem::size_of::<char>()
+                + f.source.capacity() * std::mem::size_of::<usize>()
+        };
+        self.chars.capacity() * std::mem::size_of::<char>()
+            + folded(&self.accented)
+            + folded(&self.plain)
+    }
+
     fn new(text: &str) -> Forms {
         let chars: Vec<char> = text.chars().collect();
         let folds = fold(&chars, true);
