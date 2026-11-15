@@ -1,5 +1,6 @@
 //! noido viewer state, independent of any UI toolkit.
 
+mod anchor;
 mod bars;
 mod column;
 mod defaults;
@@ -25,6 +26,8 @@ mod transforms;
 mod view;
 mod window;
 
+// The menu has a `Check` of its own, so this one leaves as `AnchorCheck`.
+pub use anchor::{Anchored, Check as AnchorCheck, Walk, anchor, check, requote};
 pub use bars::*;
 pub use column::*;
 pub use defaults::*;

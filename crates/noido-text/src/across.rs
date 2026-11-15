@@ -96,19 +96,25 @@ impl<'a> Joined<'a> {
     /// `prefix`, counting back from the match, plus how many after it agree
     /// with `suffix`, counting forward. Stops at the window's edges.
     pub fn context(&self, span: Span, prefix: &str, suffix: &str) -> usize {
+        self.context_folded(span, &folded(prefix), &folded(suffix))
+    }
+
+    /// [`Self::context`] with `prefix` and `suffix` already folded by
+    /// [`folded_chars`], for scoring many matches against one quote.
+    pub fn context_folded(&self, span: Span, prefix: &[char], suffix: &[char]) -> usize {
         let (Some(start), Some(end)) = (self.index_of(span.start), self.index_of(span.end)) else {
             return 0;
         };
         let (chars, source) = (&self.folds.plain, &self.folds.plain_source);
         let before = source.partition_point(|&s| s < start);
         let after = source.partition_point(|&s| s < end);
-        let back = folded(prefix)
+        let back = prefix
             .iter()
             .rev()
             .zip(chars[..before].iter().rev())
             .take_while(|(a, b)| a == b)
             .count();
-        let forward = folded(suffix)
+        let forward = suffix
             .iter()
             .zip(&chars[after..])
             .take_while(|(a, b)| a == b)
@@ -209,6 +215,11 @@ fn collapse(chars: &[char]) -> String {
 /// `s` folded plain, not trimmed.
 fn folded(s: &str) -> Vec<char> {
     fold(&s.chars().collect::<Vec<_>>(), false).plain
+}
+
+/// `s` folded the way [`Joined::context_folded`] wants its neighbours.
+pub fn folded_chars(s: &str) -> Vec<char> {
+    folded(s)
 }
 
 /// Whether `a` and `b` are the same after search folding (accents kept).

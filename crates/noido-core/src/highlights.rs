@@ -412,6 +412,22 @@ mod tests {
     }
 
     #[test]
+    fn relocation_clears_undo() {
+        let new = PageText::new(page(&["so the cat"]));
+        let mut h = highlight((0, 0), (0, 7), HighlightColour::Yellow);
+        h.quote = Some(quote("the cat"));
+        let mut highlights = Highlights::default();
+        highlights.add(h);
+        highlights.add(highlight((0, 8), (0, 9), HighlightColour::Green));
+        assert!(highlights.undo());
+        assert!(highlights.redo());
+        let result = crate::anchor(highlights.items(), &[&new], false);
+        assert!(result.relocated);
+        highlights.anchored(result.items, result.relocated);
+        assert!(!highlights.undo());
+    }
+
+    #[test]
     fn anchored_keeps_history_unless_relocated() {
         let mut highlights = Highlights::default();
         highlights.add(highlight((0, 0), (0, 3), HighlightColour::Yellow));
