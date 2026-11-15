@@ -17,9 +17,9 @@ const CONTEXT_AFTER: usize = 150;
 /// What to search for, folded the way page text is.
 #[derive(Clone, Debug)]
 pub struct Query {
-    folded: Vec<char>,
+    pub(crate) folded: Vec<char>,
     /// Whether it has accents, so they must match.
-    accented: bool,
+    pub(crate) accented: bool,
 }
 
 impl Query {
@@ -74,17 +74,17 @@ struct Folded {
 }
 
 /// Both folded forms of some text.
-struct Folds {
-    accented: Vec<char>,
-    plain: Vec<char>,
-    accented_source: Vec<usize>,
-    plain_source: Vec<usize>,
+pub(crate) struct Folds {
+    pub(crate) accented: Vec<char>,
+    pub(crate) plain: Vec<char>,
+    pub(crate) accented_source: Vec<usize>,
+    pub(crate) plain_source: Vec<usize>,
 }
 
 /// Folds `chars`: lowercase, NFKC, whitespace runs as one space, and with
 /// `dehyphenate`, line-end hyphens inside a word removed. `plain` also drops
 /// accents.
-fn fold(chars: &[char], dehyphenate: bool) -> Folds {
+pub(crate) fn fold(chars: &[char], dehyphenate: bool) -> Folds {
     let mut out = Folds {
         accented: Vec::new(),
         plain: Vec::new(),
