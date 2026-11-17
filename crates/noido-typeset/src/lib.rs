@@ -7,5 +7,7 @@ mod house;
 mod kp;
 #[allow(dead_code)] // until the page maker uses it
 mod lines;
+#[allow(dead_code)] // until the page maker uses it
+mod pages;
 #[allow(dead_code)] // until the page maker calls paragraphs()
 mod paragraphs;
