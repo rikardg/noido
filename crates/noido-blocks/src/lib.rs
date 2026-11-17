@@ -3,6 +3,9 @@
 //! style ranges and a map from drawn text back to the source. Offsets
 //! into the source are characters of one part. Pure: no I/O.
 
+pub mod markdown;
 mod text;
+mod tree;
 
 pub use text::*;
+pub use tree::*;
