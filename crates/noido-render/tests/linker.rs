@@ -71,6 +71,7 @@ impl Document for LinkEngine {
                         ],
                     },
                     invisible: false,
+                    run: 0,
                 });
             }
         }

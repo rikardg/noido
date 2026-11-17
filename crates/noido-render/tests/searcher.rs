@@ -112,6 +112,7 @@ impl Document for TextEngine {
                             ],
                         },
                         invisible: false,
+                        run: 0,
                     }
                 })
                 .collect()

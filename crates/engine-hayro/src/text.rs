@@ -40,6 +40,8 @@ pub fn page_glyphs(page: &Page<'_>) -> Vec<Glyph> {
 #[derive(Default)]
 struct TextDevice {
     glyphs: Vec<Glyph>,
+    /// The glyph runs drawn so far.
+    runs: u32,
 }
 
 impl<'a> Device<'a> for TextDevice {
@@ -88,7 +90,9 @@ impl<'a> Device<'a> for TextDevice {
                     ],
                 },
                 invisible: matches!(mode, DrawMode::Invisible),
+                run: self.runs,
             });
         }
+        self.runs += 1;
     }
 }

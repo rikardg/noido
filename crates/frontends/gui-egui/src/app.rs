@@ -11829,6 +11829,7 @@ pub(crate) mod tests {
                             ],
                         },
                         invisible: false,
+                        run: 0,
                     });
                 }
             }

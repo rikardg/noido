@@ -96,6 +96,11 @@ pub struct Glyph {
     pub quad: Quad,
     /// Drawn invisibly, as OCR text layers are.
     pub invisible: bool,
+    /// Which drawing of a text-showing operator (one Tj or TJ) it came
+    /// from: glyphs of one run share the number, counted up from 0 on each
+    /// page. A run has one font, size and letter-spacing. Text both filled
+    /// and stroked is drawn twice, as two runs.
+    pub run: u32,
 }
 
 /// An upright rectangle on the page, in PDF points from its top-left.
