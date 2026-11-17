@@ -168,6 +168,8 @@ pub struct NoidoApp {
     history: History,
     /// Where each page's characters sit in the document's parts.
     locations: noido_engine::LocationMap,
+    /// The settings the text was laid out under: the key of its anchors.
+    layout_key: Option<String>,
     /// The document's highlights.
     highlights: Highlights,
     /// The pages the reader pinned.
@@ -375,6 +377,7 @@ impl NoidoApp {
             persistence: None,
             history: History::default(),
             locations: info.locations,
+            layout_key: info.layout_key,
             highlights: Highlights::default(),
             pins: Pins::default(),
             pagelet: None,
@@ -1162,6 +1165,7 @@ impl NoidoApp {
         self.transforms.replace(fitted);
         self.engine_sizes = reload.info.engine_sizes;
         self.locations = reload.info.locations;
+        self.layout_key = reload.info.layout_key;
         let mut view = View::new(page_sizes);
         view.set_viewport_size(width, height);
         if let Some(state) = &state {
@@ -1252,9 +1256,12 @@ impl NoidoApp {
             saved.refit(&engine_sizes);
             self.reshape(saved, &engine_sizes);
             self.transforms.retain_below(page_count);
-            // No layout settings yet: a reflowable layout's key is `None`.
-            self.view
-                .restore_in(&state.view, state.anchor.as_ref(), None, &self.locations);
+            self.view.restore_in(
+                &state.view,
+                state.anchor.as_ref(),
+                self.layout_key.as_deref(),
+                &self.locations,
+            );
             self.sidebar = state.sidebar;
             self.history = state.history.clone();
             self.highlights = Highlights::from_items(state.highlights.clone());
@@ -1296,7 +1303,9 @@ impl NoidoApp {
                     .map(|preview| noido_core::Place::of_page(preview.page, &self.locations)),
                 ..pagelet
             }),
-            anchor: self.view.anchor(&self.locations, None),
+            anchor: self
+                .view
+                .anchor(&self.locations, self.layout_key.as_deref()),
             transforms: self.transforms.snapshot(),
         })
     }
@@ -3767,6 +3776,99 @@ pub(crate) mod tests {
                 layout: None
             })
         );
+    }
+
+    /// [`FlowEngine`]'s document with a layout key and `chars` characters
+    /// a page.
+    struct KeyedFlowEngine {
+        key: &'static str,
+        chars: usize,
+    }
+    struct KeyedFlowDocument {
+        key: &'static str,
+        chars: usize,
+    }
+
+    impl PdfEngine for KeyedFlowEngine {
+        fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
+            Ok(Box::new(KeyedFlowDocument {
+                key: self.key,
+                chars: self.chars,
+            }))
+        }
+    }
+
+    impl Document for KeyedFlowDocument {
+        fn page_count(&self) -> usize {
+            BlankDocument.page_count()
+        }
+        fn page_size(&self, page: usize) -> Result<Size, EngineError> {
+            BlankDocument.page_size(page)
+        }
+        fn render_tile(
+            &self,
+            page: usize,
+            s: f32,
+            r: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            BlankDocument.render_tile(page, s, r)
+        }
+        fn layout_key(&self) -> Option<String> {
+            Some(self.key.into())
+        }
+        fn locations(&self) -> noido_engine::LocationMap {
+            let line = |page: usize| noido_engine::Run {
+                start: noido_engine::Location {
+                    part: 0,
+                    char: page * self.chars,
+                },
+                chars: self.chars,
+                top: 72.0,
+                bottom: 84.0,
+            };
+            noido_engine::LocationMap::from_lines((0..10).map(|page| vec![line(page)]).collect())
+        }
+    }
+
+    /// Saved under `paper-a` (100 characters a page): an anchor at
+    /// character 230, the view centred on page 7.
+    fn keyed_flow_state() -> DocState {
+        let mut state = flow_state_past_the_end();
+        state.view.centre.page = 7;
+        state.anchor = Some(noido_core::ViewAnchor {
+            at: noido_engine::Location { part: 0, char: 230 },
+            layout: Some("paper-a".into()),
+        });
+        state
+    }
+
+    fn keyed_flow_app(key: &'static str, chars: usize) -> (tempfile::TempDir, Harness) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let h = Harness::build_with(Arc::new(KeyedFlowEngine { key, chars }), |app| {
+            app.with_persistence(
+                Store::at(dir.path()),
+                test_slot(dir.path()),
+                Some(keyed_flow_state()),
+            )
+        });
+        (dir, h)
+    }
+
+    #[test]
+    fn text_that_reflows_restores_by_anchor_under_a_new_layout_key() {
+        let (_dir, h) = keyed_flow_app("paper-b", 50);
+        // Character 230 is on page 4 at 50 characters a page.
+        assert_eq!(h.app.view.centre_page(), Some(4));
+        assert_eq!(
+            h.app.doc_state().unwrap().anchor.map(|a| a.layout),
+            Some(Some("paper-b".to_owned()))
+        );
+    }
+
+    #[test]
+    fn text_that_reflows_restores_by_place_under_the_same_layout_key() {
+        let (_dir, h) = keyed_flow_app("paper-a", 100);
+        assert_eq!(h.app.view.centre_page(), Some(7));
     }
 
     #[test]

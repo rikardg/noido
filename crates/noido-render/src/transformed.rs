@@ -138,6 +138,10 @@ impl Document for Transformed {
         self.inner.page_count()
     }
 
+    fn layout_key(&self) -> Option<String> {
+        self.inner.layout_key()
+    }
+
     /// As the engine has them: text that reflows isn't turned.
     fn locations(&self) -> noido_engine::LocationMap {
         self.inner.locations()
