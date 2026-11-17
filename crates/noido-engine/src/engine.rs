@@ -101,6 +101,13 @@ pub trait Document {
     fn locations(&self) -> LocationMap {
         LocationMap::identity()
     }
+
+    /// What the pages depend on besides the file, such as the layout
+    /// settings; pages and locations are the same while it is. None for
+    /// a document whose pages are the file's.
+    fn layout_key(&self) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -139,6 +146,11 @@ mod tests {
     #[test]
     fn a_document_is_its_own_pages_by_default() {
         assert!(!OnePage.locations().reflows());
+    }
+
+    #[test]
+    fn a_document_has_no_layout_key_by_default() {
+        assert_eq!(OnePage.layout_key(), None);
     }
 
     #[test]
