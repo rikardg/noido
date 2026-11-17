@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+noido-blocks.workspace = true
 noido-engine.workspace = true
 parley.workspace = true
 flate2.workspace = true
