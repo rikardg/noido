@@ -102,6 +102,8 @@ pub struct DocumentInfo {
     pub transforms: noido_core::PageTransforms,
     /// Where each page's characters sit in the document's parts.
     pub locations: noido_engine::LocationMap,
+    /// The settings the text was laid out under; `None` on fixed pages.
+    pub layout_key: Option<String>,
 }
 
 /// Handle to the render thread. Dropping it stops the thread after its current job.
@@ -269,6 +271,7 @@ fn open(
     let document = open_transformed(engine, bytes, transforms)?;
     let engine_sizes = document.engine_sizes()?;
     let locations = document.locations();
+    let layout_key = document.layout_key();
     let mut fitted = transforms.snapshot();
     fitted.refit(&engine_sizes);
     let page_sizes = engine_sizes
@@ -283,6 +286,7 @@ fn open(
             engine_sizes,
             transforms: fitted,
             locations,
+            layout_key,
         },
     ))
 }
