@@ -188,6 +188,7 @@ pub enum Format {
     Unknown,
     Pdf,
     Comic,
+    Markdown,
 }
 
 /// What a document says about itself. Fields it doesn't give are `None`.

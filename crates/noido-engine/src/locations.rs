@@ -49,20 +49,47 @@ impl LocationMap {
     }
 
     /// Text laid out on pages: each page's lines in reading order, every
-    /// line after the one before it in the text.
+    /// line after the one before it in the text. The lines fill the
+    /// page's characters one after the other.
     pub fn from_lines(pages: Vec<Vec<Run>>) -> Self {
+        Self::from_placed(
+            pages
+                .into_iter()
+                .map(|runs| {
+                    let mut offset = 0;
+                    runs.into_iter()
+                        .map(|run| {
+                            let placed = (offset, run);
+                            offset += run.chars;
+                            placed
+                        })
+                        .collect()
+                })
+                .collect(),
+        )
+    }
+
+    /// Each page's runs with their offsets among the page's characters,
+    /// for pages with characters that have no source position (a
+    /// newline between lines, an added hyphen). Offsets don't decrease
+    /// and runs don't overlap; runs are in reading order.
+    pub fn from_placed(pages: Vec<Vec<(usize, Run)>>) -> Self {
         let mut lines = Vec::new();
         let mut ranges = Vec::with_capacity(pages.len());
         for (page, runs) in pages.into_iter().enumerate() {
             let first = lines.len();
-            let mut offset = 0;
-            for run in runs {
+            for (offset, run) in runs {
                 debug_assert!(
                     lines.last().is_none_or(|l: &Line| l.run.end() <= run.start),
                     "lines must come in reading order, without overlap: {run:?}"
                 );
+                debug_assert!(
+                    lines[first..]
+                        .last()
+                        .is_none_or(|l: &Line| l.offset + l.run.chars <= offset),
+                    "offsets must not decrease or overlap on a page: {offset}"
+                );
                 lines.push(Line { page, offset, run });
-                offset += run.chars;
             }
             ranges.push(first..lines.len());
         }
@@ -78,19 +105,25 @@ impl LocationMap {
     }
 
     /// Where character `char` of `page` is; `char` may be the page's
-    /// character count, for the end of its last line.
+    /// character count, for the end of its last line. A character in a
+    /// gap (no source) is the next run's start; one after the last run
+    /// is that run's end. So this is not the inverse of
+    /// [`Self::page_char`] there: a gap character's location maps back
+    /// to the next run's offset. None for a page without runs.
     pub fn location(&self, page: usize, char: usize) -> Option<Location> {
         if !self.reflows() {
             return Some(Location { part: page, char });
         }
         let lines = &self.lines[self.pages.get(page)?.clone()];
-        let line = lines
-            .iter()
-            .find(|l| char < l.offset + l.run.chars)
-            .or_else(|| lines.last().filter(|l| char == l.offset + l.run.chars))?;
+        let Some(line) = lines.iter().find(|l| char < l.offset + l.run.chars) else {
+            // At or after the last run's end: unsourced characters
+            // trailing it are its end.
+            return lines.last().map(|l| l.run.end());
+        };
         Some(Location {
             part: line.run.start.part,
-            char: line.run.start.char + (char - line.offset),
+            // A character before the run (in a gap) is the run's start.
+            char: line.run.start.char + char.saturating_sub(line.offset),
         })
     }
 
@@ -231,7 +264,7 @@ mod tests {
         let map = two_pages();
         assert_eq!(map.page_char(at(0, 151)), None);
         assert_eq!(map.page_char(at(1, 0)), None);
-        assert_eq!(map.location(1, 31), None);
+        assert_eq!(map.location(1, 31), Some(at(0, 150)));
         assert_eq!(map.location(2, 0), None);
         assert_eq!(map.page_start(2), None);
     }
@@ -284,5 +317,56 @@ mod tests {
         assert_eq!(map.page_start(0), None);
         assert_eq!(map.page_char(at(0, 0)), Some((1, 0)));
         assert_eq!(map.location(0, 0), None);
+    }
+
+    /// Page 0: "ab\ncd": a run of 2 at offset 0 (chars 10..12), a run of 2
+    /// at offset 3 (chars 12..14); the newline at 2 has no source.
+    fn with_gap() -> LocationMap {
+        LocationMap::from_placed(vec![vec![
+            (0, run(0, 10, 2, 36.0)),
+            (3, run(0, 12, 2, 50.0)),
+        ]])
+    }
+
+    #[test]
+    fn a_placed_run_keeps_its_offset() {
+        assert_eq!(with_gap().location(0, 4), Some(at(0, 13)));
+        assert_eq!(with_gap().page_char(at(0, 13)), Some((0, 4)));
+    }
+
+    #[test]
+    fn a_character_in_a_gap_is_the_next_runs_start() {
+        assert_eq!(with_gap().location(0, 2), Some(at(0, 12)));
+    }
+
+    #[test]
+    fn from_lines_still_sums() {
+        let placed = LocationMap::from_placed(vec![
+            vec![(0, run(0, 0, 40, 36.0)), (40, run(0, 40, 80, 46.0))],
+            vec![(0, run(0, 120, 30, 36.0))],
+        ]);
+        assert_eq!(two_pages(), placed);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "offsets")]
+    fn overlapping_offsets_are_refused() {
+        LocationMap::from_placed(vec![vec![
+            (0, run(0, 0, 10, 36.0)),
+            (5, run(0, 10, 5, 46.0)),
+        ]]);
+    }
+
+    #[test]
+    fn a_character_after_the_last_run_is_its_end() {
+        assert_eq!(with_gap().location(0, 5), Some(at(0, 14)));
+        assert_eq!(with_gap().location(0, 6), Some(at(0, 14)));
+    }
+
+    #[test]
+    fn a_gap_before_the_first_run_is_its_start() {
+        let map = LocationMap::from_placed(vec![vec![(2, run(0, 10, 2, 36.0))]]);
+        assert_eq!(map.location(0, 0), Some(at(0, 10)));
     }
 }
