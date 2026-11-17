@@ -1,5 +1,6 @@
 //! Assembling a page's glyphs into lines and words.
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -13,8 +14,12 @@ use crate::search::Forms;
 /// A move across the baseline further than this many ems starts a new line,
 /// as does a move back along it.
 const NEW_LINE: f32 = 0.5;
-/// A gap wider than this many ems between glyphs is a space.
+/// A gap wider than this many ems between glyphs, less their run's
+/// letter-spacing, is a space.
 const SPACE: f32 = 0.1;
+/// Letters further apart than this many ems are not letter-spaced but
+/// set apart.
+const MAX_TRACKING: f32 = 0.15;
 /// How far above a target point, in points, the line it names may start:
 /// hyperref puts its anchors a little above the text.
 pub const LINE_TOLERANCE: f32 = 4.0;
@@ -470,8 +475,47 @@ impl Baseline {
     }
 }
 
+/// Each run's letter-spacing in ems: the smallest gap between neighbouring
+/// glyphs of the run on one baseline, gaps beside whitespace left out (word
+/// spacing lands there). 0 for a run with fewer than two such gaps, one
+/// whose letters overlap (plain kerned text), or one whose letters stand
+/// further apart than `MAX_TRACKING` (meant as apart). As PDFium does,
+/// this comes off a gap before it is judged a space.
+fn tracking(glyphs: &[Glyph]) -> HashMap<u32, f32> {
+    // Per run: the smallest gap, and how many gaps.
+    let mut gaps: HashMap<u32, (f32, usize)> = HashMap::new();
+    let letter = |g: &Glyph| !g.text.trim().is_empty() && mark_of(&g.text).is_none();
+    for pair in glyphs.windows(2) {
+        let [a, b] = pair else { continue };
+        if a.run != b.run || !letter(a) || !letter(b) {
+            continue;
+        }
+        let base = Baseline::of(a);
+        let em = a.size.max(b.size).max(1.0);
+        let (along, across) = base.project(b.origin);
+        if across.abs() > NEW_LINE * em || along < -NEW_LINE * em {
+            continue;
+        }
+        let gap = (along - base.advance) / em;
+        let entry = gaps.entry(a.run).or_insert((f32::INFINITY, 0));
+        *entry = (entry.0.min(gap), entry.1 + 1);
+    }
+    gaps.into_iter()
+        .map(|(run, (min, count))| {
+            let tracked = count >= 2 && min > 0.0 && min <= MAX_TRACKING;
+            (run, if tracked { min } else { 0.0 })
+        })
+        .collect()
+}
+
 /// Joins glyphs in content-stream order into clusters of text.
 fn assemble(glyphs: &[Glyph]) -> Vec<Cluster> {
+    let tracking = tracking(glyphs);
+    let tracking_of = |index: Option<usize>| {
+        index.map_or(0.0, |i| {
+            tracking.get(&glyphs[i].run).copied().unwrap_or(0.0)
+        })
+    };
     let mut clusters: Vec<Cluster> = Vec::new();
     let mut line = 0;
     // The last glyph placed as text, and its cluster.
@@ -496,9 +540,10 @@ fn assemble(glyphs: &[Glyph]) -> Vec<Cluster> {
             continue;
         }
         let baseline = Baseline::of(glyph);
-        if let Some((p, _)) = &prev {
+        if let Some((p, prev_cluster)) = &prev {
             let em = p.size.max(glyph.size).max(1.0);
             let (along, across) = p.project(glyph.origin);
+            let spacing = tracking_of(clusters[*prev_cluster].glyph).min(tracking_of(Some(index)));
             if across.abs() > NEW_LINE * em || along < -NEW_LINE * em {
                 unjoined(pending.take(), glyphs, &mut clusters, line);
                 clusters.push(Cluster {
@@ -507,7 +552,7 @@ fn assemble(glyphs: &[Glyph]) -> Vec<Cluster> {
                     line,
                 });
                 line += 1;
-            } else if along - p.advance > SPACE * em
+            } else if along - p.advance - spacing * em > SPACE * em
                 && !clusters
                     .last()
                     .is_some_and(|c| c.text.ends_with(char::is_whitespace))
@@ -857,6 +902,138 @@ mod tests {
         let mut glyphs = line("ab ", 72.0, 100.0, 10.0);
         glyphs.extend(line("cd", 90.0, 100.0, 10.0));
         assert_eq!(text(glyphs), "ab cd");
+    }
+
+    /// Glyphs of run `run` at 10.5 pt from `x` along y = 100, one per
+    /// piece: its text, its advance in ems, and the gap before it in ems.
+    /// Gives the glyphs and where the last one ends.
+    fn spaced(run: u32, x: f32, pieces: &[(&str, f32, f32)]) -> (Vec<Glyph>, f32) {
+        const SIZE: f32 = 10.5;
+        let mut x = x;
+        let glyphs = pieces
+            .iter()
+            .map(|&(text, advance, gap)| {
+                x += gap * SIZE;
+                let glyph = Glyph {
+                    run,
+                    ..glyph_along(text, x, 100.0, SIZE, advance, (1.0, 0.0))
+                };
+                x += advance * SIZE;
+                glyph
+            })
+            .collect();
+        (glyphs, x)
+    }
+
+    #[test]
+    fn letter_spaced_heading_reads_as_words() {
+        // 0.036 Tc 0.014 Tw, in a font whose space is 0.233 em:
+        // [(E)-69.6 (AG)-17.6 (L)-48.1 (E)-14 ( E)-51 (Y)-73.4 (E)]TJ.
+        // E→A is 0.106 em, Y→E 0.109: tracking and kerning together.
+        let (glyphs, _) = spaced(
+            0,
+            72.0,
+            &[
+                ("E", 0.641, 0.0),
+                ("A", 0.625, 0.1056),
+                ("G", 0.735, 0.036),
+                ("L", 0.633, 0.0536),
+                ("E", 0.641, 0.0841),
+                (" ", 0.233, 0.05),
+                ("E", 0.641, 0.05),
+                ("Y", 0.633, 0.087),
+                ("E", 0.641, 0.1094),
+            ],
+        );
+        assert_eq!(text(glyphs), "EAGLE EYE");
+    }
+
+    #[test]
+    fn letter_spaced_word_without_a_space_glyph_stays_whole() {
+        // 0.068 Tc: [(EL)-16.1 (EM)-8.3 (EN)-20.5 (T)16.6 (A)-44.3 (R)18 (Y)]TJ.
+        let (glyphs, _) = spaced(
+            0,
+            72.0,
+            &[
+                ("E", 0.641, 0.0),
+                ("L", 0.633, 0.068),
+                ("E", 0.641, 0.0841),
+                ("M", 0.9, 0.068),
+                ("E", 0.641, 0.0763),
+                ("N", 0.8, 0.068),
+                ("T", 0.6, 0.0885),
+                ("A", 0.625, 0.0514),
+                ("R", 0.7, 0.1123),
+                ("Y", 0.633, 0.05),
+            ],
+        );
+        assert_eq!(text(glyphs), "ELEMENTARY");
+    }
+
+    #[test]
+    fn gaps_beside_a_space_glyph_are_not_the_tracking() {
+        // Word spacing pulls the word after the space glyph in to touch
+        // it; the letters are 0.08 em apart, and c→d 0.17 em is no space.
+        let (glyphs, _) = spaced(
+            0,
+            72.0,
+            &[
+                ("a", 0.5, 0.0),
+                ("b", 0.5, 0.08),
+                (" ", 0.25, 0.08),
+                ("c", 0.5, 0.0),
+                ("d", 0.5, 0.17),
+            ],
+        );
+        assert_eq!(text(glyphs), "ab cd");
+    }
+
+    #[test]
+    fn letters_set_far_apart_keep_their_spaces() {
+        // 0.3 em between every letter is more than tracking.
+        let (glyphs, _) = spaced(
+            0,
+            72.0,
+            &[("a", 0.5, 0.0), ("b", 0.5, 0.3), ("c", 0.5, 0.3)],
+        );
+        assert_eq!(text(glyphs), "a b c");
+    }
+
+    #[test]
+    fn a_kern_that_pulls_letters_in_means_no_tracking() {
+        // a→b overlaps: plain kerned text. Its gaps are taken as they
+        // are, so b→c 0.09 em stays no space.
+        let (glyphs, _) = spaced(
+            0,
+            72.0,
+            &[("a", 0.5, 0.0), ("b", 0.5, -0.02), ("c", 0.5, 0.09)],
+        );
+        assert_eq!(text(glyphs), "abc");
+    }
+
+    #[test]
+    fn a_run_with_one_gap_has_no_tracking() {
+        let (glyphs, _) = spaced(0, 72.0, &[("a", 0.5, 0.0), ("b", 0.5, 0.12)]);
+        assert_eq!(text(glyphs), "a b");
+    }
+
+    #[test]
+    fn between_runs_the_smaller_tracking_is_taken_off() {
+        let tracked = |run, x| {
+            spaced(
+                run,
+                x,
+                &[("a", 0.5, 0.0), ("b", 0.5, 0.05), ("c", 0.5, 0.05)],
+            )
+        };
+        // Tracked, then tracked: 0.12 em less 0.05 is no space.
+        let (mut glyphs, end) = tracked(0, 72.0);
+        glyphs.extend(tracked(1, end + 0.12 * 10.5).0);
+        assert_eq!(text(glyphs), "abcabc");
+        // Tracked, then not: the full 0.12 em is a space.
+        let (mut glyphs, end) = tracked(0, 72.0);
+        glyphs.extend(spaced(1, end + 0.12 * 10.5, &[("d", 0.5, 0.0), ("e", 0.5, 0.0)]).0);
+        assert_eq!(text(glyphs), "abc de");
     }
 
     #[test]
