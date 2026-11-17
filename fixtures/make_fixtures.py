@@ -613,7 +613,56 @@ def comic_bad_info() -> bytes:
     return out.getvalue()
 
 
+def sample_md() -> str:
+    """Markdown using every construct the block tree knows."""
+    lines = [
+        "---",
+        "title: Sample",
+        "---",
+        "",
+        "# Café *naïve* heading",
+        "",
+        "Setext heading",
+        "==============",
+        "",
+        'Plain **strong** and ~~struck~~ text, a `code span`, a [link](http://example.org "Title"),',
+        'an image ![alt text](pic.png), an escaped \\*star\\*, an entity &amp; "quotes" -- a dash.',
+        "A hard break  ",  # two trailing spaces
+        "and another\\",
+        "line.<br> A footnote[^note].",
+        "",
+        "- [x] done",
+        "- [ ] todo",
+        "",
+        "3. three",
+        "4. four",
+        "",
+        "> Quoted",
+        "> > nested",
+        "",
+        "```rust",
+        "fn main() {}",
+        "```",
+        "",
+        "    indented code",
+        "",
+        "| Left | Centre |",
+        "|:-----|:------:|",
+        "| a    | b      |",
+        "",
+        "***",
+        "",
+        "<div>html</div>",
+        "",
+        "[ref]: http://example.org",
+        "",
+        "[^note]: The note.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 if __name__ == "__main__":
+    (Path(__file__).resolve().parent / "sample.md").write_bytes(sample_md().encode())
     here = Path(__file__).resolve().parent
     (here / "outline.pdf").write_bytes(outline())
     (here / "outline-empty.pdf").write_bytes(outline_empty())
