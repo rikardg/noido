@@ -174,6 +174,27 @@ def text() -> bytes:
     )
 
 
+def tj() -> bytes:
+    # A letter-spaced heading in one TJ array, as InDesign writes them,
+    # then a plain Tj.
+    content = (
+        b"BT /F1 1 Tf 0.036 Tc 0.014 Tw 10.5 0 0 10.5 72 700 Tm"
+        b" [(E)-69.6 (AG)-17.6 (L)-48.1 (E)-14 ( E)-51 (Y)-73.4 (E)] TJ"
+        b" 0 Tc 0 Tw 0 -2 Td (next) Tj ET"
+    )
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R"
+            b" /Resources << /Font << /F1 4 0 R >> >> >>",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica"
+            b" /Encoding /WinAnsiEncoding >>",
+            b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+        ]
+    )
+
+
 def links() -> bytes:
     annots = [
         b"<< /Type /Annot /Subtype /Link /Rect [72 690 172 710] /Dest [4 0 R /XYZ 72 600 null] >>",
@@ -600,6 +621,7 @@ if __name__ == "__main__":
     (here / "page-labels.pdf").write_bytes(page_labels())
     (here / "two-pages.pdf").write_bytes(two_pages())
     (here / "text.pdf").write_bytes(text())
+    (here / "tj.pdf").write_bytes(tj())
     (here / "links.pdf").write_bytes(links())
     (here / "properties.pdf").write_bytes(properties())
     (here / "black.pdf").write_bytes(black())

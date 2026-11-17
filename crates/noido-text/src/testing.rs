@@ -25,6 +25,7 @@ pub fn glyph_along(text: &str, x: f32, y: f32, size: f32, advance: f32, dir: (f3
             ],
         },
         invisible: false,
+        run: 0,
     }
 }
 

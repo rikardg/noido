@@ -94,6 +94,30 @@ fn rotated_page_text() {
 }
 
 #[test]
+fn glyphs_of_one_text_operator_share_a_run() {
+    // "(Hello World) Tj … (noido) Tj": two runs.
+    let glyphs = open("text.pdf").text(0).unwrap();
+    let runs: Vec<(&str, u32)> = glyphs.iter().map(|g| (g.text.as_str(), g.run)).collect();
+    let (hello, noido) = runs.split_at(11);
+    assert!(hello.iter().all(|(_, r)| *r == hello[0].1), "{runs:?}");
+    assert!(noido.iter().all(|(_, r)| *r == noido[0].1), "{runs:?}");
+    assert_ne!(hello[0].1, noido[0].1, "{runs:?}");
+}
+
+#[test]
+fn a_tj_array_is_one_run() {
+    // "[(E)-69.6 (AG)-17.6 (L)-48.1 (E)-14 ( E)-51 (Y)-73.4 (E)] TJ",
+    // then "(next) Tj".
+    let glyphs = open("tj.pdf").text(0).unwrap();
+    let runs: Vec<(&str, u32)> = glyphs.iter().map(|g| (g.text.as_str(), g.run)).collect();
+    let (heading, next) = runs.split_at(9);
+    assert_eq!(letters(&glyphs), "EAGLEEYEnext");
+    assert!(heading.iter().all(|(_, r)| *r == heading[0].1), "{runs:?}");
+    assert!(next.iter().all(|(_, r)| *r == next[0].1), "{runs:?}");
+    assert_ne!(heading[0].1, next[0].1, "{runs:?}");
+}
+
+#[test]
 fn text_on_blank_page_is_empty() {
     assert!(open("two-pages.pdf").text(1).unwrap().is_empty());
 }
