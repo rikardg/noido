@@ -11,6 +11,7 @@ members = [
     "crates/noido-state",
     "crates/noido-text",
     "crates/noido-blocks",
+    "crates/noido-typeset",
     "crates/frontends/gui-egui",
 ]
 
@@ -33,6 +34,13 @@ noido-state = { path = "crates/noido-state" }
 noido-text = { path = "crates/noido-text" }
 noido-blocks = { path = "crates/noido-blocks" }
 noido-macos = { path = "crates/noido-macos" }
+noido-typeset = { path = "crates/noido-typeset" }
+parley = { version = "0.13", default-features = false, features = ["std"] }
+hypher = "0.1.8"
+# The one parley 0.13 uses.
+skrifa = "0.49"
+flate2 = "1"
+noido-fonts = { git = "https://github.com/rikardg/noido-fonts", tag = "v0.1.0" }
 self_cell = "1"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false }
