@@ -2941,8 +2941,10 @@ dependencies = [
  "noido-blocks",
  "noido-engine",
  "noido-fonts",
+ "noido-text",
  "parley",
  "skrifa 0.49.0",
+ "unicode-normalization",
 ]
 
 [[package]]
