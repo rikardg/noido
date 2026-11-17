@@ -230,6 +230,8 @@ struct Worker<'a> {
     /// Pages whose text could not be read, remembered so a walk that drops
     /// the text does not read them — and fail — again.
     failed: Vec<bool>,
+    /// Whether the pages come from layout, so their hyphens are marked.
+    reflows: bool,
     /// Pages whose text was asked for, to answer first.
     requests: VecDeque<usize>,
     /// The next page the counting pass reads.
@@ -257,6 +259,7 @@ impl<'a> Worker<'a> {
             texts: (0..document.page_count()).map(|_| None).collect(),
             wanted: vec![false; document.page_count()],
             failed: vec![false; document.page_count()],
+            reflows: document.locations().reflows(),
             requests: VecDeque::new(),
             idle: 0,
             counts: (0..document.page_count()).map(|_| None).collect(),
@@ -626,6 +629,7 @@ impl<'a> Worker<'a> {
                 PageText::new(Vec::new())
             } else {
                 match crate::glyphs_on_page(self.document, page) {
+                    Ok(glyphs) if self.reflows => PageText::with_marked_hyphens(glyphs),
                     Ok(glyphs) => PageText::new(glyphs),
                     Err(e) => {
                         eprintln!("noido: text of page {}: {e}", page + 1);
