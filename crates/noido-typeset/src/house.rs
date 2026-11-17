@@ -1,6 +1,4 @@
 //! The house style: a B-format book page.
-// Unused until the later modules (layout, pages) use them.
-#![allow(dead_code)]
 
 use noido_engine::Size;
 

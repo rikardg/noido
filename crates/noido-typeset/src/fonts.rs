@@ -1,9 +1,6 @@
 //! The bundled fonts, unpacked once, and the parley context that knows only
 //! them.
 
-// Unused until the later modules (shaping, layout) use them.
-#![allow(dead_code)]
-
 use std::io::Read;
 use std::sync::{Arc, OnceLock};
 
@@ -68,6 +65,17 @@ impl Fonts {
             collection: self.collection.clone(),
             source_cache: Default::default(),
         }
+    }
+
+    /// Which face a shaped run's font data is: the data parley hands back
+    /// is the registered buffer itself.
+    pub(crate) fn face_of(&self, data: &[u8]) -> Option<FaceId> {
+        let i = self
+            .faces
+            .iter()
+            .position(|f| std::ptr::eq(f.as_ptr(), data.as_ptr()) && f.len() == data.len())
+            .or_else(|| self.faces.iter().position(|f| f.as_slice() == data))?;
+        Some(FaceId(i as u16))
     }
 
     /// The font file's bytes.

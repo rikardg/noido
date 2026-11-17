@@ -12,6 +12,8 @@ publish.workspace = true
 noido-blocks.workspace = true
 noido-engine.workspace = true
 parley.workspace = true
+hypher.workspace = true
+skrifa.workspace = true
 flate2.workspace = true
 noido-fonts = { workspace = true, features = ["libron", "libertinus-serif", "libertinus-sans", "newcm", "monaspace-neon"] }
 
