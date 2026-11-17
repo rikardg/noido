@@ -2931,6 +2931,7 @@ name = "noido-typeset"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "noido-blocks",
  "noido-engine",
  "noido-fonts",
  "parley",

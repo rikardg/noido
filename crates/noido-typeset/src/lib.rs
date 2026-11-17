@@ -5,3 +5,5 @@ mod fonts;
 mod house;
 #[allow(dead_code)] // until the paragraph setter (Task 8) uses it
 mod kp;
+#[allow(dead_code)] // until the paragraph setter (Task 8) uses it
+mod paragraphs;
