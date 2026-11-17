@@ -264,7 +264,7 @@ fn was_flagged(items: &[Item], position: usize) -> bool {
 }
 
 /// The first item of a line that follows a break at `position`.
-fn line_start(items: &[Item], position: usize) -> usize {
+pub(crate) fn line_start(items: &[Item], position: usize) -> usize {
     if position == 0 {
         return 0;
     }

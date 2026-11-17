@@ -2,8 +2,10 @@
 //! line breaker and page maker.
 
 mod fonts;
+#[allow(dead_code)] // until the page maker uses all of it
 mod house;
-#[allow(dead_code)] // until the paragraph setter (Task 8) uses it
 mod kp;
-#[allow(dead_code)] // until the paragraph setter (Task 8) uses it
+#[allow(dead_code)] // until the page maker uses it
+mod lines;
+#[allow(dead_code)] // until the page maker calls paragraphs()
 mod paragraphs;

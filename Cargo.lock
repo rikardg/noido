@@ -2085,6 +2085,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
+name = "hypher"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45f2b4f6b5da34d400d4c112eadcc14512cc5d04307a8eee182586d9bebd7ce6"
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2931,10 +2937,12 @@ name = "noido-typeset"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "hypher",
  "noido-blocks",
  "noido-engine",
  "noido-fonts",
  "parley",
+ "skrifa 0.49.0",
 ]
 
 [[package]]
