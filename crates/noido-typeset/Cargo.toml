@@ -11,6 +11,8 @@ publish.workspace = true
 [dependencies]
 noido-blocks.workspace = true
 noido-engine.workspace = true
+noido-text.workspace = true
+unicode-normalization.workspace = true
 parley.workspace = true
 hypher.workspace = true
 skrifa.workspace = true

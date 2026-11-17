@@ -1,6 +1,7 @@
 //! The typesetter behind Document: house style, fonts, and (later) the
 //! line breaker and page maker.
 
+mod book;
 mod fonts;
 #[allow(dead_code)] // until the page maker uses all of it
 mod house;
@@ -11,3 +12,6 @@ mod lines;
 mod pages;
 #[allow(dead_code)] // until the page maker calls paragraphs()
 mod paragraphs;
+mod runs;
+
+pub use book::{Book, typeset};

@@ -138,6 +138,12 @@ impl PageText {
         self.chars[char].glyph.map(|g| self.out(self.bounds[g]))
     }
 
+    /// The index of the glyph character `char` was drawn with; `None` for
+    /// inserted spaces and newlines.
+    pub fn glyph_of(&self, char: usize) -> Option<usize> {
+        self.chars[char].glyph
+    }
+
     /// `r`, in the upright frame, in the page's.
     fn out(&self, r: Rect) -> Rect {
         self.upright.rect(r, ZERO)
@@ -720,6 +726,14 @@ mod tests {
         width: 0.0,
         height: 0.0,
     };
+
+    #[test]
+    fn a_character_knows_its_glyph_and_inserted_ones_have_none() {
+        let p = PageText::new(page(&["ab", "cd"]));
+        assert_eq!(p.text(), "ab\ncd");
+        let glyphs: Vec<_> = (0..p.char_count()).map(|c| p.glyph_of(c)).collect();
+        assert_eq!(glyphs, [Some(0), Some(1), None, Some(2), Some(3)]);
+    }
 
     /// Points around and on the two lines of `page(&["the cat sat", "on the
     /// mat"])`: left, right, above, below, between, and on glyphs.
