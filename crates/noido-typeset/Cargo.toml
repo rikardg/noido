@@ -1,0 +1,18 @@
+[package]
+name = "noido-typeset"
+description = "noido typeset: sets markdown and EPUB blocks into pages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+noido-engine.workspace = true
+parley.workspace = true
+flate2.workspace = true
+noido-fonts = { workspace = true, features = ["libron", "libertinus-serif", "libertinus-sans", "newcm", "monaspace-neon"] }
+
+[lints]
+workspace = true
