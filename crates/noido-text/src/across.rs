@@ -37,7 +37,8 @@ impl<'a> Joined<'a> {
             starts.push(chars.len());
             chars.extend(page.text().chars());
         }
-        let folds = fold(&chars, true);
+        let page_of = |i: usize| starts.partition_point(|&s| s <= i).saturating_sub(1);
+        let folds = fold(&chars, true, |i| pages[page_of(i)].marked_hyphens());
         Joined {
             first,
             pages: pages.to_vec(),
@@ -259,7 +260,7 @@ fn collapse(chars: &[char]) -> String {
 
 /// `s` folded plain, not trimmed.
 fn folded(s: &str) -> Vec<char> {
-    fold(&s.chars().collect::<Vec<_>>(), false).plain
+    fold(&s.chars().collect::<Vec<_>>(), false, |_| false).plain
 }
 
 /// A quote's prefix folded the way [`Joined::context_folded`] wants it:
@@ -285,7 +286,7 @@ pub fn folded_suffix(s: &str) -> Vec<char> {
 /// Whether `a` and `b` are the same after search folding (accents kept).
 pub fn same_text(a: &str, b: &str) -> bool {
     let accented = |s: &str| {
-        let mut f = fold(&s.chars().collect::<Vec<_>>(), true).accented;
+        let mut f = fold(&s.chars().collect::<Vec<_>>(), true, |_| false).accented;
         while f.first() == Some(&' ') {
             f.remove(0);
         }
@@ -493,5 +494,18 @@ mod tests {
             j.context(span, &prefix, &suffix),
             context_full(&prefix, &suffix)
         );
+    }
+
+    #[test]
+    fn a_hyphen_at_a_page_end_is_judged_by_its_own_page() {
+        let marked = PageText::with_marked_hyphens(page(&["the well-"]));
+        let plain = text(&["known cat"]);
+        let j = Joined::new(0, &[&marked, &plain]);
+        assert_eq!(j.find(&q("well-known")).len(), 1);
+        assert!(j.find(&q("wellknown")).is_empty());
+        let plain = text(&["the well-"]);
+        let marked = PageText::with_marked_hyphens(page(&["known cat"]));
+        let j = Joined::new(0, &[&plain, &marked]);
+        assert_eq!(j.find(&q("wellknown")).len(), 1);
     }
 }

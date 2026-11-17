@@ -26,7 +26,7 @@ impl Counts {
             // A hyphen at the line's end joins those lines; it and the
             // line break do not end the word. A soft hyphen joins without
             // being drawn; every other hyphen is on the page.
-            if in_word && let Some((_, next)) = line_end_hyphen(&chars, i) {
+            if in_word && let Some((_, next)) = line_end_hyphen(&chars, i, false) {
                 if chars[i] != '\u{ad}' {
                     counts.chars += 1;
                     counts.chars_no_spaces += 1;

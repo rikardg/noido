@@ -15,25 +15,29 @@ const PARAGRAPH_STEP: f32 = 1.4;
 /// gap between lines shows a paragraph break.
 pub fn copy_text(pieces: &[(&PageText, Range<usize>)]) -> String {
     let mut out = String::new();
+    let mut marked = false;
     for (page, range) in pieces {
         let text = piece(page, range.clone());
         if let Some(first) = text.chars().next() {
-            let sep = join(&mut out, first);
+            let sep = join(&mut out, first, marked);
             out.push_str(sep);
         }
         out.push_str(&text);
+        // A hyphen ending this piece is judged by this page.
+        marked = page.marked_hyphens();
     }
     collapse(&out)
 }
 
 /// What goes between `out` and a piece starting with `first`: nothing
 /// after a line-end hyphen (which goes if it breaks a word), else a space.
-fn join(out: &mut String, first: char) -> &'static str {
+/// `marked` is whether the page `out` ends on has marked hyphens.
+fn join(out: &mut String, first: char, marked: bool) -> &'static str {
     let tail: Vec<char> = out.chars().rev().take(2).collect();
     let [hyphen, before] = tail[..] else {
         return if out.is_empty() { "" } else { " " };
     };
-    match line_end_hyphen(&[before, hyphen, '\n', first], 1) {
+    match line_end_hyphen(&[before, hyphen, '\n', first], 1, marked) {
         Some((Hyphen::Breaks, _)) => {
             out.pop();
             ""
@@ -52,7 +56,7 @@ fn piece(page: &PageText, range: Range<usize>) -> String {
     let mut i = range.start;
     while i < range.end.min(chars.len()) {
         let c = chars[i];
-        if let Some((kind, next)) = line_end_hyphen(&chars, i)
+        if let Some((kind, next)) = line_end_hyphen(&chars, i, page.marked_hyphens())
             && next < range.end
         {
             if matches!(kind, Hyphen::Belongs) {
@@ -189,5 +193,62 @@ mod tests {
     fn spaces_collapse_and_trim() {
         let p = PageText::new(page(&["the  cat "]));
         assert_eq!(all(&p), "the cat");
+    }
+
+    #[test]
+    fn a_marked_page_keeps_a_source_hyphen_at_a_line_end() {
+        let p = PageText::with_marked_hyphens(page(&["the well-", "known cat"]));
+        assert_eq!(all(&p), "the well-known cat");
+    }
+
+    #[test]
+    fn a_marked_page_drops_a_soft_hyphen_at_a_line_end() {
+        let p = PageText::with_marked_hyphens(page(&["the po\u{ad}", "litical cat"]));
+        assert_eq!(all(&p), "the political cat");
+    }
+
+    #[test]
+    fn a_marked_page_drops_a_soft_hyphen_at_a_line_end_whatever_is_around_it() {
+        // The typesetter's break inside a word too wide for the line.
+        let p = PageText::with_marked_hyphens(page(&["see x.org/a\u{ad}", "/b cat"]));
+        assert_eq!(all(&p), "see x.org/a/b cat");
+        let p = PageText::with_marked_hyphens(page(&["an a_\u{ad}", "b cat"]));
+        assert_eq!(all(&p), "an a_b cat");
+        let p = PageText::with_marked_hyphens(page(&["id 12\u{ad}", "34 cat"]));
+        assert_eq!(all(&p), "id 1234 cat");
+    }
+
+    #[test]
+    fn a_marked_page_joins_a_dash_at_a_line_end_to_what_follows() {
+        let p = PageText::with_marked_hyphens(page(&["a self\u{2014}", "evident cat"]));
+        assert_eq!(all(&p), "a self\u{2014}evident cat");
+        let p = PageText::with_marked_hyphens(page(&["a 1-2 \u{2013}", "3 cat"]));
+        assert_eq!(all(&p), "a 1-2 \u{2013} 3 cat");
+        let p = PageText::with_marked_hyphens(page(&["the pre-", "1990 cat"]));
+        assert_eq!(all(&p), "the pre-1990 cat");
+    }
+
+    #[test]
+    fn an_unmarked_page_does_not_join_a_dash_or_a_hyphen_before_a_digit() {
+        let p = PageText::new(page(&["a self\u{2014}", "evident cat"]));
+        assert_eq!(all(&p), "a self\u{2014} evident cat");
+        let p = PageText::new(page(&["the pre-", "1990 cat"]));
+        assert_eq!(all(&p), "the pre- 1990 cat");
+    }
+
+    #[test]
+    fn across_pages_the_page_with_the_hyphen_decides() {
+        let copy = |a: &PageText, b: &PageText| {
+            copy_text(&[(a, 0..a.char_count()), (b, 0..b.char_count())])
+        };
+        let marked = PageText::with_marked_hyphens(page(&["the well-"]));
+        let plain = PageText::new(page(&["known cat"]));
+        assert_eq!(copy(&marked, &plain), "the well-known cat");
+        let plain = PageText::new(page(&["the inter-"]));
+        let marked = PageText::with_marked_hyphens(page(&["preter cat"]));
+        assert_eq!(copy(&plain, &marked), "the interpreter cat");
+        let a = PageText::with_marked_hyphens(page(&["the po\u{ad}"]));
+        let b = PageText::with_marked_hyphens(page(&["litical cat"]));
+        assert_eq!(copy(&a, &b), "the political cat");
     }
 }

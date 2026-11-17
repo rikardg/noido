@@ -26,7 +26,7 @@ impl Query {
     /// `None` if `text` has nothing to search for.
     pub fn new(text: &str) -> Option<Query> {
         let chars: Vec<char> = text.trim().chars().collect();
-        let folded = fold(&chars, false);
+        let folded = fold(&chars, false, |_| false);
         if folded.accented.is_empty() {
             return None;
         }
@@ -83,8 +83,9 @@ pub(crate) struct Folds {
 
 /// Folds `chars`: lowercase, NFKC, whitespace runs as one space, and with
 /// `dehyphenate`, line-end hyphens inside a word removed. `plain` also drops
-/// accents.
-pub(crate) fn fold(chars: &[char], dehyphenate: bool) -> Folds {
+/// accents. `marked(i)` says whether the hyphens of the page `chars[i]` is
+/// on are marked (see [`PageText::with_marked_hyphens`]).
+pub(crate) fn fold(chars: &[char], dehyphenate: bool, marked: impl Fn(usize) -> bool) -> Folds {
     let mut out = Folds {
         accented: Vec::new(),
         plain: Vec::new(),
@@ -95,7 +96,7 @@ pub(crate) fn fold(chars: &[char], dehyphenate: bool) -> Folds {
     while i < chars.len() {
         let c = chars[i];
         if dehyphenate {
-            match line_end_hyphen(chars, i) {
+            match line_end_hyphen(chars, i, marked(i)) {
                 Some((Hyphen::Breaks, next)) => {
                     // The hyphen and the line break go.
                     i = next;
@@ -151,12 +152,19 @@ pub(crate) enum Hyphen {
 /// Spaces may come between the hyphen and the line break, as in OCR layers.
 /// Before a lowercase letter it breaks the word; before another letter it is
 /// the word's own, except OCR's `¬` and the soft hyphen, which always mark a
-/// break.
-pub(crate) fn line_end_hyphen(chars: &[char], i: usize) -> Option<(Hyphen, usize)> {
+/// break. On a `marked` page (from layout) `-`, `‐`, `–` and `—` always
+/// belong to the word, and join what follows whatever it is (the typesetter
+/// breaks "pre-1990" after its hyphen): only `¬` and the soft hyphen
+/// break it. There a soft hyphen is always the typesetter's own, and
+/// breaks whatever is on either side ("x.org/a" / "/b").
+pub(crate) fn line_end_hyphen(chars: &[char], i: usize, marked: bool) -> Option<(Hyphen, usize)> {
     let hyphen = chars[i];
-    if !matches!(hyphen, '-' | '\u{2010}' | '¬' | '\u{ad}')
+    let added = marked && hyphen == '\u{ad}';
+    // Typeset lines also break after a dash, and before anything.
+    let dash = marked && matches!(hyphen, '\u{2013}' | '\u{2014}');
+    if !(dash || matches!(hyphen, '-' | '\u{2010}' | '¬' | '\u{ad}'))
         || i == 0
-        || !chars[i - 1].is_alphabetic()
+        || !(added || chars[i - 1].is_alphabetic())
     {
         return None;
     }
@@ -171,10 +179,12 @@ pub(crate) fn line_end_hyphen(chars: &[char], i: usize) -> Option<(Hyphen, usize
         return None;
     }
     let next = *chars.get(j + 1)?;
-    if !next.is_alphabetic() {
+    // On a marked page a dash, a hyphen or a soft hyphen joins anything.
+    let any_next = marked && hyphen != '¬' && !next.is_whitespace();
+    if !(next.is_alphabetic() || any_next) {
         return None;
     }
-    let kind = if next.is_lowercase() || matches!(hyphen, '¬' | '\u{ad}') {
+    let kind = if matches!(hyphen, '¬' | '\u{ad}') || (!marked && next.is_lowercase()) {
         Hyphen::Breaks
     } else {
         Hyphen::Belongs
@@ -194,9 +204,9 @@ impl Forms {
             + folded(&self.plain)
     }
 
-    fn new(text: &str) -> Forms {
+    fn new(text: &str, marked: bool) -> Forms {
         let chars: Vec<char> = text.chars().collect();
-        let folds = fold(&chars, true);
+        let folds = fold(&chars, true, |_| marked);
         Forms {
             chars,
             accented: Folded {
@@ -214,7 +224,9 @@ impl Forms {
 impl PageText {
     /// The matches of `query`, in text order, not overlapping.
     pub fn find(&self, query: &Query) -> Vec<TextHit> {
-        let forms = self.forms.get_or_init(|| Forms::new(self.text()));
+        let forms = self
+            .forms
+            .get_or_init(|| Forms::new(self.text(), self.marked_hyphens()));
         let folded = if query.accented {
             &forms.accented
         } else {
@@ -502,5 +514,40 @@ mod tests {
         let hits = find(&["black", "cat"], "black cat");
         assert_eq!(hits[0].context.text, "black cat");
         assert_eq!(bold(&hits[0]), "black cat");
+    }
+
+    #[test]
+    fn search_on_a_marked_page_finds_a_source_hyphenated_word() {
+        let p = PageText::with_marked_hyphens(page(&["the well-", "known cat"]));
+        assert_eq!(p.find(&Query::new("well-known").unwrap()).len(), 1);
+        assert!(p.find(&Query::new("wellknown").unwrap()).is_empty());
+    }
+
+    #[test]
+    fn search_on_a_marked_page_finds_text_across_a_dash_at_a_line_end() {
+        let p = PageText::with_marked_hyphens(page(&["a self\u{2014}", "evident cat"]));
+        assert_eq!(p.find(&Query::new("self\u{2014}evident").unwrap()).len(), 1);
+        let p = PageText::with_marked_hyphens(page(&["the pre-", "1990 cat"]));
+        assert_eq!(p.find(&Query::new("pre-1990").unwrap()).len(), 1);
+        let p = PageText::new(page(&["a self\u{2014}", "evident cat"]));
+        assert!(
+            p.find(&Query::new("self\u{2014}evident").unwrap())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn search_on_a_marked_page_finds_a_word_split_by_a_soft_hyphen() {
+        let p = PageText::with_marked_hyphens(page(&["the po\u{ad}", "litical cat"]));
+        assert_eq!(p.find(&Query::new("political").unwrap()).len(), 1);
+    }
+
+    #[test]
+    fn search_on_a_marked_page_finds_text_across_any_soft_hyphen_at_a_line_end() {
+        // The typesetter's break inside a word too wide for the line.
+        let p = PageText::with_marked_hyphens(page(&["see x.org/a\u{ad}", "/b cat"]));
+        assert_eq!(p.find(&Query::new("x.org/a/b").unwrap()).len(), 1);
+        let p = PageText::with_marked_hyphens(page(&["id 12\u{ad}", "34 cat"]));
+        assert_eq!(p.find(&Query::new("1234").unwrap()).len(), 1);
     }
 }

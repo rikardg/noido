@@ -40,6 +40,9 @@ pub struct PageText {
     upright: Rotation,
     /// The forms search matches against, built on the first search.
     pub(crate) forms: OnceLock<Forms>,
+    /// Whether the page is typeset: a line-end `-` is then the source's own,
+    /// and only a soft hyphen (the typesetter's added one) breaks a word.
+    marked_hyphens: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -59,6 +62,23 @@ struct Cluster {
 
 impl PageText {
     pub fn new(glyphs: Vec<Glyph>) -> PageText {
+        PageText::build(glyphs, false)
+    }
+
+    /// The text of a page from layout, which draws every hyphen it adds at
+    /// a line break as a soft hyphen (`\u{ad}`): a `-` or `‐` at a line end
+    /// belongs to its word, and only a soft hyphen (or `¬`) breaks one.
+    pub fn with_marked_hyphens(glyphs: Vec<Glyph>) -> PageText {
+        PageText::build(glyphs, true)
+    }
+
+    /// Whether this page's line-end hyphens are marked; see
+    /// [`PageText::with_marked_hyphens`].
+    pub fn marked_hyphens(&self) -> bool {
+        self.marked_hyphens
+    }
+
+    fn build(glyphs: Vec<Glyph>, marked_hyphens: bool) -> PageText {
         let upright = writing_direction(&glyphs);
         let bounds = glyphs
             .iter()
@@ -82,6 +102,7 @@ impl PageText {
             bounds,
             upright,
             forms: OnceLock::new(),
+            marked_hyphens,
         }
     }
 
