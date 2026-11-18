@@ -790,6 +790,7 @@ impl Ctx<'_> {
             let kinds: &[Decoration] = match styled.style {
                 Style::Strikethrough => &[Decoration::Strike],
                 Style::Link { .. } => &[Decoration::Underline],
+                Style::FootnoteRef { .. } => &[],
                 _ => continue,
             };
             let mut extent: Option<(f32, f32)> = None;
@@ -804,8 +805,12 @@ impl Ctx<'_> {
             for &kind in kinds {
                 line.decorations.push((kind, x0, x1));
             }
-            if let Style::Link { dest } = &styled.style {
-                line.links.push((dest.clone(), x0, x1));
+            match &styled.style {
+                Style::Link { dest } => line.links.push((dest.clone(), x0, x1)),
+                // A footnote's name starts with '^', which no heading
+                // slug has.
+                Style::FootnoteRef { label } => line.links.push((format!("#^{label}"), x0, x1)),
+                _ => {}
             }
         }
     }

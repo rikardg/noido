@@ -11,6 +11,7 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::house::{LEADING, LEFT, LINES, PAPER, TOP};
 use crate::lines::{SetGlyph, SetLine, Shaper};
+use crate::links::{Marks, marks};
 use crate::pages::{Flow, paginate};
 use crate::paragraphs::{Para, Role, front_matter, paragraphs};
 use crate::runs::runs;
@@ -25,6 +26,7 @@ const DESCENT: f32 = 0.2;
 pub struct Book {
     pages: Vec<Vec<Glyph>>,
     map: LocationMap,
+    pub(crate) marks: Marks,
 }
 
 /// What a page is made of while it is built.
@@ -42,7 +44,8 @@ struct Page {
 
 pub fn typeset(source: &str) -> Book {
     let tree = parse(source);
-    let lang = language(front_matter(&tree, source).lang.as_deref());
+    let front = front_matter(&tree, source);
+    let lang = language(front.lang.as_deref());
     let (paras, notes) = paragraphs(&tree);
     let mut shaper = Shaper::new();
     let set: Vec<Vec<SetLine>> = paras
@@ -88,6 +91,7 @@ pub fn typeset(source: &str) -> Book {
     Book {
         pages: glyph_pages,
         map: LocationMap::from_placed(map_pages),
+        marks: marks(&paras, &set, &placed, count, &front),
     }
 }
 
