@@ -2,6 +2,7 @@
 //! line breaker and page maker.
 
 mod book;
+mod draw;
 mod fonts;
 #[allow(dead_code)] // until the page maker uses all of it
 mod house;
