@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 pulldown-cmark.workspace = true
+roxmltree.workspace = true
+unicode-normalization.workspace = true
 
 [lints]
 workspace = true
