@@ -1,6 +1,7 @@
 //! XHTML (an EPUB chapter) into the block tree, with roxmltree. Offsets
 //! are characters of the part: the NFC text content of `<body>`.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::ops::Range;
 
@@ -8,7 +9,7 @@ use roxmltree::{Document, Node, ParsingOptions};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::entities::lookup;
-use crate::{Align, Block, BlockKind, Cell, Item, Text, Tree};
+use crate::{Align, Block, BlockKind, Cell, Item, Style, Styled, Text, Tree};
 
 /// A chapter read into the block tree.
 pub struct Xhtml {
@@ -20,6 +21,13 @@ pub struct Xhtml {
     pub chars: usize,
     /// The body, or a section directly in it, has `epub:type="cover"`.
     pub cover: bool,
+    /// Some text node that would be drawn has a character that is not
+    /// whitespace (`chars` counts whitespace too, for locations). Text
+    /// in `svg` and `math` is counted but not drawn, so it does not
+    /// count here.
+    pub has_text: bool,
+    /// An `<svg>` in the body holds an `<image>`.
+    pub svg_image: bool,
 }
 
 /// A chapter file's bytes; `Err(())` when it isn't UTF-8 (a leading
@@ -34,20 +42,42 @@ pub fn parse(bytes: &[u8]) -> Result<Xhtml, ()> {
         ..ParsingOptions::default()
     };
     let doc = Document::parse_with_options(&source, options).map_err(|_| ())?;
-    let mut reader = Reader { pos: 0 };
+    let mut reader = Reader {
+        pos: 0,
+        ids: Vec::new(),
+        seen: HashSet::new(),
+        has_text: false,
+        svg_image: false,
+    };
     let mut blocks = Vec::new();
+    let mut cover = false;
     if let Some(body) = doc
         .descendants()
         .find(|n| n.is_element() && n.tag_name().name() == "body")
     {
+        cover = is_cover(body)
+            || body
+                .children()
+                .any(|c| c.is_element() && c.tag_name().name() == "section" && is_cover(c));
+        reader.note_id(body);
         reader.container(body, &mut blocks);
     }
     Ok(Xhtml {
         tree: Tree { blocks },
-        ids: Vec::new(),
+        ids: reader.ids,
         chars: reader.pos,
-        cover: false,
+        cover,
+        has_text: reader.has_text,
+        svg_image: reader.svg_image,
     })
+}
+
+const EPUB_NS: &str = "http://www.idpf.org/2007/ops";
+
+/// Whether `node` has `epub:type` naming a cover.
+fn is_cover(node: Node) -> bool {
+    node.attribute((EPUB_NS, "type"))
+        .is_some_and(|t| t.split_ascii_whitespace().any(|w| w == "cover"))
 }
 
 /// HTML's named entities, which XML doesn't know, as numeric references.
@@ -177,6 +207,14 @@ impl Run {
         }
     }
 
+    /// The run covers at least the position `at`.
+    fn touch(&mut self, at: usize) {
+        match &mut self.span {
+            Some(span) => span.end = span.end.max(at),
+            None => self.span = Some(at..at),
+        }
+    }
+
     /// Adds a text node's NFC text, which starts at part character `at`.
     fn add(&mut self, s: &str, at: usize) {
         let total = s.chars().count();
@@ -195,7 +233,10 @@ impl Run {
                 if let Some((b, from)) = piece.take() {
                     self.text.push(&s[b..byte], at + from..at + i);
                 }
-                if !self.text.string.is_empty() && self.pending.is_none() {
+                if !self.text.string.is_empty()
+                    && !self.text.string.ends_with('\n')
+                    && self.pending.is_none()
+                {
                     self.pending = Some(at + i..at + i + 1);
                 }
             } else if piece.is_none() {
@@ -211,9 +252,21 @@ impl Run {
     }
 }
 
+// Lookups `note_id` made among the ids so far, for the tests.
+#[cfg(test)]
+thread_local! {
+    static ID_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 struct Reader {
     /// The part characters read so far.
     pos: usize,
+    /// Element ids and where their text begins, first occurrence wins.
+    ids: Vec<(String, usize)>,
+    /// The ids in `ids`, for the repeat check.
+    seen: HashSet<String>,
+    has_text: bool,
+    svg_image: bool,
 }
 
 impl Reader {
@@ -239,8 +292,11 @@ impl Reader {
                 continue;
             }
             if is_inline(name) {
-                self.inline(child, run);
-            } else if flattens(name) {
+                self.inline_element(child, run);
+                continue;
+            }
+            self.note_id(child);
+            if flattens(name) {
                 self.flush(run, out);
                 self.flow(child, run, out);
                 self.flush(run, out);
@@ -321,6 +377,7 @@ impl Reader {
         let mut items = Vec::new();
         for child in node.children() {
             if child.is_element() && child.tag_name().name() == "li" {
+                self.note_id(child);
                 let from = self.pos;
                 let mut blocks = Vec::new();
                 self.container(child, &mut blocks);
@@ -364,6 +421,7 @@ impl Reader {
                 self.count_child(child);
                 continue;
             }
+            self.note_id(child);
             match child.tag_name().name() {
                 "tr" => {
                     let mut cells = Vec::new();
@@ -372,6 +430,7 @@ impl Reader {
                         let name = cell.tag_name().name();
                         if cell.is_element() && matches!(name, "th" | "td") {
                             has_th |= name == "th";
+                            self.note_id(cell);
                             let from = self.pos;
                             let mut run = Run::default();
                             self.inline(cell, &mut run);
@@ -406,6 +465,7 @@ impl Reader {
 
     fn add_text(&mut self, run: &mut Run, s: &str) {
         let s: String = s.nfc().collect();
+        self.has_text |= s.chars().any(|c| !c.is_whitespace());
         run.add(&s, self.pos);
         self.pos += s.chars().count();
     }
@@ -419,9 +479,93 @@ impl Reader {
                 if skipped(child.tag_name().name()) {
                     self.count_child(child);
                 } else {
-                    self.inline(child, run);
+                    self.inline_element(child, run);
                 }
             }
+        }
+    }
+
+    /// Records `node`'s id (or an `a`'s legacy name) at the current
+    /// position.
+    fn note_id(&mut self, node: Node) {
+        let id = node.attribute("id").or_else(|| {
+            (node.tag_name().name() == "a")
+                .then(|| node.attribute("name"))
+                .flatten()
+        });
+        if let Some(id) = id
+            && {
+                #[cfg(test)]
+                ID_LOOKUPS.with(|c| c.set(c.get() + 1));
+                self.seen.insert(id.to_string())
+            }
+        {
+            self.ids.push((id.to_string(), self.pos));
+        }
+    }
+
+    /// An inline element: its id, its style over its text, `br` and
+    /// `img` drawn where they stand.
+    fn inline_element(&mut self, node: Node, run: &mut Run) {
+        self.note_id(node);
+        let at = self.pos;
+        let name = node.tag_name().name();
+        let style = match name {
+            "br" => {
+                run.pending = None;
+                run.touch(at);
+                run.text.push("\n", at..at);
+                self.inline(node, run);
+                return;
+            }
+            "img" => {
+                run.touch(at);
+                if let Some(space) = run.pending.take() {
+                    run.text.push(" ", space);
+                }
+                let start = run.text.string.len();
+                run.text.push("\u{fffc}", at..at);
+                run.text.styles.push(Styled {
+                    style: Style::Image {
+                        src: node.attribute("src").unwrap_or_default().to_string(),
+                        alt: node.attribute("alt").unwrap_or_default().to_string(),
+                    },
+                    drawn: start..run.text.string.len(),
+                    span: at..at,
+                });
+                self.inline(node, run);
+                return;
+            }
+            "i" | "em" | "cite" | "dfn" | "var" => Some(Style::Emphasis),
+            "b" | "strong" => Some(Style::Strong),
+            "s" | "strike" | "del" => Some(Style::Strikethrough),
+            "code" | "kbd" | "samp" | "tt" => Some(Style::Code),
+            "sup" => Some(Style::Superscript),
+            "sub" => Some(Style::Subscript),
+            "a" => node.attribute("href").map(|dest| Style::Link {
+                dest: dest.to_string(),
+            }),
+            _ => None,
+        };
+        let Some(style) = style else {
+            self.inline(node, run);
+            return;
+        };
+        let had_pending = run.pending.is_some();
+        let mut start = run.text.string.len();
+        self.inline(node, run);
+        // A space owed from before the element is drawn inside it, but
+        // is not part of it.
+        if had_pending && run.text.string.len() > start && run.pending.is_none() {
+            start += 1;
+        }
+        let end = run.text.string.len();
+        if end > start {
+            run.text.styles.push(Styled {
+                style,
+                drawn: start..end,
+                span: at..self.pos,
+            });
         }
     }
 
@@ -434,8 +578,17 @@ impl Reader {
 
     fn count_child(&mut self, node: Node) {
         if node.is_text() {
-            self.pos += node.text().unwrap_or_default().nfc().count();
+            let text = node.text().unwrap_or_default();
+            // Text in svg and math is counted, never drawn.
+            let drawn = !node
+                .ancestors()
+                .any(|a| matches!(a.tag_name().name(), "svg" | "math"));
+            self.has_text |= drawn && text.chars().any(|c| !c.is_whitespace());
+            self.pos += text.nfc().count();
         } else if node.is_element() && !uncounted(node.tag_name().name()) {
+            self.svg_image |= node.tag_name().name() == "image"
+                && node.ancestors().any(|a| a.tag_name().name() == "svg");
+            self.note_id(node);
             self.count(node);
         }
     }
@@ -444,7 +597,7 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Align, Block, BlockKind, Text};
+    use crate::{Align, Block, BlockKind, Style, Text};
 
     fn wrap(body: &str) -> Vec<u8> {
         format!(
@@ -618,5 +771,165 @@ mod tests {
         latin1[at] = 0xE9;
         assert!(parse(&latin1).is_err());
         assert!(parse(b"<html><body><p>unclosed</body></html>").is_err());
+    }
+
+    fn styles_of(t: &Text) -> Vec<(Style, &str, Range<usize>)> {
+        t.styles
+            .iter()
+            .map(|s| (s.style.clone(), &t.string[s.drawn.clone()], s.span.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn inline_elements_become_styles() {
+        let x = read(
+            "<p><i>a</i><em>b</em><cite>c</cite><b>d</b><strong>e</strong><s>f</s><del>g</del>\
+             <code>h</code><kbd>i</kbd><sup>j</sup><sub>k</sub><a href=\"x.html#y\">l</a>\
+             <span>m</span><small>n</small><u>o</u><a>p</a></p>",
+        );
+        let t = text(&x.tree.blocks[0]);
+        assert_eq!(t.string, "abcdefghijklmnop");
+        let want = [
+            (Style::Emphasis, "a"),
+            (Style::Emphasis, "b"),
+            (Style::Emphasis, "c"),
+            (Style::Strong, "d"),
+            (Style::Strong, "e"),
+            (Style::Strikethrough, "f"),
+            (Style::Strikethrough, "g"),
+            (Style::Code, "h"),
+            (Style::Code, "i"),
+            (Style::Superscript, "j"),
+            (Style::Subscript, "k"),
+            (
+                Style::Link {
+                    dest: "x.html#y".into(),
+                },
+                "l",
+            ),
+        ];
+        let got = styles_of(t);
+        assert_eq!(got.len(), want.len());
+        for (i, ((style, drawn, span), (w, wd))) in got.iter().zip(want).enumerate() {
+            assert_eq!((style, *drawn), (&w, wd));
+            assert_eq!(*span, i..i + 1);
+        }
+    }
+
+    #[test]
+    fn a_style_does_not_take_the_space_before_it() {
+        let x = read("<p>a <i>b</i> c</p>");
+        let t = text(&x.tree.blocks[0]);
+        assert_eq!(t.string, "a b c");
+        assert_eq!(styles_of(t), [(Style::Emphasis, "b", 2..3)]);
+    }
+
+    #[test]
+    fn a_br_is_a_hard_break() {
+        let x = read("<p>a<br/>b</p>");
+        let t = text(&x.tree.blocks[0]);
+        assert_eq!(t.string, "a\nb");
+        assert_eq!(t.source_of(1), 1);
+        assert_eq!(t.source_of(2), 1);
+        assert_eq!(x.chars, 2);
+    }
+
+    #[test]
+    fn an_image_is_an_object_character() {
+        let x = read("<p>x<img src=\"i/f1.png\" alt=\"f1\"/></p>");
+        let t = text(&x.tree.blocks[0]);
+        assert_eq!(t.string, "x\u{fffc}");
+        assert_eq!(
+            styles_of(t),
+            [(
+                Style::Image {
+                    src: "i/f1.png".into(),
+                    alt: "f1".into()
+                },
+                "\u{fffc}",
+                1..1
+            )]
+        );
+        assert_eq!(t.source_of(1), 1);
+    }
+
+    #[test]
+    fn ids_record_where_their_text_begins() {
+        let x = read("<h1 id=\"h\">Hi</h1>\n<p>Note<a id=\"r1\"/><sup>1</sup></p><a id=\"end\"/>");
+        let want: Vec<(String, usize)> = vec![("h".into(), 0), ("r1".into(), 7), ("end".into(), 8)];
+        assert_eq!(x.ids, want);
+        assert_eq!(x.chars, 8);
+    }
+
+    #[test]
+    fn ids_on_lists_and_tables_are_recorded() {
+        let x = read(
+            "<ul id=\"u\"><li id=\"l\">a</li></ul><table><tr id=\"r\"><td id=\"c\">b</td></tr></table>",
+        );
+        let ids: Vec<_> = x.ids.iter().map(|(i, p)| (i.as_str(), *p)).collect();
+        assert_eq!(ids, [("u", 0), ("l", 0), ("r", 1), ("c", 1)]);
+    }
+
+    #[test]
+    fn a_repeated_id_keeps_its_first_place() {
+        let x = read("<p id=\"a\">x</p><p id=\"a\">y</p>");
+        let want: Vec<(String, usize)> = vec![("a".into(), 0)];
+        assert_eq!(x.ids, want);
+    }
+
+    #[test]
+    fn a_legacy_a_name_is_an_id() {
+        let x = read("<p>ab<a name=\"n\"/>c</p>");
+        let want: Vec<(String, usize)> = vec![("n".into(), 2)];
+        assert_eq!(x.ids, want);
+    }
+
+    #[test]
+    fn whitespace_is_counted_but_is_not_text() {
+        let x = read("\n  <div>\n  </div>\n");
+        assert_eq!((x.chars, x.has_text), (7, false));
+        assert!(read("\n<p>x</p>\n").has_text);
+        // Text nobody draws counts for offsets but is not text.
+        assert!(!read("<svg><text>t</text></svg>").has_text);
+    }
+
+    #[test]
+    fn many_distinct_ids_take_a_linear_number_of_lookups() {
+        const N: usize = 2000;
+        let body: String = (0..N).map(|i| format!("<p id=\"i{i}\">a</p>")).collect();
+        ID_LOOKUPS.with(|c| c.set(0));
+        let x = read(&body);
+        assert_eq!(x.ids.len(), N);
+        assert_eq!(x.ids.last().map(|(i, _)| i.as_str()), Some("i1999"));
+        assert!(ID_LOOKUPS.with(|c| c.get()) <= 2 * N);
+    }
+
+    #[test]
+    fn an_svg_image_is_noted() {
+        let svg = |inner: &str| {
+            read(&format!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\">{inner}</svg>"
+            ))
+        };
+        assert!(svg("<image/>").svg_image);
+        assert!(!svg("<rect/>").svg_image);
+        assert!(!read("<p>x</p>").svg_image);
+    }
+
+    #[test]
+    fn the_cover_mark() {
+        let doc = |body: &str| {
+            format!(
+                "<html xmlns=\"http://www.w3.org/1999/xhtml\" \
+                 xmlns:epub=\"http://www.idpf.org/2007/ops\"><body{body}</body></html>"
+            )
+        };
+        let cover = |body: &str| parse(doc(body).as_bytes()).expect("parses").cover;
+        assert!(cover(" epub:type=\"cover\"><p>x</p>"));
+        assert!(cover(
+            "><section epub:type=\"frontmatter cover\"><p>x</p></section>"
+        ));
+        assert!(!cover("><p>x</p>"));
+        assert!(!cover(" epub:type=\"bodymatter\"><p>x</p>"));
     }
 }
