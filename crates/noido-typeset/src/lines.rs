@@ -51,6 +51,8 @@ pub(crate) struct SetLine {
 /// share of it.
 const NOTE_SCALE: f32 = 0.7;
 const NOTE_RISE: f32 = 0.33;
+/// A subscript is lowered by this share of the size.
+const SUB_DROP: f32 = 0.15;
 /// The cost of a hyphenation point.
 const HYPHEN_PENALTY: i32 = 50;
 /// A word shorter than this many characters is not hyphenated.
@@ -112,19 +114,30 @@ impl Shaper {
         let metrics = Metrics::of(&layout, size);
         let atoms = atoms_of(&layout, &shape.text);
 
+        let scripts = |wanted: Style| -> Vec<Range<usize>> {
+            para.text
+                .styles
+                .iter()
+                .filter(|s| s.style == wanted)
+                .map(|s| shape.pos(s.drawn.start)..shape.pos(s.drawn.end))
+                .collect()
+        };
+        let mut raised: Vec<Range<usize>> = shape
+            .reps
+            .iter()
+            .zip(&shape.kinds)
+            .filter(|(_, k)| **k == RepKind::Note)
+            .map(|(r, _)| r.shape.clone())
+            .collect();
+        raised.extend(scripts(Style::Superscript));
         let ctx = Ctx {
             para,
             shape: &shape,
             size,
             lang,
             width,
-            raised: shape
-                .reps
-                .iter()
-                .zip(&shape.kinds)
-                .filter(|(_, k)| **k == RepKind::Note)
-                .map(|(r, _)| r.shape.clone())
-                .collect(),
+            raised,
+            lowered: scripts(Style::Subscript),
         };
         let mut lines = Vec::new();
         for (n, segment) in segments(&atoms).into_iter().enumerate() {
@@ -177,7 +190,7 @@ impl Shaper {
                     );
                     b.push(StyleProperty::FontSize(size * CODE_SCALE), range);
                 }
-                Style::FootnoteRef { .. } => {
+                Style::FootnoteRef { .. } | Style::Superscript | Style::Subscript => {
                     b.push(StyleProperty::FontSize(size * NOTE_SCALE), range)
                 }
                 Style::Strikethrough | Style::Link { .. } | Style::TaskBox { .. } => {}
@@ -449,8 +462,10 @@ struct Ctx<'a> {
     size: f32,
     lang: hypher::Lang,
     width: f32,
-    /// Shaped ranges raised as footnote numbers.
+    /// Shaped ranges raised as footnote numbers or superscripts.
     raised: Vec<Range<usize>>,
+    /// Shaped ranges lowered as subscripts.
+    lowered: Vec<Range<usize>>,
 }
 
 impl Ctx<'_> {
@@ -460,6 +475,8 @@ impl Ctx<'_> {
         let drawn = self.shape.drawn(&atom.range);
         let rise = if self.raised.iter().any(|r| r.contains(&atom.range.start)) {
             NOTE_RISE * self.size
+        } else if self.lowered.iter().any(|r| r.contains(&atom.range.start)) {
+            -SUB_DROP * self.size
         } else {
             0.0
         };
@@ -791,6 +808,7 @@ impl Ctx<'_> {
                 Style::Strikethrough => &[Decoration::Strike],
                 Style::Link { .. } => &[Decoration::Underline],
                 Style::FootnoteRef { .. } => &[],
+                // Superscript and subscript carry no link or decoration.
                 _ => continue,
             };
             let mut extent: Option<(f32, f32)> = None;
@@ -986,6 +1004,56 @@ mod tests {
         assert!((note.size - 0.7 * body.size).abs() < 1e-3);
         assert!((note.rise - 0.33 * body.size).abs() < 1e-3);
         assert_eq!(body.rise, 0.0);
+    }
+
+    fn scripted() -> Vec<SetLine> {
+        use noido_blocks::{Styled, Text};
+        let mut text = Text::default();
+        text.push("H2O1", 0..4);
+        text.styles = vec![
+            Styled {
+                style: Style::Subscript,
+                drawn: 1..2,
+                span: 1..2,
+            },
+            Styled {
+                style: Style::Superscript,
+                drawn: 3..4,
+                span: 3..4,
+            },
+        ];
+        let para = Para {
+            role: Role::Body { indent: false },
+            text,
+            prefix: None,
+            new_page: false,
+            note: None,
+        };
+        let notes = Notes(std::collections::HashMap::new());
+        Shaper::new().set(&para, &notes, Lang::English)
+    }
+
+    #[test]
+    fn a_superscript_is_set_small_and_raised() {
+        let lines = scripted();
+        let glyphs: Vec<_> = lines.iter().flat_map(|l| &l.glyphs).collect();
+        let body = glyphs.iter().find(|g| g.text == "H").unwrap();
+        let sup = glyphs.iter().find(|g| g.text == "1").unwrap();
+        assert!((sup.size - NOTE_SCALE * body.size).abs() < 1e-3);
+        assert!((sup.rise - NOTE_RISE * body.size).abs() < 1e-3);
+        assert_eq!(body.rise, 0.0);
+    }
+
+    #[test]
+    fn a_subscript_is_set_small_and_lowered() {
+        let lines = scripted();
+        let glyphs: Vec<_> = lines.iter().flat_map(|l| &l.glyphs).collect();
+        let body = glyphs.iter().find(|g| g.text == "H").unwrap();
+        let sub = glyphs.iter().find(|g| g.text == "2").unwrap();
+        assert!((sub.size - NOTE_SCALE * body.size).abs() < 1e-3);
+        assert!((sub.rise + SUB_DROP * body.size).abs() < 1e-3);
+        let o = glyphs.iter().find(|g| g.text == "O").unwrap();
+        assert_eq!(o.rise, 0.0);
     }
 
     #[test]

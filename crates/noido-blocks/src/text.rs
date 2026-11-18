@@ -41,6 +41,10 @@ pub enum Style {
     FootnoteRef {
         label: String,
     },
+    /// Drawn smaller and raised; EPUB's `sup`.
+    Superscript,
+    /// Drawn smaller and lowered; EPUB's `sub`.
+    Subscript,
     /// An image, drawn as one object character (U+FFFC) standing for
     /// the whole `![alt](src)`.
     Image {
