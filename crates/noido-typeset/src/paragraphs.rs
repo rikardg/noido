@@ -24,6 +24,8 @@ pub(crate) struct Para {
     pub prefix: Option<String>,
     /// A level-1 heading starts a page.
     pub new_page: bool,
+    /// The label of the footnote this paragraph begins.
+    pub note: Option<String>,
 }
 
 /// Footnote label to its number: the order of its first reference.
@@ -64,6 +66,7 @@ impl Out<'_> {
             text: text.clone(),
             prefix: None,
             new_page: false,
+            note: None,
         });
         self.indent = true;
     }
@@ -85,6 +88,7 @@ impl Out<'_> {
                     text: text.clone(),
                     prefix: None,
                     new_page: *level == 1,
+                    note: None,
                 });
                 self.indent = false;
             }
@@ -95,6 +99,7 @@ impl Out<'_> {
                     text: text.clone(),
                     prefix: None,
                     new_page: false,
+                    note: None,
                 });
                 self.indent = false;
             }
@@ -129,6 +134,7 @@ impl Out<'_> {
                         text: cell.text.clone(),
                         prefix: None,
                         new_page: false,
+                        note: None,
                     });
                 }
                 self.indent = false;
@@ -141,9 +147,13 @@ impl Out<'_> {
             }
             BlockKind::Footnote { label, blocks } => {
                 self.indent = false;
+                let from = self.paras.len();
                 match self.notes.0.get(label).map(|n| format!("{n} ")) {
                     Some(prefix) => self.with_prefix(blocks, prefix),
                     None => self.blocks(blocks),
+                }
+                if let Some(first) = self.paras.get_mut(from) {
+                    first.note = Some(label.clone());
                 }
                 self.indent = false;
             }
