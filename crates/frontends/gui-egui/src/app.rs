@@ -473,6 +473,12 @@ impl NoidoApp {
         self
     }
 
+    /// The engine the info page opens the file with.
+    #[cfg(test)]
+    pub(crate) fn source_engine(&self) -> Option<Arc<dyn noido_engine::PdfEngine>> {
+        self.source.as_ref().map(|source| source.engine.clone())
+    }
+
     /// Reads the document's info from `source` when asked.
     pub fn with_source(mut self, source: info::Source) -> Self {
         self.source = Some(source);
@@ -4063,13 +4069,19 @@ pub(crate) mod tests {
             transforms: noido_render::Transforms,
             setup: impl FnOnce(NoidoApp) -> NoidoApp,
         ) -> Self {
-            let (renderer, info) = Renderer::start(
-                engine,
-                PdfBytes::default(),
-                transforms.clone(),
-                Box::new(|| {}),
-            )
-            .unwrap();
+            Self::build_over(engine, PdfBytes::default(), preset, transforms, setup)
+        }
+
+        /// A harness whose document is `bytes`, opened with `engine`.
+        fn build_over(
+            engine: Arc<dyn PdfEngine>,
+            bytes: PdfBytes,
+            preset: &str,
+            transforms: noido_render::Transforms,
+            setup: impl FnOnce(NoidoApp) -> NoidoApp,
+        ) -> Self {
+            let (renderer, info) =
+                Renderer::start(engine, bytes, transforms.clone(), Box::new(|| {})).unwrap();
             let ctx = egui::Context::default();
             crate::theme::install_preset(&ctx, preset);
             ctx.set_theme(egui::ThemePreference::Dark);
@@ -15125,6 +15137,151 @@ pub(crate) mod tests {
             .with_persistence(Store::at(&path), slot, restored)
         });
         (h, dir)
+    }
+
+    // Markdown, through the engine the windows use.
+
+    fn markdown_bytes(source: &str) -> PdfBytes {
+        PdfBytes::from(source.as_bytes().to_vec())
+    }
+
+    /// A harness for the markdown `bytes` as `document::open` starts one:
+    /// one `AnyEngine` for the renderer and the text thread, with the
+    /// state in the store at `dir` restored if there is any.
+    fn markdown_harness(bytes: &PdfBytes, dir: &std::path::Path) -> Harness {
+        let engine = Arc::new(crate::document::AnyEngine::new());
+        let searcher = engine.clone();
+        let text = bytes.clone();
+        let store = Store::at(dir);
+        let (slot, restored) = store.load(test_key());
+        let mut h = Harness::build_over(
+            engine,
+            bytes.clone(),
+            "adwaita",
+            noido_render::Transforms::default(),
+            move |app| {
+                app.with_searcher(TextSearcher::start(
+                    searcher,
+                    text,
+                    noido_render::Transforms::default(),
+                    Box::new(|| {}),
+                ))
+                .with_persistence(store, slot, restored)
+            },
+        );
+        h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
+        h
+    }
+
+    fn fixture_markdown() -> PdfBytes {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/sample.md");
+        PdfBytes::from(std::fs::read(path).unwrap())
+    }
+
+    #[test]
+    fn a_markdown_fixture_opens_and_searches() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut h = markdown_harness(&fixture_markdown(), dir.path());
+        assert!(h.app.locations.reflows());
+        search_for(&mut h, "strong");
+        assert_eq!(h.app.search_state.hits.len(), 1);
+    }
+
+    #[test]
+    fn a_search_finds_words_split_at_a_hyphen_in_the_source() {
+        // Words of every length before it, so that some line ends at the
+        // hyphen; few enough to stay on one page, as a search is by page.
+        let source: String = (0..50)
+            .map(|i| format!("{} well-known ", "o".repeat(i % 13 + 1)))
+            .collect();
+        let dir = tempfile::TempDir::new().unwrap();
+        let bytes = markdown_bytes(&source);
+        // A line really ends at a source hyphen, and the next starts with
+        // the rest of the word.
+        let document = crate::document::AnyEngine::new()
+            .open(bytes.clone())
+            .unwrap();
+        assert_eq!(document.page_count(), 1);
+        let broken = noido_text::PageText::new(document.text(0).unwrap())
+            .text()
+            .contains("well-\nknown");
+        assert!(broken, "no line ends in \"well-\" before \"known\"");
+        let mut h = markdown_harness(&bytes, dir.path());
+        search_for(&mut h, "well-known");
+        assert_eq!(h.app.search_state.hits.len(), 50);
+        search_for(&mut h, "wellknown");
+        assert_eq!(h.app.search_state.hits.len(), 0);
+    }
+
+    #[test]
+    fn a_highlight_on_markdown_comes_back_on_the_same_characters() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let bytes = fixture_markdown();
+        let mut h = markdown_harness(&bytes, dir.path());
+        // The glyphs of "heading" (the first page is the title) from the
+        // engine itself.
+        let document = crate::document::AnyEngine::new()
+            .open(bytes.clone())
+            .unwrap();
+        let glyphs = document.text(0).unwrap();
+        let all: String = glyphs.iter().map(|g| g.text.as_str()).collect();
+        let word = "heading";
+        let starts: Vec<usize> = glyphs
+            .iter()
+            .scan(0, |at, g| {
+                let start = *at;
+                *at += g.text.len();
+                Some(start)
+            })
+            .collect();
+        let at = all.find(word).unwrap();
+        let first = starts.iter().position(|s| *s == at).unwrap();
+        let last = starts
+            .iter()
+            .position(|s| *s == at + word.len() - 1)
+            .unwrap();
+        let (from, _) = glyphs[first].quad.bounds();
+        let (_, to) = glyphs[last].quad.bounds();
+        let y = (from.y + to.y) / 2.0;
+        drag_text(
+            &mut h,
+            0,
+            (from.x + 0.5, y),
+            (to.x - 0.5, y),
+            Modifiers::SHIFT,
+        );
+        h.frames(1, vec![]);
+        let swatch = h.app.select.swatches[0].expect("the bar offers the colours");
+        h.click(swatch.center());
+        h.frames(1, vec![]);
+        let made = h.app.highlights.items().to_vec();
+        assert_eq!(made.len(), 1);
+
+        let state = h.app.doc_state().unwrap();
+        let store = Store::at(dir.path());
+        store.save(&test_slot(dir.path()), &state).unwrap();
+        drop(h);
+        let again = markdown_harness(&bytes, dir.path());
+        let restored = again.app.highlights.items();
+        assert_eq!(
+            (restored[0].start, restored[0].end),
+            (made[0].start, made[0].end)
+        );
+        assert!(!restored[0].orphaned);
+
+        let map = document.locations();
+        let selected = |highlight: &Highlight| {
+            let text = noido_text::PageText::new(glyphs.clone());
+            let range = highlight.on_page(0, text.char_count(), &map).unwrap();
+            text.text()
+                .chars()
+                .skip(range.start)
+                .take(range.len())
+                .collect::<String>()
+        };
+        assert_eq!(selected(&made[0]), "heading");
+        assert_eq!(selected(&restored[0]), "heading");
     }
 
     fn the_cat() -> Highlight {

@@ -1869,6 +1869,7 @@ dependencies = [
  "noido-settings",
  "noido-state",
  "noido-text",
+ "noido-typeset",
  "notify",
  "resvg",
  "rfd",
