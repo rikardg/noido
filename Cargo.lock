@@ -2849,6 +2849,8 @@ name = "noido-blocks"
 version = "0.1.0"
 dependencies = [
  "pulldown-cmark",
+ "roxmltree 0.21.2",
+ "unicode-normalization",
 ]
 
 [[package]]
