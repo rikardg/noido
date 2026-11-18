@@ -1,0 +1,20 @@
+[package]
+name = "noido-epub"
+description = "noido EPUB: the container, package and spine read into parts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+noido-blocks.workspace = true
+zip.workspace = true
+# zip's deflate-flate2 picks no backend of its own; this one builds alone.
+flate2.workspace = true
+roxmltree.workspace = true
+percent-encoding.workspace = true
+
+[lints]
+workspace = true

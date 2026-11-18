@@ -613,6 +613,175 @@ def comic_bad_info() -> bytes:
     return out.getvalue()
 
 
+EPUB_NS = (
+    'xmlns="http://www.w3.org/1999/xhtml" '
+    'xmlns:epub="http://www.idpf.org/2007/ops"'
+)
+
+
+def epub_xhtml(body: str) -> str:
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        f"<html {EPUB_NS}><head><title>t</title></head><body>{body}</body></html>"
+    )
+
+
+def epub_zip(files: list[tuple[str, bytes | str]], package_path: str) -> bytes:
+    """An EPUB: mimetype first and stored, then the container, then `files`."""
+    import io
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("mimetype", "application/epub+zip", zipfile.ZIP_STORED)
+        z.writestr(
+            "META-INF/container.xml",
+            '<?xml version="1.0"?>'
+            '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+            f'<rootfiles><rootfile full-path="{package_path}" '
+            'media-type="application/oebps-package+xml"/></rootfiles></container>',
+        )
+        for name, data in files:
+            z.writestr(name, data)
+    return out.getvalue()
+
+
+def epub_book() -> bytes:
+    ch1 = (
+        "<h1>Chapter One</h1>"
+        "<p>It was a <i>dark</i> and <b>stormy</b> night.</p>"
+        '<p>See <a href="ch%202.xhtml#later">later</a>, and H<sub>2</sub>O<sup>1</sup>.</p>'
+        "<hr/><ul><li>first</li><li>second</li></ul>"
+        "<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>"
+        "<pre>  two  spaces</pre>"
+        '<p><img src="../images/f0001-01.png" alt="f0001-01"/></p>'
+    )
+    ch2 = (
+        '<h1 id="top">Chapter Two</h1><p id="later">Later text.</p>'
+        '<p>Back to <a href="ch1.xhtml">the start</a>, '
+        '<a href="https://example.com/">the web</a> and '
+        '<a href="../cover.png">a picture</a>.</p>'
+    )
+    nav = (
+        '<nav epub:type="toc"><ol>'
+        '<li><a href="text/ch1.xhtml">Chapter One</a></li>'
+        '<li><a href="text/ch%202.xhtml#top">Chapter Two</a>'
+        '<ol><li><a href="text/ch%202.xhtml#later">Later</a></li></ol></li>'
+        '<li><a href="nowhere.xhtml">Missing</a></li>'
+        "</ol></nav>"
+    )
+    opf = (
+        '<?xml version="1.0"?>'
+        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">'
+        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        '<dc:identifier id="id">urn:uuid:1</dc:identifier>'
+        "<dc:title>A Small Book</dc:title>"
+        "<dc:creator>Ann Author</dc:creator><dc:creator>Bo Writer</dc:creator>"
+        "<dc:language>sv</dc:language><dc:subject>Tests</dc:subject>"
+        "</metadata><manifest>"
+        '<item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>'
+        '<item id="coverimg" href="cover.png" media-type="image/png" properties="cover-image"/>'
+        '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+        '<item id="ch1" href="text/ch1.xhtml" media-type="application/xhtml+xml"/>'
+        '<item id="ch2" href="text/ch%202.xhtml" media-type="application/xhtml+xml"/>'
+        '</manifest><spine><itemref idref="cover"/><itemref idref="ch1"/>'
+        '<itemref idref="ch2"/></spine></package>'
+    )
+    cover = epub_xhtml(
+        '<section epub:type="cover"><img src="cover.png" alt="Cover"/></section>'
+    )
+    return epub_zip(
+        [
+            ("OEBPS/content.opf", opf),
+            ("OEBPS/cover.xhtml", cover),
+            ("OEBPS/cover.png", comic_png(1, 1, (200, 0, 0))),
+            ("OEBPS/nav.xhtml", epub_xhtml(nav)),
+            ("OEBPS/text/ch1.xhtml", epub_xhtml(ch1)),
+            ("OEBPS/text/ch 2.xhtml", epub_xhtml(ch2)),
+        ],
+        "OEBPS/content.opf",
+    )
+
+
+def epub2_opf(items: str, spine: str, title: str = "Second Book") -> str:
+    return (
+        '<?xml version="1.0"?>'
+        '<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id">'
+        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        f'<dc:identifier id="id">urn:uuid:2</dc:identifier><dc:title>{title}</dc:title>'
+        "<dc:creator>Cy Penn</dc:creator></metadata>"
+        f"<manifest>{items}</manifest>"
+        f'<spine toc="ncx">{spine}</spine></package>'
+    )
+
+
+def epub_book2() -> bytes:
+    xhtml = "application/xhtml+xml"
+    items = (
+        '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
+        f'<item id="one" href="one.html" media-type="{xhtml}"/>'
+        f'<item id="notes" href="notes.html" media-type="{xhtml}"/>'
+        f'<item id="broken" href="broken.html" media-type="{xhtml}"/>'
+        f'<item id="two" href="two.html" media-type="{xhtml}"/>'
+    )
+    spine = (
+        '<itemref idref="one"/><itemref idref="notes" linear="no"/>'
+        '<itemref idref="ghost"/><itemref idref="broken"/><itemref idref="two"/>'
+    )
+    ncx = (
+        '<?xml version="1.0"?>'
+        '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><navMap>'
+        '<navPoint id="n1" playOrder="1"><navLabel><text>One</text></navLabel>'
+        '<content src="one.html"/>'
+        '<navPoint id="n2" playOrder="2"><navLabel><text>Notes</text></navLabel>'
+        '<content src="notes.html#n1"/></navPoint></navPoint></navMap></ncx>'
+    )
+    one = (
+        "\ufeff"
+        + epub_xhtml(
+            "<p>Hello&nbsp;world.</p>\n  \n"
+            '<p>Note<a id="r1"/><sup><a href="notes.html#n1">1</a></sup> here.</p>'
+            '<a id="end"/>'
+        )
+    ).encode()
+    notes = epub_xhtml('<p id="n1">The note. <a href="one.html#end">Back</a></p>')
+    broken = "<html><body><p>unclosed</body></html>"
+    two = epub_xhtml("<p>Caf\u00e9</p>").encode("latin-1")
+    return epub_zip(
+        [
+            ("content.opf", epub2_opf(items, spine)),
+            ("toc.ncx", ncx),
+            ("one.html", one),
+            ("notes.html", notes),
+            ("broken.html", broken),
+            ("two.html", two),
+        ],
+        "content.opf",
+    )
+
+
+def epub_encrypted(encrypted: str, font: bool) -> bytes:
+    xhtml = "application/xhtml+xml"
+    items = f'<item id="c" href="c.xhtml" media-type="{xhtml}"/>'
+    if font:
+        items += '<item id="f" href="fonts/f.otf" media-type="font/otf"/>'
+    files: list[tuple[str, bytes | str]] = [
+        ("content.opf", epub2_opf(items, '<itemref idref="c"/>', "Locked")),
+        ("c.xhtml", epub_xhtml("<p>Text.</p>")),
+        (
+            "META-INF/encryption.xml",
+            '<?xml version="1.0"?>'
+            '<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" '
+            'xmlns:enc="http://www.w3.org/2001/04/xmlenc#">'
+            '<enc:EncryptedData><enc:EncryptionMethod Algorithm="http://www.idpf.org/2008/embedding"/>'
+            f'<enc:CipherData><enc:CipherReference URI="{encrypted}"/></enc:CipherData>'
+            "</enc:EncryptedData></encryption>",
+        ),
+    ]
+    if font:
+        files.append(("fonts/f.otf", b"OTTO\x00\x01\x02\x03"))
+    return epub_zip(files, "content.opf")
+
+
 def sample_md() -> str:
     """Markdown using every construct the block tree knows."""
     lines = [
@@ -687,3 +856,7 @@ if __name__ == "__main__":
     (here / "comic-empty.cbz").write_bytes(comic_empty())
     (here / "comic-huge.cbz").write_bytes(comic_huge())
     (here / "comic-bad-info.cbz").write_bytes(comic_bad_info())
+    (here / "book.epub").write_bytes(epub_book())
+    (here / "book2.epub").write_bytes(epub_book2())
+    (here / "drm.epub").write_bytes(epub_encrypted("c.xhtml", False))
+    (here / "obfuscated.epub").write_bytes(epub_encrypted("fonts/f.otf", True))

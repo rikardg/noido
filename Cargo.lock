@@ -2875,6 +2875,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "noido-epub"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "noido-blocks",
+ "percent-encoding",
+ "roxmltree 0.21.2",
+ "zip",
+]
+
+[[package]]
 name = "noido-fonts"
 version = "0.1.0"
 source = "git+https://github.com/rikardg/noido-fonts?tag=v0.1.0#68de375afaa13c4ad3e79d1128604faa4713546d"
