@@ -396,7 +396,7 @@ pub fn anchor(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use noido_text::testing::page;
     use noido_text::{Joined, PageText, Span};
@@ -934,6 +934,9 @@ mod tests {
         let out = anchor(&[h], &refs(&pages), false, true);
         let took = start.elapsed();
         assert_eq!(span_of(&out.items[0]), ((150, 8), (150, 9)));
-        assert!(took.as_millis() < 100, "took {took:?}");
+        // A debug build, run beside hundreds of other tests on a shared
+        // machine: about 35 ms here, 180 ms on the slowest CI runner. A
+        // second still fails a walk that has gone quadratic.
+        assert!(took < Duration::from_secs(1), "took {took:?}");
     }
 }
