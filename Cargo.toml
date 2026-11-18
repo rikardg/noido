@@ -11,6 +11,7 @@ members = [
     "crates/noido-state",
     "crates/noido-text",
     "crates/noido-blocks",
+    "crates/noido-epub",
     "crates/noido-typeset",
     "crates/frontends/gui-egui",
 ]
@@ -33,6 +34,7 @@ noido-settings = { path = "crates/noido-settings" }
 noido-state = { path = "crates/noido-state" }
 noido-text = { path = "crates/noido-text" }
 noido-blocks = { path = "crates/noido-blocks" }
+noido-epub = { path = "crates/noido-epub" }
 noido-macos = { path = "crates/noido-macos" }
 noido-typeset = { path = "crates/noido-typeset" }
 parley = { version = "0.13", default-features = false, features = ["std"] }
