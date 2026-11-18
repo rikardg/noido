@@ -9,6 +9,7 @@ use noido_engine::{Glyph, LocationMap, Point, Quad, Run};
 use noido_text::{PageText, on_page};
 use unicode_normalization::UnicodeNormalization;
 
+use crate::draw::{Outlines, PageInk};
 use crate::house::{LEADING, LEFT, LINES, PAPER, TOP};
 use crate::lines::{SetGlyph, SetLine, Shaper};
 use crate::links::{Marks, marks};
@@ -27,6 +28,10 @@ pub struct Book {
     pages: Vec<Vec<Glyph>>,
     map: LocationMap,
     pub(crate) marks: Marks,
+    /// What to draw on each page.
+    pub(crate) ink: Vec<PageInk>,
+    /// Glyph outlines, drawn once and kept.
+    pub(crate) outlines: Outlines,
 }
 
 /// What a page is made of while it is built.
@@ -40,6 +45,7 @@ struct Page {
     spans: Vec<(f32, f32)>,
     /// Lines placed so far: the next line's run.
     lines: u32,
+    ink: PageInk,
 }
 
 pub fn typeset(source: &str) -> Book {
@@ -72,6 +78,7 @@ pub fn typeset(source: &str) -> Book {
         let page = &mut pages[at.page];
         page.glyphs.extend(glyphs_of(line, at.y, page.lines));
         page.lines += 1;
+        page.ink.add_line(line, at.y);
         for g in &line.glyphs {
             page.sources.push(if g.text.is_empty() {
                 Vec::new()
@@ -84,14 +91,18 @@ pub fn typeset(source: &str) -> Book {
 
     let mut map_pages = Vec::with_capacity(count);
     let mut glyph_pages = Vec::with_capacity(count);
+    let mut ink = Vec::with_capacity(count);
     for page in pages {
         map_pages.push(page_runs(&page));
         glyph_pages.push(page.glyphs);
+        ink.push(page.ink);
     }
     Book {
         pages: glyph_pages,
         map: LocationMap::from_placed(map_pages),
         marks: marks(&paras, &set, &placed, count, &front),
+        ink,
+        outlines: Outlines::default(),
     }
 }
 
@@ -339,6 +350,7 @@ mod tests {
             sources: vec![vec![Some(0)], vec![Some(1)], vec![Some(2)]],
             spans: vec![(100.0, 110.0); 3],
             lines: 0,
+            ink: PageInk::default(),
         };
         let offsets: Vec<usize> = page_runs(&page).iter().map(|(at, _)| *at).collect();
         assert_eq!(offsets, [0, 1]);
