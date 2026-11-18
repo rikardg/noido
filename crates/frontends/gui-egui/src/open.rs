@@ -35,7 +35,10 @@ pub fn pick_document(
     on_picked: OnPicked,
 ) {
     // Built before the thread: borrowing the window ends here.
-    let mut dialog = rfd::FileDialog::new().add_filter("PDF or comic book", &["pdf", "cbz"]);
+    let mut dialog = rfd::FileDialog::new().add_filter(
+        "PDF, comic book or markdown",
+        &["pdf", "cbz", "md", "markdown", "txt"],
+    );
     if let Some(frame) = frame {
         dialog = dialog.set_parent(frame);
     }

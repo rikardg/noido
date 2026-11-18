@@ -11,6 +11,7 @@ use noido_engine::{Document, EngineError, PdfBytes, PdfEngine};
 use noido_render::{Linker, Renderer, TextSearcher, Thumbnailer};
 use noido_settings::{Settings, SettingsFile};
 use noido_state::{Slot, Store};
+use noido_typeset::TypesetEngine;
 
 use crate::app::NoidoApp;
 use crate::info;
@@ -20,10 +21,20 @@ use crate::watch::{self, Watcher};
 /// Documents whose state is kept; older ones are forgotten.
 const REMEMBERED_DOCUMENTS: usize = 1000;
 
-/// The engine for a file: hayro for a PDF, the comic engine for a ZIP. Bytes
-/// that look like neither go to hayro, whose error names them.
-#[derive(Clone, Copy, Debug, Default)]
-struct AnyEngine;
+/// The engine for a file: hayro for a PDF, the comic engine for a ZIP, the
+/// typesetter for text. Other bytes that hold a PDF header go to hayro,
+/// whose error names them. One per window, its `Arc` cloned to every
+/// thread, so that a text file is laid out once.
+#[derive(Default)]
+pub(crate) struct AnyEngine {
+    typeset: TypesetEngine,
+}
+
+impl AnyEngine {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+}
 
 impl PdfEngine for AnyEngine {
     fn open(&self, bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
@@ -35,10 +46,14 @@ impl PdfEngine for AnyEngine {
             .windows(5)
             .any(|window| window == b"%PDF-")
         {
-            // A PDF may carry junk before its header; let hayro name it.
-            HayroEngine.open(bytes)
+            // A PDF may carry junk before its header; let hayro name it,
+            // unless it is text that merely mentions a header.
+            match HayroEngine.open(bytes.clone()) {
+                Err(_) if std::str::from_utf8(&bytes).is_ok() => self.typeset.open(bytes),
+                opened => opened,
+            }
         } else {
-            Err(EngineError::Open("not a readable document".into()))
+            self.typeset.open(bytes)
         }
     }
 }
@@ -134,40 +149,42 @@ pub fn open(
             .unwrap_or_default(),
     );
 
+    // One engine for every thread: a text file is laid out once.
+    let engine = Arc::new(AnyEngine::new());
     // Shares the document bytes with the renderer; opens it in the background.
     let thumbnailer = Thumbnailer::start(
-        Arc::new(AnyEngine),
+        engine.clone(),
         bytes.clone(),
         transforms.clone(),
         waker(ctx, viewport),
     );
     let sidebar_renderer = Renderer::start_background(
-        Arc::new(AnyEngine),
+        engine.clone(),
         bytes.clone(),
         transforms.clone(),
         waker(ctx, viewport),
     );
     let searcher = TextSearcher::start(
-        Arc::new(AnyEngine),
+        engine.clone(),
         bytes.clone(),
         transforms.clone(),
         waker(ctx, viewport),
     );
     let linker = Linker::start(
-        Arc::new(AnyEngine),
+        engine.clone(),
         bytes.clone(),
         transforms.clone(),
         waker(ctx, viewport),
     );
     let source = info::Source {
-        engine: Arc::new(AnyEngine),
+        engine: engine.clone(),
         bytes: bytes.clone(),
         // As it was given: the info page makes it absolute itself, so that
         // what it shows is decided in one place (and `..` folded there).
         path: path.to_owned(),
     };
     let (renderer, info) = Renderer::start(
-        Arc::new(AnyEngine),
+        engine.clone(),
         bytes,
         transforms.clone(),
         waker(ctx, viewport),
@@ -177,7 +194,7 @@ pub fn open(
     let watcher = Watcher::start(
         path,
         key,
-        Arc::new(AnyEngine),
+        engine.clone(),
         transforms.clone(),
         shared_waker(ctx, viewport),
     )
@@ -238,7 +255,7 @@ mod tests {
 
     #[test]
     fn unknown_bytes_are_not_called_a_pdf() {
-        let error = match AnyEngine.open(PdfBytes::from(b"not a document".to_vec())) {
+        let error = match AnyEngine::new().open(PdfBytes::from(vec![0xff, 0xfe, 0x00])) {
             Err(error) => error,
             Ok(_) => panic!("opened junk"),
         };
@@ -248,7 +265,7 @@ mod tests {
     #[test]
     fn a_cbz_open_error_names_the_cbz() {
         let bytes = PdfBytes::from(std::fs::read(fixture("comic-empty.cbz")).unwrap());
-        let error = match AnyEngine.open(bytes) {
+        let error = match AnyEngine::new().open(bytes) {
             Err(error) => error,
             Ok(_) => panic!("opened an archive without images"),
         };
@@ -258,9 +275,37 @@ mod tests {
     }
 
     #[test]
+    fn utf8_text_opens_as_typeset_pages() {
+        let document = AnyEngine::new()
+            .open(PdfBytes::from(b"# Hi\n\nThere.\n".to_vec()))
+            .unwrap();
+        assert_eq!(document.page_count(), 1);
+        assert_eq!(document.properties().format, noido_engine::Format::Markdown);
+    }
+
+    #[test]
+    fn text_that_mentions_a_pdf_header_still_opens_as_text() {
+        let document = AnyEngine::new()
+            .open(PdfBytes::from(
+                b"Notes on %PDF-1.7 files\n\nMore text.\n".to_vec(),
+            ))
+            .unwrap();
+        assert_eq!(document.properties().format, noido_engine::Format::Markdown);
+    }
+
+    #[test]
+    fn a_pdf_with_junk_before_its_header_opens_as_a_pdf() {
+        let mut bytes = b"junk\r\n".to_vec();
+        bytes.extend(std::fs::read(fixture("two-pages.pdf")).unwrap());
+        let document = AnyEngine::new().open(PdfBytes::from(bytes)).unwrap();
+        assert_eq!(document.properties().format, noido_engine::Format::Pdf);
+        assert_eq!(document.page_count(), 2);
+    }
+
+    #[test]
     fn a_cbz_is_opened_by_the_comic_engine() {
         let bytes = PdfBytes::from(std::fs::read(fixture("comic.cbz")).unwrap());
-        let document = AnyEngine.open(bytes).unwrap();
+        let document = AnyEngine::new().open(bytes).unwrap();
         assert_eq!(document.page_count(), 4);
     }
 
@@ -274,6 +319,24 @@ mod tests {
         };
         let opened = open(&fixture("comic.cbz"), None, &ctx, ViewportId::ROOT, &shared).unwrap();
         assert_eq!(opened.name, "comic.cbz");
+    }
+
+    #[test]
+    fn a_window_gives_every_thread_the_same_engine() {
+        let ctx = egui::Context::default();
+        let shared = Shared {
+            settings_file: None,
+            settings: Settings::default(),
+            store: None,
+        };
+        let opened = open(&fixture("sample.md"), None, &ctx, ViewportId::ROOT, &shared).unwrap();
+        let engine = opened.app.source_engine().unwrap();
+        // This one, and at least the render and text threads' clones.
+        assert!(
+            Arc::strong_count(&engine) > 2,
+            "{}",
+            Arc::strong_count(&engine)
+        );
     }
 
     #[test]

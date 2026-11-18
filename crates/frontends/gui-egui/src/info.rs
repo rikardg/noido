@@ -186,7 +186,7 @@ fn contents(
         row(ui, "Modified", p.modified.map(date_text));
     });
     section(ui, "Format", |ui| {
-        row(ui, "Format", comic.then(|| "CBZ comic archive".to_owned()));
+        row(ui, "Format", properties.and_then(|p| format_text(p.format)));
         row(
             ui,
             "Page size",
@@ -369,6 +369,15 @@ fn settings_row(ui: &mut egui::Ui, path: &Path) -> Option<Asked> {
     asked
 }
 
+/// What the Format row says; a PDF is the usual case and says nothing.
+fn format_text(format: Format) -> Option<String> {
+    match format {
+        Format::Comic => Some("CBZ comic archive".to_owned()),
+        Format::Markdown => Some("Markdown".to_owned()),
+        Format::Pdf | Format::Unknown => None,
+    }
+}
+
 /// "216 × 279 mm (612 × 792 pt)"; "mixed" when the pages differ by a
 /// point or more. A comic's pages are shown in pixels instead.
 fn page_size_text(sizes: &[Size], pixels: bool) -> String {
@@ -466,6 +475,17 @@ mod tests {
             page_size_text(&[size(595.276, 841.89)], false),
             "210 × 297 mm (595 × 842 pt)"
         );
+    }
+
+    #[test]
+    fn markdown_and_comics_name_their_format_and_a_pdf_does_not() {
+        assert_eq!(format_text(Format::Markdown), Some("Markdown".to_owned()));
+        assert_eq!(
+            format_text(Format::Comic),
+            Some("CBZ comic archive".to_owned())
+        );
+        assert_eq!(format_text(Format::Pdf), None);
+        assert_eq!(format_text(Format::Unknown), None);
     }
 
     #[test]
