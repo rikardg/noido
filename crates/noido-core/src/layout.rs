@@ -71,6 +71,9 @@ pub struct Layout {
     page_sizes: Vec<Size>,
     mode: LayoutMode,
     scale: f32,
+    /// The margin around the rows: [`MARGIN`], unless the window gives
+    /// the pages its whole area.
+    margin: f32,
     content_width: f32,
     content_height: f32,
     rects: Vec<Option<PageRect>>,
@@ -83,6 +86,7 @@ impl Layout {
             page_sizes,
             mode: LayoutMode::default(),
             scale: 0.0,
+            margin: MARGIN,
             content_width: 0.0,
             content_height: 0.0,
             rects: Vec::new(),
@@ -95,6 +99,17 @@ impl Layout {
     /// Takes effect at the next [`Layout::arrange`].
     pub fn set_mode(&mut self, mode: LayoutMode) {
         self.mode = mode;
+    }
+
+    /// The margin around the rows, in UI points.
+    pub fn margin(&self) -> f32 {
+        self.margin
+    }
+
+    /// Takes effect at the next [`Layout::arrange`]. Zero gives the rows
+    /// the whole area, as fullscreen does.
+    pub fn set_margin(&mut self, margin: f32) {
+        self.margin = margin.max(0.0);
     }
 
     pub fn mode(&self) -> LayoutMode {
@@ -119,7 +134,7 @@ impl Layout {
         let widest_row = row_widths.iter().map(|&(_, w)| w).fold(0.0, f32::max);
         // A fitted row comes out a float's breadth wider than the room it
         // was fitted to; that is no room to scroll.
-        let row_width = widest_row + 2.0 * MARGIN;
+        let row_width = widest_row + 2.0 * self.margin;
         self.content_width = if row_width > available_width + FIT_NOISE {
             row_width
         } else {
@@ -133,7 +148,8 @@ impl Layout {
             .map(|&(spread, _)| self.spread_size(spread).map_or(0.0, |s| s.height) * scale)
             .sum::<f32>()
             + self.row_gap() * row_widths.len().saturating_sub(1) as f32;
-        let mut y = MARGIN + ((available_height - rows_height - 2.0 * MARGIN) / 2.0).max(0.0);
+        let mut y =
+            self.margin + ((available_height - rows_height - 2.0 * self.margin) / 2.0).max(0.0);
         for (spread, row_width) in row_widths {
             let pages = self.spread_pages(spread);
             let height = self.spread_size(spread).map_or(0.0, |s| s.height) * scale;
@@ -161,7 +177,7 @@ impl Layout {
             y += height + self.row_gap();
         }
         self.content_height = match self.rows.last() {
-            Some(last) => available_height.max(last.top + last.height + MARGIN),
+            Some(last) => available_height.max(last.top + last.height + self.margin),
             None => 0.0,
         };
     }

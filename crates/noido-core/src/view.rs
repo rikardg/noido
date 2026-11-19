@@ -3,9 +3,7 @@ use std::ops::Range;
 use noido_engine::{Destination, Location, LocationMap, Size};
 
 use crate::layout::FIT_NOISE;
-use crate::{
-    Action, Defaults, DocPoint, Layout, LayoutMode, MARGIN, Place, StartZoom, scroll_target,
-};
+use crate::{Action, Defaults, DocPoint, Layout, LayoutMode, Place, StartZoom, scroll_target};
 
 /// Smallest and largest zoom, in UI points per PDF point.
 pub const MIN_ZOOM: f32 = 0.1;
@@ -729,8 +727,8 @@ impl View {
         let size = self.layout.spread_size(spread)?;
         let scale = self.scale();
         Some((
-            size.width * scale + self.layout.spread_gap(spread) + 2.0 * MARGIN,
-            size.height * scale + 2.0 * MARGIN,
+            size.width * scale + self.layout.spread_gap(spread) + 2.0 * self.layout.margin(),
+            size.height * scale + 2.0 * self.layout.margin(),
         ))
     }
 
@@ -892,7 +890,7 @@ impl View {
         let page = page.min(last);
         if self.continuous() {
             if let Some(rect) = self.layout.page_rect(page) {
-                self.scrolled_to(self.offset.0, rect.y - MARGIN);
+                self.scrolled_to(self.offset.0, rect.y - self.layout.margin());
             }
         } else {
             self.show_spread(self.layout.spread_of(page), true);
@@ -1015,6 +1013,18 @@ impl View {
         );
     }
 
+    /// Gives the pages `margin` around them: [`MARGIN`], or zero when
+    /// fullscreen gives them the window's whole area.
+    pub fn set_margin(&mut self, margin: f32) {
+        if margin == self.layout.margin() {
+            return;
+        }
+        self.layout.set_margin(margin);
+        let centre = self.centre();
+        let scale = self.fit_scale(self.mode);
+        self.rescale(scale, centre, centre);
+    }
+
     /// The fitted scale for `mode`, using the current spread in paged mode or
     /// the spread at the centre in continuous mode.
     fn fit_scale(&self, mode: ZoomMode) -> f32 {
@@ -1039,8 +1049,8 @@ impl View {
     /// The fitted scale for `mode` and `spread` in a (width, height) viewport.
     fn fit_scale_in(&self, mode: ZoomMode, spread: usize, viewport: (f32, f32)) -> f32 {
         let gap = self.layout.spread_gap(spread);
-        let width = viewport.0 - 2.0 * MARGIN - gap;
-        let height = viewport.1 - 2.0 * MARGIN;
+        let width = viewport.0 - 2.0 * self.layout.margin() - gap;
+        let height = viewport.1 - 2.0 * self.layout.margin();
         let ratio = |available: f32, length: f32| (length > 0.0).then(|| available / length);
         let scale = match mode {
             ZoomMode::Custom => Some(self.scale()),
@@ -1059,7 +1069,7 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PAGE_GAP;
+    use crate::{MARGIN, PAGE_GAP};
     use noido_engine::Rotation;
 
     fn size(width: f32, height: f32) -> Size {
@@ -1478,6 +1488,72 @@ mod tests {
         view.apply(Action::ZoomIn);
         view.set_viewport_size(1000.0, 600.0);
         assert_eq!(view.scale(), 1.25);
+    }
+
+    /// Fullscreen gives the pages its whole area: no margin above or
+    /// below them, so a fit page uses the whole height.
+    #[test]
+    fn a_tight_margin_fits_the_page_to_the_whole_height() {
+        let mut view = View::new(vec![size(612.0, 792.0); 10]);
+        view.set_viewport_size(700.0, 800.0);
+        view.apply(Action::FitPage);
+        // 776 of the 800: the 12 above and 12 below are the fit's room.
+        assert!((view.scale() - 776.0 / 792.0).abs() < 1e-4);
+        assert_eq!(view.layout().page_rect(0).unwrap().y, MARGIN);
+
+        view.set_margin(0.0);
+        assert!((view.scale() - 800.0 / 792.0).abs() < 1e-4);
+        let rect = view.layout().page_rect(0).unwrap();
+        assert_eq!(rect.y, 0.0);
+        assert!((rect.height - 800.0).abs() < 0.01);
+
+        // The margin back, and the page is fitted to the room it leaves.
+        view.set_margin(MARGIN);
+        assert!((view.scale() - 776.0 / 792.0).abs() < 1e-4);
+    }
+
+    /// Fit width uses the whole width, and the pages start at the top.
+    #[test]
+    fn a_tight_margin_fills_fit_widths_width() {
+        let mut view = letter_view();
+        assert_eq!(view.scale(), 1.0);
+        assert_eq!(view.layout().page_rect(0).unwrap().x, MARGIN);
+        view.set_margin(0.0);
+        assert!((view.scale() - 636.0 / 612.0).abs() < 1e-4);
+        let rect = view.layout().page_rect(0).unwrap();
+        assert_eq!(rect.x, 0.0);
+        assert_eq!(rect.y, 0.0);
+        assert!((rect.width - 636.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_tight_margin_leaves_its_room_out_of_the_spread_viewport() {
+        let mut view = letter_view();
+        assert_eq!(
+            view.spread_viewport_size(),
+            Some((612.0 + 2.0 * MARGIN, 792.0 + 2.0 * MARGIN))
+        );
+        view.set_margin(0.0);
+        let scale = view.scale();
+        let (width, height) = view.spread_viewport_size().unwrap();
+        assert!((width - 612.0 * scale).abs() < 0.01);
+        assert!((height - 792.0 * scale).abs() < 0.01);
+    }
+
+    /// The space a continuous scroll can reach: without a margin it ends
+    /// at the last page's bottom, with one a margin below it.
+    #[test]
+    fn a_tight_margin_leaves_no_room_below_the_last_page() {
+        let mut view = letter_view();
+        let last = view.layout().page_rect(9).unwrap();
+        assert_eq!(
+            view.layout().content_height(),
+            last.y + last.height + MARGIN
+        );
+
+        view.set_margin(0.0);
+        let last = view.layout().page_rect(9).unwrap();
+        assert_eq!(view.layout().content_height(), last.y + last.height);
     }
 
     #[test]
