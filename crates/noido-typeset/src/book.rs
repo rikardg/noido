@@ -1,11 +1,12 @@
 //! A markdown file typeset: its pages, their glyphs, where the text came from.
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use hypher::Lang;
-use noido_blocks::Text;
 use noido_blocks::markdown::parse;
-use noido_engine::{Glyph, LocationMap, Point, Quad, Run};
+use noido_blocks::{Text, Tree};
+use noido_engine::{Glyph, Location, LocationMap, Point, Quad, Run};
 use noido_text::{PageText, on_page};
 use unicode_normalization::UnicodeNormalization;
 
@@ -13,8 +14,8 @@ use crate::draw::{Outlines, PageInk};
 use crate::house::{LEADING, LEFT, LINES, PAPER, TOP};
 use crate::lines::{SetGlyph, SetLine, Shaper};
 use crate::links::{Marks, marks};
-use crate::pages::{Flow, paginate};
-use crate::paragraphs::{Para, Role, front_matter, paragraphs};
+use crate::pages::{Flow, Placed, paginate};
+use crate::paragraphs::{Notes, Para, Role, front_matter, paragraphs};
 use crate::runs::runs;
 
 /// Where a glyph's box reaches above and below its baseline, in ems: the
@@ -48,61 +49,154 @@ struct Page {
     ink: PageInk,
 }
 
+/// What one part holds for setting.
+#[allow(dead_code)] // `Drawn` is for the EPUB parts (the next task).
+pub(crate) enum Content<'a> {
+    /// A part's blocks.
+    Blocks(&'a Tree),
+    /// Paragraphs drawn without source (a title page, a notice).
+    Drawn(Vec<Para>),
+}
+
+/// One part as it was set: its paragraphs and lines, and where each
+/// line went (pages counted from the book's first).
+pub(crate) struct SetPart {
+    pub paras: Vec<Para>,
+    pub set: Vec<Vec<SetLine>>,
+    pub placed: Vec<Placed>,
+    /// The part's first page in the book.
+    #[allow(dead_code)] // for EPUB link resolution (the next task)
+    pub first_page: usize,
+}
+
+/// A book set part by part, joined.
+pub(crate) struct SetBook {
+    pages: Vec<Vec<Glyph>>,
+    map: LocationMap,
+    ink: Vec<PageInk>,
+    pub parts: Vec<SetPart>,
+}
+
 pub fn typeset(source: &str) -> Book {
     let tree = parse(source);
     let front = front_matter(&tree, source);
     let lang = language(front.lang.as_deref());
-    let (paras, notes) = paragraphs(&tree);
-    let mut shaper = Shaper::new();
-    let set: Vec<Vec<SetLine>> = paras
-        .iter()
-        .map(|para| {
-            let mut lines = shaper.set(para, &notes, lang);
-            if lines.is_empty() {
-                // A blank line, so the paragraph (a rule) keeps its place.
-                lines.push(SetLine {
-                    height: LEADING,
-                    ..SetLine::default()
-                });
-            }
-            lines
-        })
-        .collect();
-    let flows: Vec<Flow> = paras.iter().zip(&set).map(|(p, l)| flow(p, l)).collect();
-    let (placed, count) = paginate(&flows, TOP, LINES as f32 * LEADING);
-
-    let mut pages: Vec<Page> = (0..count).map(|_| Page::default()).collect();
-    for at in &placed {
-        let line = &set[at.flow][at.line];
-        let text = &paras[at.flow].text;
-        let page = &mut pages[at.page];
-        page.glyphs.extend(glyphs_of(line, at.y, page.lines));
-        page.lines += 1;
-        page.ink.add_line(line, at.y);
-        for g in &line.glyphs {
-            page.sources.push(if g.text.is_empty() {
-                Vec::new()
-            } else {
-                glyph_chars(text, g)
-            });
-            page.spans.push((at.y, at.y + line.height));
-        }
-    }
-
-    let mut map_pages = Vec::with_capacity(count);
-    let mut glyph_pages = Vec::with_capacity(count);
-    let mut ink = Vec::with_capacity(count);
-    for page in pages {
-        map_pages.push(page_runs(&page));
-        glyph_pages.push(page.glyphs);
-        ink.push(page.ink);
-    }
+    let set = set_parts(&[Content::Blocks(&tree)], lang);
+    let part = &set.parts[0];
+    let marks = marks(
+        &part.paras,
+        &part.set,
+        &part.placed,
+        set.pages.len(),
+        &front,
+    );
     Book {
+        pages: set.pages,
+        map: set.map,
+        marks,
+        ink: set.ink,
+        outlines: Outlines::default(),
+    }
+}
+
+/// Sets each part alone, each starting on a new page, its runs in its
+/// own part number; joins them into one book.
+pub(crate) fn set_parts(parts: &[Content], lang: Lang) -> SetBook {
+    let mut shaper = Shaper::new();
+    let mut glyph_pages: Vec<Vec<Glyph>> = Vec::new();
+    let mut map_pages: Vec<Vec<(usize, Run)>> = Vec::new();
+    let mut ink: Vec<PageInk> = Vec::new();
+    let mut out = Vec::with_capacity(parts.len());
+    for (number, content) in parts.iter().enumerate() {
+        let (paras, notes, drawn) = match content {
+            Content::Blocks(tree) => {
+                let (paras, notes) = paragraphs(tree);
+                (paras, notes, false)
+            }
+            Content::Drawn(paras) => (paras.clone(), Notes(HashMap::new()), true),
+        };
+        let set: Vec<Vec<SetLine>> = paras
+            .iter()
+            .map(|para| {
+                let mut lines = shaper.set(para, &notes, lang);
+                if lines.is_empty() {
+                    // A blank line, so the paragraph (a rule) keeps its place.
+                    lines.push(SetLine {
+                        height: LEADING,
+                        ..SetLine::default()
+                    });
+                }
+                lines
+            })
+            .collect();
+        let flows: Vec<Flow> = paras.iter().zip(&set).map(|(p, l)| flow(p, l)).collect();
+        let (mut placed, count) = paginate(&flows, TOP, LINES as f32 * LEADING);
+
+        let mut pages: Vec<Page> = (0..count).map(|_| Page::default()).collect();
+        for at in &placed {
+            let line = &set[at.flow][at.line];
+            let text = &paras[at.flow].text;
+            let page = &mut pages[at.page];
+            page.glyphs.extend(glyphs_of(line, at.y, page.lines));
+            page.lines += 1;
+            page.ink.add_line(line, at.y);
+            for g in &line.glyphs {
+                page.sources.push(if g.text.is_empty() {
+                    Vec::new()
+                } else if drawn {
+                    // Drawn text has no source.
+                    vec![None; g.text.nfc().count()]
+                } else {
+                    glyph_chars(text, g)
+                });
+                page.spans.push((at.y, at.y + line.height));
+            }
+        }
+
+        let first_page = glyph_pages.len();
+        let mut part_runs: Vec<Vec<(usize, Run)>> =
+            pages.iter().map(|page| page_runs(page, number)).collect();
+        if part_runs.iter().all(|runs| runs.is_empty()) {
+            // A place for the part all the same, at its first line.
+            let (top, bottom) = placed
+                .iter()
+                .find(|at| at.page == 0)
+                .map_or((TOP, TOP + LEADING), |at| {
+                    (at.y, at.y + set[at.flow][at.line].height)
+                });
+            part_runs[0].push((
+                0,
+                Run {
+                    start: Location {
+                        part: number,
+                        char: 0,
+                    },
+                    chars: 0,
+                    top,
+                    bottom,
+                },
+            ));
+        }
+        map_pages.extend(part_runs);
+        for page in pages {
+            glyph_pages.push(page.glyphs);
+            ink.push(page.ink);
+        }
+        for at in &mut placed {
+            at.page += first_page;
+        }
+        out.push(SetPart {
+            paras,
+            set,
+            placed,
+            first_page,
+        });
+    }
+    SetBook {
         pages: glyph_pages,
         map: LocationMap::from_placed(map_pages),
-        marks: marks(&paras, &set, &placed, count, &front),
         ink,
-        outlines: Outlines::default(),
+        parts: out,
     }
 }
 
@@ -115,7 +209,7 @@ pub fn typeset(source: &str) -> Book {
 ///
 /// The glyphs are those the window shows (`on_page`), the same set it makes
 /// its `PageText` of, so that they agree even if something overflows.
-fn page_runs(page: &Page) -> Vec<(usize, Run)> {
+fn page_runs(page: &Page, part: usize) -> Vec<(usize, Run)> {
     let shown: Vec<usize> = (0..page.glyphs.len())
         .filter(|&i| {
             let one = vec![page.glyphs[i].clone()];
@@ -130,7 +224,7 @@ fn page_runs(page: &Page) -> Vec<(usize, Run)> {
     let mut span = (0.0, 0.0);
     for c in 0..text.char_count() {
         if c > 0 && text.line_of(c) != text.line_of(c - 1) {
-            flush(&mut out, &line, first, span);
+            flush(&mut out, &line, first, span, part);
             first = c;
             line.clear();
         }
@@ -142,12 +236,18 @@ fn page_runs(page: &Page) -> Vec<(usize, Run)> {
         });
         line.push(source);
     }
-    flush(&mut out, &line, first, span);
+    flush(&mut out, &line, first, span, part);
     out
 }
 
-fn flush(out: &mut Vec<(usize, Run)>, line: &[Option<usize>], first: usize, span: (f32, f32)) {
-    for (at, run) in runs(line, span.0, span.1) {
+fn flush(
+    out: &mut Vec<(usize, Run)>,
+    line: &[Option<usize>],
+    first: usize,
+    span: (f32, f32),
+    part: usize,
+) {
+    for (at, run) in runs(line, part, span.0, span.1) {
         out.push((first + at, run));
     }
 }
@@ -352,7 +452,7 @@ mod tests {
             lines: 0,
             ink: PageInk::default(),
         };
-        let offsets: Vec<usize> = page_runs(&page).iter().map(|(at, _)| *at).collect();
+        let offsets: Vec<usize> = page_runs(&page, 0).iter().map(|(at, _)| *at).collect();
         assert_eq!(offsets, [0, 1]);
     }
 
@@ -369,6 +469,50 @@ mod tests {
         }
         let runs: Vec<u32> = lines.iter().map(|&(_, run)| run).collect();
         assert_eq!(runs, [0, 1, 2]);
+    }
+
+    #[test]
+    fn each_part_starts_a_page_and_counts_its_own_characters() {
+        let (one, two) = (parse("One.\n"), parse("Two.\n"));
+        let book = set_parts(
+            &[Content::Blocks(&one), Content::Blocks(&two)],
+            Lang::English,
+        );
+        assert_eq!(book.pages.len(), 2);
+        let map = &book.map;
+        assert_eq!(map.location(0, 0), Some(Location { part: 0, char: 0 }));
+        assert_eq!(map.location(1, 0), Some(Location { part: 1, char: 0 }));
+        assert_eq!(book.parts[1].first_page, 1);
+        assert!(book.parts[1].placed.iter().all(|at| at.page == 1));
+    }
+
+    #[test]
+    fn a_part_without_text_still_has_a_place() {
+        let one = parse("One.\n");
+        let drawn = Para {
+            role: Role::Body { indent: false },
+            text: Text {
+                string: "A title page".to_string(),
+                styles: vec![],
+                segments: vec![],
+            },
+            prefix: None,
+            new_page: false,
+            note: None,
+        };
+        let book = set_parts(
+            &[Content::Blocks(&one), Content::Drawn(vec![drawn])],
+            Lang::English,
+        );
+        assert_eq!(book.pages.len(), 2);
+        let map = &book.map;
+        assert_eq!(map.page_start(1), Some(Location { part: 1, char: 0 }));
+        let chars = PageText::new(book.pages[1].clone()).char_count();
+        assert!(chars > 0);
+        for c in 0..chars {
+            let at = map.location(1, c);
+            assert!(at.is_none() || at == Some(Location { part: 1, char: 0 }));
+        }
     }
 
     #[test]
