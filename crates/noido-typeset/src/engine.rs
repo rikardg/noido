@@ -10,13 +10,23 @@ use noido_engine::{
     PdfEngine, PixelRect, Properties, Rgba8Image, Size,
 };
 
-use crate::book::{Book, typeset};
+use crate::book::{Book, typeset, typeset_epub};
 use crate::house::{LAYOUT_KEY, PAPER};
 
 /// The largest source laid out: a bigger file takes seconds and gigabytes
 /// on the thread that opens it. To go once layout is lean and off that
 /// thread (#120).
 const MAX_SOURCE: usize = 8 * 1024 * 1024;
+
+/// The message for a source of `n` bytes over the limit.
+fn too_large(n: usize) -> String {
+    const MB: usize = 1024 * 1024;
+    format!(
+        "too large to typeset ({} MB; the limit is {} MB)",
+        n.div_ceil(MB),
+        MAX_SOURCE / MB
+    )
+}
 
 /// What identifies a file's bytes: a hash and the length. Cheaper to keep
 /// than the bytes (which a mapped file would have to be read for), and a
@@ -42,6 +52,9 @@ fn fingerprint(bytes: &[u8]) -> Fingerprint {
 #[derive(Default)]
 pub struct TypesetEngine {
     last: Mutex<Option<(Fingerprint, Arc<Book>)>>,
+    /// How many EPUBs were parsed, for the tests.
+    #[cfg(test)]
+    parsed: std::sync::atomic::AtomicUsize,
 }
 
 impl TypesetEngine {
@@ -52,28 +65,37 @@ impl TypesetEngine {
 
 impl PdfEngine for TypesetEngine {
     fn open(&self, bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
-        if bytes.len() > MAX_SOURCE {
-            const MB: usize = 1024 * 1024;
-            return Err(EngineError::Open(format!(
-                "too large to typeset ({} MB; the limit is {} MB)",
-                bytes.len().div_ceil(MB),
-                MAX_SOURCE / MB
-            )));
+        let epub = noido_epub::is_epub(&bytes);
+        // Refused before it is hashed.
+        if !epub && bytes.len() > MAX_SOURCE {
+            return Err(EngineError::Open(too_large(bytes.len())));
         }
-        let source = std::str::from_utf8(&bytes)
-            .map_err(|_| EngineError::Open("not a readable document".into()))?;
         let print = fingerprint(&bytes);
         // Held while laying out: a second thread with the same bytes waits
-        // for the book instead of making its own.
+        // for the book instead of parsing and making its own.
         let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        let book = match &*last {
-            Some((kept, book)) if *kept == print => book.clone(),
-            _ => {
-                let book = Arc::new(typeset(source));
-                *last = Some((print, book.clone()));
-                book
-            }
+        if let Some((kept, book)) = &*last
+            && *kept == print
+        {
+            return Ok(Box::new(TypesetDocument(book.clone())));
+        }
+        let book = if epub {
+            #[cfg(test)]
+            self.parsed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // The limit counts the spine's text, not the archive.
+            let epub = noido_epub::open(&bytes, MAX_SOURCE).map_err(|error| match error {
+                noido_epub::EpubError::TooLarge(n) => EngineError::Open(too_large(n)),
+                other => EngineError::Open(other.to_string()),
+            })?;
+            typeset_epub(&epub)
+        } else {
+            let source = std::str::from_utf8(&bytes)
+                .map_err(|_| EngineError::Open("not a readable document".into()))?;
+            typeset(source)
         };
+        let book = Arc::new(book);
+        *last = Some((print, book.clone()));
         Ok(Box::new(TypesetDocument(book)))
     }
 }
@@ -170,6 +192,16 @@ mod tests {
         assert!(!Arc::ptr_eq(&first, &third));
     }
 
+    #[test]
+    fn opening_the_same_epub_twice_parses_it_once() {
+        use std::sync::atomic::Ordering;
+        let engine = TypesetEngine::new();
+        let first = engine.open(fixture("book.epub")).unwrap();
+        let second = engine.open(fixture("book.epub")).unwrap();
+        assert_eq!(engine.parsed.load(Ordering::SeqCst), 1);
+        assert_eq!(first.page_count(), second.page_count());
+    }
+
     fn open_error(len: usize, fill: u8) -> Option<String> {
         match TypesetEngine::new().open(PdfBytes::from(vec![fill; len])) {
             Err(error) => Some(error.to_string()),
@@ -211,5 +243,58 @@ mod tests {
         assert_eq!(document.outline().len(), 1);
         assert!(!document.text(0).unwrap().is_empty());
         assert!(document.text(1).is_err());
+    }
+
+    fn fixture(name: &str) -> PdfBytes {
+        PdfBytes::from(
+            std::fs::read(format!(
+                "{}/../../fixtures/{name}",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn an_epub_opens_as_its_book() {
+        let document = TypesetEngine::new().open(fixture("book.epub")).unwrap();
+        assert!(document.page_count() >= 3);
+        assert_eq!(document.properties().format, noido_engine::Format::Epub);
+    }
+
+    #[test]
+    fn the_limit_counts_an_epubs_text_not_its_zip() {
+        use std::io::{Cursor, Write};
+        use zip::write::SimpleFileOptions;
+        let container = r#"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="p.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#;
+        let opf = r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata/><manifest><item id="a" href="a.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="a"/></spine></package>"#;
+        let page =
+            r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Hello.</p></body></html>"#;
+        let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let stored =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, data) in [
+            ("META-INF/container.xml", container),
+            ("p.opf", opf),
+            ("a.xhtml", page),
+        ] {
+            w.start_file(name, stored).unwrap();
+            w.write_all(data.as_bytes()).unwrap();
+        }
+        w.start_file("big.png", stored).unwrap();
+        w.write_all(&vec![7u8; MAX_SOURCE + 1024 * 1024]).unwrap();
+        let bytes = w.finish().unwrap().into_inner();
+        assert!(bytes.len() > MAX_SOURCE);
+        let document = TypesetEngine::new().open(PdfBytes::from(bytes)).unwrap();
+        assert_eq!(document.properties().format, noido_engine::Format::Epub);
+    }
+
+    #[test]
+    fn epub_errors_are_sentences() {
+        let error = match TypesetEngine::new().open(fixture("drm.epub")) {
+            Err(error) => error,
+            Ok(_) => panic!("opened a DRM-protected book"),
+        };
+        assert_eq!(error.to_string(), "this EPUB is DRM-protected");
     }
 }

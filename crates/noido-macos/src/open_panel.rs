@@ -25,6 +25,12 @@ fn cbz_type() -> Option<Retained<UTType>> {
         .or_else(|| UTType::typeWithIdentifier(&NSString::from_str(CBZ_UTI)))
 }
 
+/// An EPUB, by its extension, else the standard identifier.
+fn epub_type() -> Option<Retained<UTType>> {
+    UTType::typeWithFilenameExtension(&NSString::from_str("epub"))
+        .or_else(|| UTType::typeWithIdentifier(&NSString::from_str("org.idpf.epub-container")))
+}
+
 /// Markdown (`md` and `markdown`, by extension) and plain text.
 fn text_types() -> Vec<Retained<UTType>> {
     ["md", "markdown"]
@@ -75,7 +81,7 @@ pub fn pick_documents(directory: Option<&Path>, on_picked: impl Fn(Vec<PathBuf>)
     let panel = NSOpenPanel::openPanel(mtm);
     panel.setAllowsMultipleSelection(true);
     panel.setCanChooseDirectories(false);
-    let types: Vec<Retained<UTType>> = [pdf_type(), cbz_type()]
+    let types: Vec<Retained<UTType>> = [pdf_type(), epub_type(), cbz_type()]
         .into_iter()
         .flatten()
         .chain(text_types())
@@ -124,6 +130,13 @@ mod tests {
         let extension = cbz.preferredFilenameExtension().map(|e| e.to_string());
         assert_eq!(extension.as_deref(), Some("cbz"));
         assert!(pdf_type().is_some());
+    }
+
+    #[test]
+    fn the_open_panel_offers_epub() {
+        let epub = epub_type().expect("the system knows epub");
+        let extension = epub.preferredFilenameExtension().map(|e| e.to_string());
+        assert_eq!(extension.as_deref(), Some("epub"));
     }
 
     #[test]
