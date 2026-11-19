@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 noido-engine.workspace = true
+noido-epub.workspace = true
 engine-hayro.workspace = true
 engine-comic.workspace = true
 noido-render.workspace = true

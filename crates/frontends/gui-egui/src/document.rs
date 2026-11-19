@@ -21,8 +21,8 @@ use crate::watch::{self, Watcher};
 /// Documents whose state is kept; older ones are forgotten.
 const REMEMBERED_DOCUMENTS: usize = 1000;
 
-/// The engine for a file: hayro for a PDF, the comic engine for a ZIP, the
-/// typesetter for text. Other bytes that hold a PDF header go to hayro,
+/// The engine for a file: hayro for a PDF, the typesetter for an EPUB, the
+/// comic engine for another ZIP, the typesetter for text. Other bytes that hold a PDF header go to hayro,
 /// whose error names them. One per window, its `Arc` cloned to every
 /// thread, so that a text file is laid out once.
 #[derive(Default)]
@@ -41,7 +41,11 @@ impl PdfEngine for AnyEngine {
         if bytes.starts_with(b"%PDF-") {
             HayroEngine.open(bytes)
         } else if bytes.starts_with(b"PK\x03\x04") {
-            ComicEngine.open(bytes)
+            if noido_epub::is_epub(&bytes) {
+                self.typeset.open(bytes)
+            } else {
+                ComicEngine.open(bytes)
+            }
         } else if bytes[..bytes.len().min(1024)]
             .windows(5)
             .any(|window| window == b"%PDF-")
@@ -272,6 +276,20 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("CBZ"), "{message}");
         assert!(!message.contains("PDF"), "{message}");
+    }
+
+    #[test]
+    fn an_epub_opens_through_the_typesetter() {
+        let bytes = PdfBytes::from(std::fs::read(fixture("book.epub")).unwrap());
+        let document = AnyEngine::new().open(bytes).unwrap();
+        assert_eq!(document.properties().format, noido_engine::Format::Epub);
+    }
+
+    #[test]
+    fn a_cbz_still_opens_as_a_comic() {
+        let bytes = PdfBytes::from(std::fs::read(fixture("comic.cbz")).unwrap());
+        let document = AnyEngine::new().open(bytes).unwrap();
+        assert_eq!(document.properties().format, noido_engine::Format::Comic);
     }
 
     #[test]

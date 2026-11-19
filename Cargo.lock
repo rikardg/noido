@@ -1864,6 +1864,7 @@ dependencies = [
  "native-theme",
  "noido-core",
  "noido-engine",
+ "noido-epub",
  "noido-macos",
  "noido-render",
  "noido-settings",
