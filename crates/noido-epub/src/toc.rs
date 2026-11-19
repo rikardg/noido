@@ -3,7 +3,7 @@
 
 use roxmltree::Node;
 
-use crate::{TocEntry, resolve};
+use crate::{TocEntry, in_dir};
 
 /// `doc_path`: where the document sits in the container; its hrefs are
 /// resolved against that directory.
@@ -91,8 +91,8 @@ fn dir_of(path: &str) -> &str {
 /// The container path of `href`, with its `#fragment` kept as written.
 fn href_of(dir: &str, href: &str) -> String {
     match href.split_once('#') {
-        Some((_, frag)) => format!("{}#{frag}", resolve(dir, href)),
-        None => resolve(dir, href),
+        Some((_, frag)) => format!("{}#{frag}", in_dir(dir, href)),
+        None => in_dir(dir, href),
     }
 }
 

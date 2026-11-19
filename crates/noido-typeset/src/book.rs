@@ -7,13 +7,14 @@ use hypher::Lang;
 use noido_blocks::markdown::parse;
 use noido_blocks::{Text, Tree};
 use noido_engine::{Glyph, Location, LocationMap, Point, Quad, Run};
+use noido_epub::{Epub, PartKind};
 use noido_text::{PageText, on_page};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::draw::{Outlines, PageInk};
 use crate::house::{LEADING, LEFT, LINES, PAPER, TOP};
 use crate::lines::{SetGlyph, SetLine, Shaper};
-use crate::links::{Marks, marks};
+use crate::links::{Marks, epub_marks, marks};
 use crate::pages::{Flow, Placed, paginate};
 use crate::paragraphs::{Notes, Para, Role, front_matter, paragraphs};
 use crate::runs::runs;
@@ -50,7 +51,6 @@ struct Page {
 }
 
 /// What one part holds for setting.
-#[allow(dead_code)] // `Drawn` is for the EPUB parts (the next task).
 pub(crate) enum Content<'a> {
     /// A part's blocks.
     Blocks(&'a Tree),
@@ -64,9 +64,6 @@ pub(crate) struct SetPart {
     pub paras: Vec<Para>,
     pub set: Vec<Vec<SetLine>>,
     pub placed: Vec<Placed>,
-    /// The part's first page in the book.
-    #[allow(dead_code)] // for EPUB link resolution (the next task)
-    pub first_page: usize,
 }
 
 /// A book set part by part, joined.
@@ -97,6 +94,73 @@ pub fn typeset(source: &str) -> Book {
         ink: set.ink,
         outlines: Outlines::default(),
     }
+}
+
+/// An EPUB typeset: each spine item a part, the cover a title page, an
+/// unreadable item a notice; links and outline resolved through ids and
+/// the table of contents.
+pub fn typeset_epub(epub: &Epub) -> Book {
+    let contents: Vec<Content> = epub
+        .parts
+        .iter()
+        .map(|part| match &part.kind {
+            PartKind::Text(x) => Content::Blocks(&x.tree),
+            PartKind::Cover => Content::Drawn(title_page(epub)),
+            PartKind::Unreadable => Content::Drawn(vec![drawn(
+                Role::Body { indent: false },
+                "This chapter could not be read.",
+            )]),
+        })
+        .collect();
+    let set = set_parts(&contents, epub_language(epub));
+    let marks = epub_marks(epub, &set.parts, &set.map, set.pages.len());
+    Book {
+        pages: set.pages,
+        map: set.map,
+        marks,
+        ink: set.ink,
+        outlines: Outlines::default(),
+    }
+}
+
+/// A paragraph drawn without source.
+fn drawn(role: Role, string: &str) -> Para {
+    Para {
+        role,
+        text: Text {
+            string: string.to_string(),
+            styles: vec![],
+            segments: vec![],
+        },
+        prefix: None,
+        new_page: false,
+        note: None,
+    }
+}
+
+/// The title as a level-1 heading (else the first file's name), the
+/// authors below it.
+fn title_page(epub: &Epub) -> Vec<Para> {
+    let title = epub.meta.title.clone().unwrap_or_else(|| {
+        let name = epub.parts.first().map_or("", |p| p.path.as_str());
+        let name = name.rsplit('/').next().unwrap_or(name);
+        name.rsplit_once('.')
+            .map_or(name, |(stem, _)| stem)
+            .to_string()
+    });
+    let mut paras = vec![drawn(Role::Heading(1), &title)];
+    if !epub.meta.creators.is_empty() {
+        paras.push(drawn(
+            Role::Body { indent: false },
+            &epub.meta.creators.join(", "),
+        ));
+    }
+    paras
+}
+
+/// The package's language; English when it has none.
+fn epub_language(epub: &Epub) -> Lang {
+    language(epub.meta.language.as_deref())
 }
 
 /// Sets each part alone, each starting on a new page, its runs in its
@@ -185,12 +249,7 @@ pub(crate) fn set_parts(parts: &[Content], lang: Lang) -> SetBook {
         for at in &mut placed {
             at.page += first_page;
         }
-        out.push(SetPart {
-            paras,
-            set,
-            placed,
-            first_page,
-        });
+        out.push(SetPart { paras, set, placed });
     }
     SetBook {
         pages: glyph_pages,
@@ -482,7 +541,6 @@ mod tests {
         let map = &book.map;
         assert_eq!(map.location(0, 0), Some(Location { part: 0, char: 0 }));
         assert_eq!(map.location(1, 0), Some(Location { part: 1, char: 0 }));
-        assert_eq!(book.parts[1].first_page, 1);
         assert!(book.parts[1].placed.iter().all(|at| at.page == 1));
     }
 
@@ -513,6 +571,19 @@ mod tests {
             let at = map.location(1, c);
             assert!(at.is_none() || at == Some(Location { part: 1, char: 0 }));
         }
+    }
+
+    #[test]
+    fn an_epub_is_set_in_its_language_and_english_without_one() {
+        let language_of = |name: &str| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures")
+                .join(name);
+            let epub = noido_epub::open(&std::fs::read(path).unwrap(), 8 << 20).unwrap();
+            epub_language(&epub)
+        };
+        assert_eq!(language_of("book.epub"), Lang::Swedish);
+        assert_eq!(language_of("book2.epub"), Lang::English);
     }
 
     #[test]

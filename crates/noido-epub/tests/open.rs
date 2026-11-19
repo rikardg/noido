@@ -325,6 +325,20 @@ fn toc_titles_are_trimmed_and_collapsed() {
     assert!(nav.contains(">\n  Chapter\n  Two <"), "{nav}");
 }
 
+#[test]
+fn an_href_resolves_against_the_file_it_is_in() {
+    use noido_epub::resolve;
+    let base = "OEBPS/text/ch 2.xhtml";
+    assert_eq!(resolve(base, "ch1.xhtml"), "OEBPS/text/ch1.xhtml");
+    assert_eq!(
+        resolve(base, "ch%201.xhtml#a%20b"),
+        "OEBPS/text/ch 1.xhtml#a%20b"
+    );
+    assert_eq!(resolve(base, "../cover.png"), "OEBPS/cover.png");
+    assert_eq!(resolve(base, "#top"), "OEBPS/text/ch 2.xhtml#top");
+    assert_eq!(resolve("a.xhtml", "b.xhtml#x"), "b.xhtml#x");
+}
+
 const NAV_DOCTYPE: &str = "<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\">\n<body>\n<nav epub:type=\"toc\">\n<ol>\n<li><a href=\"a.xhtml\">Chapter&nbsp;One&mdash;Start</a></li>\n</ol>\n</nav>\n</body>\n</html>\n";
 
 const NCX_DOCTYPE: &str = "<?xml version=\"1.0\"?>\n<!DOCTYPE ncx PUBLIC \"-//NISO//DTD ncx 2005-1//EN\" \"http://www.daisy.org/z3986/2005/ncx-2005-1.dtd\">\n<ncx xmlns=\"http://www.daisy.org/z3986/2005/ncx/\" version=\"2005-1\"><navMap><navPoint id=\"p\"><navLabel><text>From NCX</text></navLabel><content src=\"a.xhtml\"/></navPoint></navMap></ncx>";

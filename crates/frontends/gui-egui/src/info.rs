@@ -374,6 +374,7 @@ fn format_text(format: Format) -> Option<String> {
     match format {
         Format::Comic => Some("CBZ comic archive".to_owned()),
         Format::Markdown => Some("Markdown".to_owned()),
+        Format::Epub => Some("EPUB".to_owned()),
         Format::Pdf | Format::Unknown => None,
     }
 }
@@ -484,6 +485,7 @@ mod tests {
             format_text(Format::Comic),
             Some("CBZ comic archive".to_owned())
         );
+        assert_eq!(format_text(Format::Epub), Some("EPUB".to_owned()));
         assert_eq!(format_text(Format::Pdf), None);
         assert_eq!(format_text(Format::Unknown), None);
     }

@@ -129,7 +129,7 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
         if let (Some(id), Some(href)) = (item.attribute("id"), item.attribute("href")) {
             manifest.push(Item {
                 id,
-                path: resolve(dir, href),
+                path: in_dir(dir, href),
                 image: item
                     .attribute("media-type")
                     .is_some_and(|t| t.starts_with("image/")),
@@ -157,7 +157,7 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
             let Some(uri) = reference.attribute("URI") else {
                 continue;
             };
-            let path = resolve("", uri);
+            let path = in_dir("", uri);
             if spine.iter().flatten().any(|i| i.path == path) {
                 return Err(EpubError::Drm);
             }
@@ -179,7 +179,7 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
     let guide_cover = descendants(root, "reference")
         .find(|r| r.attribute("type") == Some("cover"))
         .and_then(|r| r.attribute("href"))
-        .map(|href| resolve(dir, href));
+        .map(|href| in_dir(dir, href));
 
     let mut parts = Vec::with_capacity(spine.len());
     let mut read = 0usize;
@@ -291,7 +291,7 @@ fn package_path(container: &str) -> Option<String> {
     descendants(doc.root_element(), "rootfile")
         .find(|r| r.attribute("media-type") == Some("application/oebps-package+xml"))
         .and_then(|r| r.attribute("full-path"))
-        .map(|p| resolve("", p))
+        .map(|p| in_dir("", p))
 }
 
 fn descendants<'a, 'i>(
@@ -321,9 +321,31 @@ fn metadata(root: Node) -> Meta {
     meta
 }
 
+/// `href`, as written in the file at `base_path`, as a container path
+/// with its fragment kept as written: "path" or "path#fragment". A bare
+/// "#fragment" is `base_path`'s own. The path is percent-decoded and
+/// `..` resolved.
+pub fn resolve(base_path: &str, href: &str) -> String {
+    let (path, fragment) = match href.split_once('#') {
+        Some((path, fragment)) => (path, Some(fragment)),
+        None => (href, None),
+    };
+    let dir = base_path.rsplit_once('/').map_or("", |(d, _)| d);
+    let mut out = if path.is_empty() {
+        base_path.to_string()
+    } else {
+        in_dir(dir, path)
+    };
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
+}
+
 /// A path in the container: `href` against `dir`, its fragment dropped,
 /// percent-decoded, `.` and `..` resolved.
-fn resolve(dir: &str, href: &str) -> String {
+fn in_dir(dir: &str, href: &str) -> String {
     let href = href.split('#').next().unwrap_or_default();
     let decoded = percent_decode_str(href).decode_utf8_lossy();
     let mut out: Vec<&str> = if decoded.starts_with('/') {

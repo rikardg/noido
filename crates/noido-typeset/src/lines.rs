@@ -230,7 +230,7 @@ impl Shape {
         let mut stand_ins: Vec<(Range<usize>, String, RepKind)> = Vec::new();
         for styled in &para.text.styles {
             let (text, kind) = match &styled.style {
-                Style::Image { alt, .. } if alt.is_empty() => {
+                Style::Image { src, alt } if alt.is_empty() || is_file_stem(alt, src) => {
                     ("[image]".to_string(), RepKind::Image)
                 }
                 Style::Image { alt, .. } => (alt.clone(), RepKind::Image),
@@ -324,6 +324,14 @@ struct Atom {
     size: f32,
     /// Glyph id, offset from the atom's left, advance.
     glyphs: Vec<(u16, f32, f32)>,
+}
+
+/// Whether `alt` is only the name of the image file `src`, without its
+/// extension, ignoring case: no description at all.
+fn is_file_stem(alt: &str, src: &str) -> bool {
+    let name = src.rsplit('/').next().unwrap_or(src);
+    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+    alt.to_lowercase() == stem.to_lowercase()
 }
 
 fn glyph_id(id: u32) -> u16 {
@@ -1031,6 +1039,44 @@ mod tests {
         };
         let notes = Notes(std::collections::HashMap::new());
         Shaper::new().set(&para, &notes, Lang::English)
+    }
+
+    /// The text a paragraph of one image draws.
+    fn image_drawn(src: &str, alt: &str) -> String {
+        use noido_blocks::{Styled, Text};
+        let mut text = Text::default();
+        text.push("x", 0..1);
+        text.styles = vec![Styled {
+            style: Style::Image {
+                src: src.to_string(),
+                alt: alt.to_string(),
+            },
+            drawn: 0..1,
+            span: 0..1,
+        }];
+        let para = Para {
+            role: Role::Body { indent: false },
+            text,
+            prefix: None,
+            new_page: false,
+            note: None,
+        };
+        let notes = Notes(std::collections::HashMap::new());
+        let lines = Shaper::new().set(&para, &notes, Lang::English);
+        lines
+            .iter()
+            .flat_map(|l| &l.glyphs)
+            .map(|g| g.text.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn an_alt_that_is_the_file_name_is_an_image_marker() {
+        assert_eq!(image_drawn("a/b.png", ""), "[image]");
+        assert_eq!(image_drawn("../images/F0001-01.png", "f0001-01"), "[image]");
+        assert_eq!(image_drawn("fig.jpg", "Fig"), "[image]");
+        assert_eq!(image_drawn("fig.jpg", "A figure"), "A figure");
+        assert_eq!(image_drawn("fig.jpg", "fig two"), "fig two");
     }
 
     #[test]
