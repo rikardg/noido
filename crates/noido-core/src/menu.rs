@@ -15,6 +15,8 @@ pub enum Check {
     ScaleToFit,
     Sidebar,
     SelectTool,
+    /// The window is in fullscreen.
+    Fullscreen,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,7 +156,14 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
             check(Action::ToggleGapless, "Gapless mode", Check::Gapless),
             check(Action::ToggleScaleToFit, "Scale to fit", Check::ScaleToFit),
         ],
-        vec![check(Action::ToggleSidebar, "Show sidebar", Check::Sidebar)],
+        // The bar, and with it the menu, is hidden in fullscreen; the
+        // entry is there for completeness, checked while the window is.
+        // macOS's AppKit menu has its own entry.
+        vec![
+            check(Action::ToggleSidebar, "Show sidebar", Check::Sidebar),
+            #[cfg(not(target_os = "macos"))]
+            check(Action::ToggleFullScreen, "Full screen", Check::Fullscreen),
+        ],
         vec![check(
             Action::ToggleSelectTool,
             "Select text",
@@ -198,6 +207,14 @@ mod tests {
             .iter()
             .map(|section| section.iter().map(|e| e.label).collect())
             .collect();
+        // The bar, and with it the menu, is hidden in fullscreen; the
+        // entry is still there for completeness, and checked while the
+        // window is.
+        let sidebar = if cfg!(target_os = "macos") {
+            vec!["Show sidebar"]
+        } else {
+            vec!["Show sidebar", "Full screen"]
+        };
         assert_eq!(
             labels,
             vec![
@@ -217,7 +234,7 @@ mod tests {
                     "Gapless mode",
                     "Scale to fit"
                 ],
-                vec!["Show sidebar"],
+                sidebar,
                 vec!["Select text"],
                 vec!["Undo", "Redo"],
                 vec!["Back", "Forward"],
@@ -233,17 +250,42 @@ mod tests {
             .filter(|e| e.check.is_some())
             .map(|e| e.label)
             .collect();
+        let mut expected = vec![
+            "Continuous",
+            "Dual page",
+            "Odd pages left",
+            "Gapless mode",
+            "Scale to fit",
+            "Show sidebar",
+            "Select text",
+        ];
+        if !cfg!(target_os = "macos") {
+            expected.insert(6, "Full screen");
+        }
+        assert_eq!(checked, expected);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn full_screen_sits_under_show_sidebar() {
+        let section = menu()
+            .into_iter()
+            .find(|section| section.iter().any(|e| e.label == "Show sidebar"))
+            .expect("no section with Show sidebar");
         assert_eq!(
-            checked,
-            vec![
-                "Continuous",
-                "Dual page",
-                "Odd pages left",
-                "Gapless mode",
-                "Scale to fit",
-                "Show sidebar",
-                "Select text"
-            ]
+            section.iter().map(|e| e.label).collect::<Vec<_>>(),
+            vec!["Show sidebar", "Full screen"]
+        );
+        assert_eq!(section[1].action, Action::ToggleFullScreen);
+        assert_eq!(section[1].check, Some(Check::Fullscreen));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_has_no_full_screen_entry() {
+        assert!(
+            menu().iter().flatten().all(|e| e.label != "Full screen"),
+            "AppKit's Window menu has it"
         );
     }
 

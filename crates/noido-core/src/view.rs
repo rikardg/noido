@@ -700,6 +700,7 @@ impl View {
             | Action::Undo
             | Action::Redo
             | Action::CloseWindow
+            | Action::ToggleFullScreen
             | Action::Quit => {}
         }
     }

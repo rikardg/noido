@@ -23,6 +23,7 @@ pub enum Key {
     Comma,
     F3,
     F9,
+    F11,
     ArrowUp,
     ArrowDown,
     ArrowLeft,
@@ -72,6 +73,9 @@ pub enum Action {
     ToggleGapless,
     ToggleScaleToFit,
     ToggleSidebar,
+    /// Enters the window's fullscreen, or leaves it. Off macOS, whose
+    /// AppKit menu has the way in.
+    ToggleFullScreen,
     FocusSearch,
     NextHit,
     PreviousHit,
@@ -159,6 +163,10 @@ impl Keymap {
             (shift(command(Key::Z)), Action::Redo),
             (command(Key::Y), Action::Redo),
             (plain(Key::F9), Action::ToggleSidebar),
+            // macOS's Window menu has its own way in, and F11 there is
+            // usually the desktop's.
+            #[cfg(not(target_os = "macos"))]
+            (plain(Key::F11), Action::ToggleFullScreen),
             (command(Key::F), Action::FocusSearch),
             (command(Key::G), Action::NextHit),
             (shift(command(Key::G)), Action::PreviousHit),
@@ -205,7 +213,12 @@ impl Keymap {
 }
 
 fn acts_while_editing(press: KeyPress) -> bool {
-    press.command || matches!(press.key, Key::F3 | Key::F9 | Key::PageUp | Key::PageDown)
+    // F11 is listed on every platform, though only bound off macOS.
+    press.command
+        || matches!(
+            press.key,
+            Key::F3 | Key::F9 | Key::F11 | Key::PageUp | Key::PageDown
+        )
 }
 
 /// How shortcuts are written.
@@ -240,6 +253,7 @@ pub fn shortcut_label(press: KeyPress, platform: Platform) -> String {
         Key::Comma => ",",
         Key::F3 => "F3",
         Key::F9 => "F9",
+        Key::F11 => "F11",
         Key::ArrowUp => "↑",
         Key::ArrowDown => "↓",
         Key::ArrowLeft => "←",
@@ -661,6 +675,32 @@ mod tests {
             Keymap::native().action(press(Key::F9, false), false),
             Some(Action::ToggleSidebar)
         );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn f11_toggles_fullscreen() {
+        let keymap = Keymap::native();
+        assert_eq!(
+            keymap.action(press(Key::F11, false), false),
+            Some(Action::ToggleFullScreen)
+        );
+        // A function key, as F3 and F9 are: the field leaves it alone.
+        assert_eq!(
+            keymap.action(press(Key::F11, false), true),
+            Some(Action::ToggleFullScreen)
+        );
+        assert_eq!(
+            shortcut_label(press(Key::F11, false), Platform::Other),
+            "F11"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_has_no_f11_for_fullscreen() {
+        assert_eq!(Keymap::native().key_for(Action::ToggleFullScreen), None);
+        assert_eq!(Keymap::native().action(press(Key::F11, false), false), None);
     }
 
     #[test]
