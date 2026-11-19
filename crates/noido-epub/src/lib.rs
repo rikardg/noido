@@ -11,8 +11,10 @@ use std::io::{Cursor, Read};
 use noido_blocks::xhtml::{self, Xhtml};
 use noido_blocks::{Block, BlockKind, Style, Text};
 use percent_encoding::percent_decode_str;
-use roxmltree::{Document, Node};
+use roxmltree::{Document, Node, ParsingOptions};
 use zip::ZipArchive;
+
+mod toc;
 
 /// The container, package and encryption files are small; this bounds
 /// their reads whatever a header says.
@@ -21,7 +23,7 @@ const MAX_XML: u64 = 4 * 1024 * 1024;
 pub struct Epub {
     pub meta: Meta,
     pub parts: Vec<Part>,
-    /// Empty until the table of contents is read.
+    /// From the nav document, else the NCX; empty when there is neither.
     pub toc: Vec<TocEntry>,
 }
 
@@ -115,7 +117,7 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
     let container = read_text(&mut zip, CONTAINER).ok_or(EpubError::NoContainer)?;
     let package_path = package_path(&container).ok_or(EpubError::NoPackage)?;
     let package = read_text(&mut zip, &package_path).ok_or(EpubError::NoPackage)?;
-    let doc = Document::parse(&package).map_err(|_| EpubError::NoPackage)?;
+    let doc = parse_xml(&package).map_err(|_| EpubError::NoPackage)?;
     let root = doc.root_element();
     if root.tag_name().name() != "package" {
         return Err(EpubError::NoPackage);
@@ -131,6 +133,9 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
                 image: item
                     .attribute("media-type")
                     .is_some_and(|t| t.starts_with("image/")),
+                nav: item
+                    .attribute("properties")
+                    .is_some_and(|p| p.split_whitespace().any(|t| t == "nav")),
             });
         }
     }
@@ -143,7 +148,7 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
     }
 
     if let Some(encryption) = read_text(&mut zip, "META-INF/encryption.xml")
-        && let Ok(doc) = Document::parse(&encryption)
+        && let Ok(doc) = parse_xml(&encryption)
     {
         for reference in doc
             .descendants()
@@ -227,10 +232,26 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
         });
     }
 
+    let ncx = descendants(root, "spine")
+        .next()
+        .and_then(|s| s.attribute("toc"))
+        .and_then(|id| manifest.iter().find(|i| i.id == id));
+    let mut toc = manifest
+        .iter()
+        .find(|i| i.nav)
+        .and_then(|nav| read_text(&mut zip, &nav.path).map(|t| toc::from_nav(&t, &nav.path)))
+        .unwrap_or_default();
+    if toc.is_empty()
+        && let Some(ncx) = ncx
+        && let Some(text) = read_text(&mut zip, &ncx.path)
+    {
+        toc = toc::from_ncx(&text, &ncx.path);
+    }
+
     Ok(Epub {
         meta: metadata(root),
         parts,
-        toc: Vec::new(),
+        toc,
     })
 }
 
@@ -238,6 +259,7 @@ struct Item<'a> {
     id: &'a str,
     path: String,
     image: bool,
+    nav: bool,
 }
 
 fn read_capped(reader: &mut impl Read, cap: u64) -> Option<Vec<u8>> {
@@ -254,8 +276,18 @@ fn read_text(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<String> 
         .map(|s| s.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(s))
 }
 
+/// An XML file of the container. Real books carry a DOCTYPE (the OEB
+/// package, the NCX); roxmltree reads it without fetching anything.
+fn parse_xml(text: &str) -> Result<Document<'_>, roxmltree::Error> {
+    let options = ParsingOptions {
+        allow_dtd: true,
+        ..ParsingOptions::default()
+    };
+    Document::parse_with_options(text, options)
+}
+
 fn package_path(container: &str) -> Option<String> {
-    let doc = Document::parse(container).ok()?;
+    let doc = parse_xml(container).ok()?;
     descendants(doc.root_element(), "rootfile")
         .find(|r| r.attribute("media-type") == Some("application/oebps-package+xml"))
         .and_then(|r| r.attribute("full-path"))

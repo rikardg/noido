@@ -620,9 +620,13 @@ EPUB_NS = (
 
 
 def epub_xhtml(body: str) -> str:
+    """A chapter as real books have it: a DOCTYPE and indented structure."""
     return (
         '<?xml version="1.0" encoding="utf-8"?>\n'
-        f"<html {EPUB_NS}><head><title>t</title></head><body>{body}</body></html>"
+        "<!DOCTYPE html>\n"
+        f"<html {EPUB_NS}>\n"
+        "  <head>\n    <title>t</title>\n  </head>\n"
+        f"  <body>{body}</body>\n</html>\n"
     )
 
 
@@ -663,8 +667,8 @@ def epub_book() -> bytes:
     )
     nav = (
         '<nav epub:type="toc"><ol>'
-        '<li><a href="text/ch1.xhtml">Chapter One</a></li>'
-        '<li><a href="text/ch%202.xhtml#top">Chapter Two</a>'
+        '<li><a href="text/ch1.xhtml">Chapter&nbsp;One</a></li>'
+        '<li><a href="text/ch%202.xhtml#top">\n  Chapter\n  Two </a>'
         '<ol><li><a href="text/ch%202.xhtml#later">Later</a></li></ol></li>'
         '<li><a href="nowhere.xhtml">Missing</a></li>'
         "</ol></nav>"
@@ -703,8 +707,11 @@ def epub_book() -> bytes:
 
 
 def epub2_opf(items: str, spine: str, title: str = "Second Book") -> str:
+    # The DOCTYPE older package files carry.
     return (
-        '<?xml version="1.0"?>'
+        '<?xml version="1.0"?>\n'
+        '<!DOCTYPE package PUBLIC "+//ISBN 0-9673008-1-9//DTD OEB 1.2 Package//EN" '
+        '"http://openebook.org/dtds/oeb-1.2/oebpk12.dtd">\n'
         '<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id">'
         '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
         f'<dc:identifier id="id">urn:uuid:2</dc:identifier><dc:title>{title}</dc:title>'
@@ -728,7 +735,9 @@ def epub_book2() -> bytes:
         '<itemref idref="ghost"/><itemref idref="broken"/><itemref idref="two"/>'
     )
     ncx = (
-        '<?xml version="1.0"?>'
+        '<?xml version="1.0"?>\n'
+        '<!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN" '
+        '"http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">\n'
         '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><navMap>'
         '<navPoint id="n1" playOrder="1"><navLabel><text>One</text></navLabel>'
         '<content src="one.html"/>'

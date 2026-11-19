@@ -80,8 +80,9 @@ fn is_cover(node: Node) -> bool {
         .is_some_and(|t| t.split_ascii_whitespace().any(|w| w == "cover"))
 }
 
-/// HTML's named entities, which XML doesn't know, as numeric references.
-fn replace_entities(source: &str) -> String {
+/// HTML's named entities, which XML doesn't know, as numeric references;
+/// for chapters and nav documents.
+pub fn replace_entities(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut rest = source;
     while let Some(i) = rest.find('&') {
