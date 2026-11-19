@@ -61,6 +61,10 @@ is the daily driver; macOS and Windows build but are unchecked.
 - `noido --install` / `--uninstall` adds noido to the desktop's apps,
   pointing at the binary that ran it. Both ask before changing anything;
   `-y` / `--yes` skips the question.
+- Tests never assert speed by wall clock: CI runners (the Intel macOS
+  one above all) are slow. Count the work with a test-only counter and
+  bound it in n; a deadline that only guards against a hang is generous
+  (30 s).
 
 ## How work goes
 
