@@ -1457,20 +1457,26 @@ impl NoidoApp {
         }
         let editing = ctx.text_edit_focused();
         let (presses, wheel, zoom, pointer, repeated) = ctx.input(|i| {
-            let presses: Vec<KeyPress> = i
+            let presses: Vec<(KeyPress, bool)> = i
                 .events
                 .iter()
                 .filter_map(|event| match event {
                     egui::Event::Key {
                         key,
                         pressed: true,
+                        repeat,
                         modifiers,
                         ..
-                    } => core_key(*key).map(|key| KeyPress {
-                        key,
-                        command: modifiers.command,
-                        shift: modifiers.shift,
-                        alt: modifiers.alt,
+                    } => core_key(*key).map(|key| {
+                        (
+                            KeyPress {
+                                key,
+                                command: modifiers.command,
+                                shift: modifiers.shift,
+                                alt: modifiers.alt,
+                            },
+                            *repeat,
+                        )
                     }),
                     _ => None,
                 })
@@ -1518,12 +1524,16 @@ impl NoidoApp {
 
         // egui moves focus with the arrows, and menus take them too.
         let egui_arrows = ctx.memory(|m| m.focused().is_some()) || egui::Popup::is_any_open(ctx);
-        for press in presses {
+        for (press, repeat) in presses {
             if egui_arrows && press.key.is_arrow() {
                 continue;
             }
             if let Some(action) = self.keymap.action(press, editing) {
-                self.apply(ctx, parent, action);
+                // A held F11 repeats at the keyboard's rate: the window
+                // would flip in and out. One press, one toggle, as Esc.
+                if !(repeat && action == Action::ToggleFullScreen) {
+                    self.apply(ctx, parent, action);
+                }
             }
         }
         // Esc on the pages clears the selection or, with nothing selected,
@@ -1687,6 +1697,20 @@ impl NoidoApp {
     fn apply(&mut self, ctx: &egui::Context, parent: Option<&eframe::Frame>, action: Action) {
         match action {
             Action::ToggleScaleToFit => self.toggle_scale_to_fit(),
+            Action::ToggleFullScreen => {
+                let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                if !fullscreen && !cfg!(target_os = "macos") {
+                    // A window being sized to a spread can't be fullscreen.
+                    // Its request held the zoom at the scale it had; the
+                    // hold stays, so the pages keep that scale as the
+                    // window grows.
+                    self.shrink = None;
+                    // The menu is the bar's, and the bar is about to go:
+                    // left in egui's memory, it would swallow the next Esc.
+                    egui::Popup::close_all(ctx);
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
+            }
             Action::ToggleSidebar => {
                 self.sidebar.open = !self.sidebar.open;
                 self.sidebar_opened_by_search = false;
@@ -1708,7 +1732,16 @@ impl NoidoApp {
                     });
                 }
             }
-            Action::FocusSearch => self.search_focus_requested = true,
+            Action::FocusSearch => {
+                // The field is in the bar, which fullscreen hides: leave it
+                // first, so the field can come back with the cursor in it.
+                if !cfg!(target_os = "macos")
+                    && ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))
+                {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                }
+                self.search_focus_requested = true;
+            }
             Action::ToggleSelectTool => self.select.tool = !self.select.tool,
             // Behind the settings or info page, where it can't be seen.
             Action::Undo | Action::Redo if self.page_open() => {}
@@ -3231,7 +3264,13 @@ impl NoidoApp {
             // starting a drag of the page.
             frame::resize_edges(&ctx);
         }
-        self.title_bar(ui, parent);
+        // Off macOS, fullscreen is the pages and nothing else: the bar, and
+        // what it holds, goes. No rect of it may answer in its place.
+        if ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) && !cfg!(target_os = "macos") {
+            self.bar = titlebar::Rects::default();
+        } else {
+            self.title_bar(ui, parent);
+        }
         self.update_search(&ctx);
         self.update_anchoring();
         for (page, text, transform) in self.search_state.take_texts() {
@@ -3617,6 +3656,7 @@ fn core_key(key: egui::Key) -> Option<Key> {
         egui::Key::L => Some(Key::L),
         egui::Key::Comma => Some(Key::Comma),
         egui::Key::F3 => Some(Key::F3),
+        egui::Key::F11 => Some(Key::F11),
         egui::Key::F9 => Some(Key::F9),
         egui::Key::ArrowUp => Some(Key::ArrowUp),
         egui::Key::ArrowDown => Some(Key::ArrowDown),
@@ -4727,7 +4767,9 @@ pub(crate) mod tests {
     }
 
     /// The field's Escs come first: one clears the search, one lets go of
-    /// the field; the one after leaves fullscreen.
+    /// the field; the one after leaves fullscreen. macOS keeps the bar in
+    /// fullscreen; off it the bar is hidden, so the field is never there.
+    #[cfg(target_os = "macos")]
     #[test]
     fn esc_in_the_search_field_stays_in_fullscreen() {
         let mut h = fullscreen_harness();
@@ -4830,10 +4872,14 @@ pub(crate) mod tests {
         assert_eq!(fullscreen_left(&h), 1);
     }
 
-    /// A button focused with Tab: Esc lets go of it first.
+    /// A button focused with Tab: Esc lets go of it first. Off macOS the
+    /// bar is hidden in fullscreen, so the buttons to focus are the
+    /// sidebar's.
     #[test]
     fn esc_lets_go_of_a_focused_button_before_it_leaves_fullscreen() {
         let mut h = fullscreen_harness();
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
         h.press(egui::Key::Tab, Modifiers::NONE);
         h.frames(2, vec![]);
         assert!(
@@ -4848,6 +4894,7 @@ pub(crate) mod tests {
         assert_eq!(fullscreen_left(&h), 1);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn esc_closing_the_menu_stays_in_fullscreen() {
         let mut h = fullscreen_harness();
@@ -4856,6 +4903,159 @@ pub(crate) mod tests {
         h.press(egui::Key::Escape, Modifiers::NONE);
         h.frames(2, vec![]);
         assert_eq!(fullscreen_left(&h), 0);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn f11_enters_fullscreen() {
+        let mut h = Harness::new();
+        h.press(egui::Key::F11, Modifiers::NONE);
+        assert!(h.fullscreen, "F11 did not enter fullscreen");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn f11_leaves_fullscreen() {
+        let mut h = fullscreen_harness();
+        h.press(egui::Key::F11, Modifiers::NONE);
+        assert!(!h.fullscreen, "F11 did not leave fullscreen");
+    }
+
+    /// A held key repeats at the keyboard's rate: the window would flip
+    /// in and out under it.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_held_f11_toggles_fullscreen_once() {
+        let mut h = Harness::new();
+        h.frames(1, vec![key_event(egui::Key::F11, true, false)]);
+        assert!(h.fullscreen, "F11 did not enter fullscreen");
+        for _ in 0..2 {
+            h.frames(1, vec![key_event(egui::Key::F11, true, true)]);
+            assert!(h.fullscreen, "a repeat of F11 left fullscreen");
+        }
+        h.frames(1, vec![key_event(egui::Key::F11, false, false)]);
+        h.frames(1, vec![key_event(egui::Key::F11, true, false)]);
+        assert!(!h.fullscreen, "a fresh F11 did not leave fullscreen");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_menu_enters_fullscreen() {
+        let mut h = Harness::new();
+        open_menu(&mut h);
+        h.click_text("Full screen");
+        h.frames(2, vec![]);
+        assert!(h.fullscreen, "the menu did not enter fullscreen");
+    }
+
+    /// Fullscreen is the pages and nothing else: no bar, and no menu where
+    /// its button was.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn fullscreen_hides_the_title_bar() {
+        let mut h = Harness::new();
+        let menu = h.app.bar.menu;
+        assert_ne!(menu, Rect::NOTHING);
+        let before = h.app.last_scroll.expect("no pages").inner.top();
+        h.fullscreen = true;
+        h.frames(2, vec![]);
+        assert_eq!(h.app.bar.menu, Rect::NOTHING, "the bar is still drawn");
+        let pages = h.app.last_scroll.expect("no pages").inner;
+        assert_eq!(
+            pages.top(),
+            before - TITLE_BAR_HEIGHT,
+            "the pages keep the bar's room"
+        );
+        h.click(menu.center());
+        h.frames(2, vec![]);
+        assert!(h.text_rect("Open…").is_none(), "the hidden menu opened");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn leaving_fullscreen_brings_the_title_bar_back() {
+        let mut h = fullscreen_harness();
+        assert_eq!(h.app.bar.menu, Rect::NOTHING);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(!h.fullscreen);
+        assert_ne!(h.app.bar.menu, Rect::NOTHING, "no bar after leaving");
+    }
+
+    /// Search lives in the bar, so its shortcut goes back to it.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn mod_f_leaves_fullscreen_and_focuses_the_search_field() {
+        let mut h = fullscreen_harness();
+        h.press(egui::Key::F, Modifiers::COMMAND);
+        h.frames(2, vec![]);
+        assert!(!h.fullscreen, "the search field needs the bar");
+        assert!(h.ctx.text_edit_focused(), "the search field is not focused");
+    }
+
+    /// The field and the bar go together: the focus they held must not
+    /// keep Esc for itself.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn esc_leaves_fullscreen_after_entering_it_from_the_search_field() {
+        let mut h = Harness::new();
+        h.press(egui::Key::F, Modifiers::COMMAND);
+        h.frames(2, vec![]);
+        assert!(h.ctx.text_edit_focused(), "the search field is not focused");
+        h.press(egui::Key::F11, Modifiers::NONE);
+        assert!(
+            h.fullscreen,
+            "F11 must reach the window while the field has focus"
+        );
+        h.frames(2, vec![]);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert_eq!(fullscreen_left(&h), 1, "the hidden field kept the Esc");
+    }
+
+    /// A window that has been asked for a size can't be fullscreen: asking
+    /// for both would leave fullscreen again.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn entering_fullscreen_drops_a_pending_fit_window_request() {
+        let mut h = Harness::new();
+        h.app.shrink = Some(Shrink::new(300.0, 400.0));
+        let ctx = h.ctx.clone();
+        h.app.apply(&ctx, None, Action::ToggleFullScreen);
+        assert_eq!(
+            h.app.shrink, None,
+            "the window would leave fullscreen to fit"
+        );
+    }
+
+    /// The menu is the bar's; leaving it in egui's memory for a frame
+    /// would let it swallow the next Esc.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn entering_fullscreen_closes_the_menu() {
+        let mut h = Harness::new();
+        open_menu(&mut h);
+        assert!(h.text_rect("Open…").is_some(), "the menu is not open");
+        h.press(egui::Key::F11, Modifiers::NONE);
+        assert!(h.fullscreen);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        assert!(!h.fullscreen, "the menu kept the Esc");
+    }
+
+    /// Fit window is the window's size, not the page's, so it can't happen
+    /// in fullscreen: the request takes the window out first.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn fitting_the_window_leaves_fullscreen_first() {
+        let mut h = fullscreen_harness();
+        h.press(egui::Key::F, Modifiers::SHIFT);
+        h.frames(8, vec![]);
+        assert!(!h.fullscreen, "the window can't be sized in fullscreen");
+        assert!(
+            h.commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::InnerSize(_))),
+            "the window was not sized"
+        );
     }
 
     #[test]

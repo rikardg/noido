@@ -260,7 +260,13 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
                         .max_height(room)
                         .auto_shrink([true, true])
                         .show(ui, |ui| {
-                            menu_entries(ui, bar, &mut output.actions, &mut output.recent);
+                            menu_entries(
+                                ui,
+                                bar,
+                                fullscreen,
+                                &mut output.actions,
+                                &mut output.recent,
+                            );
                         });
                 });
 
@@ -279,6 +285,7 @@ pub(crate) const MARK: &str = "✓";
 fn menu_entries(
     ui: &mut egui::Ui,
     bar: &Bar,
+    fullscreen: bool,
     actions: &mut Vec<Action>,
     recent: &mut Option<PathBuf>,
 ) {
@@ -304,6 +311,7 @@ fn menu_entries(
                 Some(Check::ScaleToFit) => bar.scale_to_fit,
                 Some(Check::Sidebar) => bar.sidebar.open,
                 Some(Check::SelectTool) => bar.select_tool,
+                Some(Check::Fullscreen) => fullscreen,
                 None => false,
             };
             let mark =
