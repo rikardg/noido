@@ -13,5 +13,5 @@ mod pages;
 mod paragraphs;
 mod runs;
 
-pub use book::{Book, typeset};
+pub use book::{Book, typeset, typeset_epub};
 pub use engine::TypesetEngine;

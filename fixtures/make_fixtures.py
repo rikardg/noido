@@ -626,7 +626,7 @@ def epub_xhtml(body: str) -> str:
         "<!DOCTYPE html>\n"
         f"<html {EPUB_NS}>\n"
         "  <head>\n    <title>t</title>\n  </head>\n"
-        f"  <body>{body}</body>\n</html>\n"
+        f"  <body>\n{body}\n  </body>\n</html>\n"
     )
 
 
@@ -748,7 +748,7 @@ def epub_book2() -> bytes:
         "\ufeff"
         + epub_xhtml(
             "<p>Hello&nbsp;world.</p>\n  \n"
-            '<p>Note<a id="r1"/><sup><a href="notes.html#n1">1</a></sup> here.</p>'
+            '<p>Note<a id="r1"/><sup><a href="notes.html#n1">1</a></sup> here.</p>\n'
             '<a id="end"/>'
         )
     ).encode()

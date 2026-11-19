@@ -2954,12 +2954,14 @@ dependencies = [
  "hypher",
  "noido-blocks",
  "noido-engine",
+ "noido-epub",
  "noido-fonts",
  "noido-text",
  "parley",
  "skrifa 0.49.0",
  "tiny-skia 0.12.0",
  "unicode-normalization",
+ "zip",
 ]
 
 [[package]]

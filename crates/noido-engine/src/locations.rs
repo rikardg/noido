@@ -143,6 +143,14 @@ impl LocationMap {
         self.find(at).map(|(line, _)| (line.page, line.run))
     }
 
+    /// The page and the last line of `part`; None when no line is of it
+    /// (and for the identity).
+    pub fn last_line_of(&self, part: usize) -> Option<(usize, Run)> {
+        let after = self.lines.partition_point(|l| l.run.start.part <= part);
+        let line = &self.lines[after.checked_sub(1)?];
+        (line.run.start.part == part).then_some((line.page, line.run))
+    }
+
     /// The first line on `page` whose bottom is below `y`: its start and
     /// its top. None for the identity.
     pub fn first_from(&self, page: usize, y: f32) -> Option<(Location, f32)> {
@@ -230,6 +238,19 @@ mod tests {
         assert_eq!(map.page_start(3), Some(at(3, 0)));
         assert_eq!(map.line(at(3, 17)), None);
         assert_eq!(map.first_from(3, 0.0), None);
+    }
+
+    #[test]
+    fn the_last_line_of_a_part() {
+        let map = LocationMap::from_lines(vec![
+            vec![run(0, 0, 40, 36.0), run(0, 40, 80, 46.0)],
+            vec![run(0, 120, 30, 36.0), run(2, 0, 10, 46.0)],
+        ]);
+        assert_eq!(map.last_line_of(0), Some((1, run(0, 120, 30, 36.0))));
+        assert_eq!(map.last_line_of(2), Some((1, run(2, 0, 10, 46.0))));
+        assert_eq!(map.last_line_of(1), None);
+        assert_eq!(map.last_line_of(3), None);
+        assert_eq!(LocationMap::identity().last_line_of(0), None);
     }
 
     #[test]

@@ -3,9 +3,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use noido_engine::{Destination, Format, Link, LinkTarget, OutlineEntry, Properties, Rect};
+use noido_engine::{
+    Destination, Format, Link, LinkTarget, Location, LocationMap, OutlineEntry, Properties, Rect,
+};
+use noido_epub::{Epub, PartKind, TocEntry};
 
-use crate::book::Book;
+use crate::book::{Book, SetPart};
 use crate::house::LEFT;
 use crate::lines::SetLine;
 use crate::pages::Placed;
@@ -68,40 +71,26 @@ pub(crate) struct Marks {
     headings: Vec<(u8, String, Destination)>,
     title: Option<String>,
     author: Option<String>,
+    format: Format,
+    subject: Option<String>,
+    /// An EPUB's outline, from its table of contents.
+    outline: Option<Vec<OutlineEntry>>,
 }
 
-/// Gathers the marks of a typeset book: `placed` says where each line of
-/// `set` (the lines of `paras`) went.
-pub(crate) fn marks(
+/// Adds the links of the lines in `set` (those of `paras`, placed as
+/// `placed` says) to `raw`, by page; `first_line` sees each paragraph's
+/// first line.
+fn gather(
     paras: &[Para],
     set: &[Vec<SetLine>],
     placed: &[Placed],
-    pages: usize,
-    front: &Front,
-) -> Marks {
-    let mut slugs = Slugs::new();
-    let mut names = HashMap::new();
-    let mut notes = HashMap::new();
-    let mut headings = Vec::new();
-    let mut raw: Vec<Vec<RawLink>> = (0..pages).map(|_| Vec::new()).collect();
+    raw: &mut [Vec<RawLink>],
+    mut first_line: impl FnMut(&Placed, &Para),
+) {
     for at in placed {
         let (para, line) = (&paras[at.flow], &set[at.flow][at.line]);
         if at.line == 0 {
-            let here = Destination {
-                page: at.page,
-                x: None,
-                y: Some(at.y),
-            };
-            if let Role::Heading(level) = para.role {
-                let title = para.text.string.trim().to_string();
-                names.entry(slugs.slug(&title)).or_insert(here);
-                if !title.is_empty() {
-                    headings.push((level, title, here));
-                }
-            }
-            if let Some(label) = &para.note {
-                notes.entry(label.clone()).or_insert(here);
-            }
+            first_line(at, para);
         }
         for (dest, x0, x1) in &line.links {
             let area = Rect {
@@ -126,6 +115,39 @@ pub(crate) fn marks(
             }
         }
     }
+}
+
+/// Gathers the marks of a typeset book: `placed` says where each line of
+/// `set` (the lines of `paras`) went.
+pub(crate) fn marks(
+    paras: &[Para],
+    set: &[Vec<SetLine>],
+    placed: &[Placed],
+    pages: usize,
+    front: &Front,
+) -> Marks {
+    let mut slugs = Slugs::new();
+    let mut names = HashMap::new();
+    let mut notes = HashMap::new();
+    let mut headings = Vec::new();
+    let mut raw: Vec<Vec<RawLink>> = (0..pages).map(|_| Vec::new()).collect();
+    gather(paras, set, placed, &mut raw, |at, para| {
+        let here = Destination {
+            page: at.page,
+            x: None,
+            y: Some(at.y),
+        };
+        if let Role::Heading(level) = para.role {
+            let title = para.text.string.trim().to_string();
+            names.entry(slugs.slug(&title)).or_insert(here);
+            if !title.is_empty() {
+                headings.push((level, title, here));
+            }
+        }
+        if let Some(label) = &para.note {
+            notes.entry(label.clone()).or_insert(here);
+        }
+    });
     let links = raw
         .into_iter()
         .map(|page| {
@@ -155,7 +177,114 @@ pub(crate) fn marks(
         headings,
         title: front.title.clone().or(first_heading),
         author: front.author.clone(),
+        format: Format::Markdown,
+        subject: None,
+        outline: None,
     }
+}
+
+/// The marks of an EPUB set as `parts`, over `pages` pages: its links
+/// and outline go where `map` puts the ids they name.
+pub(crate) fn epub_marks(epub: &Epub, parts: &[SetPart], map: &LocationMap, pages: usize) -> Marks {
+    // Each part's links, by page, with the part they were written in.
+    let mut links: Vec<Vec<Link>> = (0..pages).map(|_| Vec::new()).collect();
+    for (number, part) in parts.iter().enumerate() {
+        let mut raw: Vec<Vec<RawLink>> = (0..pages).map(|_| Vec::new()).collect();
+        gather(&part.paras, &part.set, &part.placed, &mut raw, |_, _| {});
+        for (page, found) in raw.into_iter().enumerate() {
+            for l in found {
+                let target = if has_scheme(&l.dest) {
+                    LinkTarget::Web(l.dest)
+                } else {
+                    let from = &epub.parts[number].path;
+                    let href = noido_epub::resolve(from, &l.dest);
+                    match locate(epub, map, &href) {
+                        Some(at) => LinkTarget::Internal(at),
+                        None => continue,
+                    }
+                };
+                links[page].push(Link {
+                    areas: l.areas,
+                    target,
+                });
+            }
+        }
+    }
+    Marks {
+        links,
+        names: HashMap::new(),
+        notes: HashMap::new(),
+        headings: Vec::new(),
+        title: epub.meta.title.clone(),
+        author: Some(epub.meta.creators.join(", ")).filter(|a| !a.is_empty()),
+        format: Format::Epub,
+        subject: epub.meta.subject.clone(),
+        outline: Some(outline_of(epub, map, &epub.toc)),
+    }
+}
+
+/// Whether a dest starts with a URI scheme (`https:`, `mailto:`).
+fn has_scheme(dest: &str) -> bool {
+    let Some((scheme, _)) = dest.split_once(':') else {
+        return false;
+    };
+    scheme
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
+/// The page and line top of `path#id` (a container path, as
+/// `noido_epub::resolve` gives): the start of the part, or where the id's
+/// text begins. An id the part lacks is the part's start; one past its
+/// last drawn line (trailing whitespace, undrawn text) is its last line.
+/// None when no part has the path or the part draws nothing.
+fn locate(epub: &Epub, map: &LocationMap, href: &str) -> Option<Destination> {
+    let (path, id) = href.split_once('#').unwrap_or((href, ""));
+    let part = epub
+        .parts
+        .iter()
+        .position(|p| !p.path.is_empty() && p.path == path)?;
+    let char = match (&epub.parts[part].kind, id) {
+        (_, "") | (PartKind::Cover | PartKind::Unreadable, _) => 0,
+        (PartKind::Text(x), id) => x.ids.iter().find(|(i, _)| i == id).map_or(0, |(_, c)| *c),
+    };
+    let (page, run) = map
+        .line(Location { part, char })
+        .or_else(|| map.last_line_of(part))?;
+    Some(Destination {
+        page,
+        x: None,
+        y: Some(run.top),
+    })
+}
+
+/// The table of contents as outline entries; one that doesn't resolve
+/// stays without a target. An entry without a title is left out, its
+/// children taking its place.
+fn outline_of(epub: &Epub, map: &LocationMap, entries: &[TocEntry]) -> Vec<OutlineEntry> {
+    let mut out = Vec::new();
+    for entry in entries {
+        let children = outline_of(epub, map, &entry.children);
+        if entry.title.trim().is_empty() {
+            out.extend(children);
+            continue;
+        }
+        let target = (!entry.href.is_empty())
+            .then(|| locate(epub, map, &entry.href))
+            .flatten()
+            .map(LinkTarget::Internal);
+        out.push(OutlineEntry {
+            title: entry.title.clone(),
+            target,
+            open: true,
+            children,
+        });
+    }
+    out
 }
 
 impl Book {
@@ -171,6 +300,9 @@ impl Book {
 
     /// The headings, nested by level; all open.
     pub fn outline(&self) -> Vec<OutlineEntry> {
+        if let Some(outline) = &self.marks.outline {
+            return outline.clone();
+        }
         // The open entries, shallowest first, with their levels.
         let mut path: Vec<(u8, OutlineEntry)> = Vec::new();
         let mut top = Vec::new();
@@ -196,10 +328,14 @@ impl Book {
 
     pub fn properties(&self) -> Properties {
         Properties {
-            format: Format::Markdown,
+            format: self.marks.format,
             title: self.marks.title.clone(),
             author: self.marks.author.clone(),
-            has_outline: !self.marks.headings.is_empty(),
+            subject: self.marks.subject.clone(),
+            has_outline: match &self.marks.outline {
+                Some(outline) => !outline.is_empty(),
+                None => !self.marks.headings.is_empty(),
+            },
             ..Properties::default()
         }
     }

@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 noido-blocks.workspace = true
 noido-engine.workspace = true
+noido-epub.workspace = true
 noido-text.workspace = true
 unicode-normalization.workspace = true
 parley.workspace = true
@@ -19,6 +20,9 @@ skrifa.workspace = true
 tiny-skia.workspace = true
 flate2.workspace = true
 noido-fonts = { workspace = true, features = ["libron", "libertinus-serif", "libertinus-sans", "newcm", "monaspace-neon"] }
+
+[dev-dependencies]
+zip.workspace = true
 
 [lints]
 workspace = true
