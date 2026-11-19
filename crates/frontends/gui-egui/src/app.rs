@@ -3266,11 +3266,17 @@ impl NoidoApp {
         }
         // Off macOS, fullscreen is the pages and nothing else: the bar, and
         // what it holds, goes. No rect of it may answer in its place.
-        if ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)) && !cfg!(target_os = "macos") {
+        let fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        if fullscreen && !cfg!(target_os = "macos") {
             self.bar = titlebar::Rects::default();
         } else {
             self.title_bar(ui, parent);
         }
+        // And the pages get the window's whole area: the margins around
+        // them, the desk's and the pages' own, go.
+        let tight = fullscreen && !cfg!(target_os = "macos");
+        self.view
+            .set_margin(if tight { 0.0 } else { noido_core::MARGIN });
         self.update_search(&ctx);
         self.update_anchoring();
         for (page, text, transform) in self.search_state.take_texts() {
@@ -3404,6 +3410,9 @@ impl NoidoApp {
             // Solid bars meet the window's edge, as AppKit's do. Not
             // elsewhere: noido's resize edges there would take presses on
             // a bar's outer side.
+            frame = frame.inner_margin(0);
+        } else if tight {
+            // The pages have the whole window; the desk keeps nothing.
             frame = frame.inner_margin(0);
         }
         let area = ui.available_rect_before_wrap() - frame.total_margin();
@@ -4956,19 +4965,79 @@ pub(crate) mod tests {
         let mut h = Harness::new();
         let menu = h.app.bar.menu;
         assert_ne!(menu, Rect::NOTHING);
-        let before = h.app.last_scroll.expect("no pages").inner.top();
         h.fullscreen = true;
         h.frames(2, vec![]);
         assert_eq!(h.app.bar.menu, Rect::NOTHING, "the bar is still drawn");
         let pages = h.app.last_scroll.expect("no pages").inner;
-        assert_eq!(
-            pages.top(),
-            before - TITLE_BAR_HEIGHT,
-            "the pages keep the bar's room"
-        );
+        assert_eq!(pages.top(), 0.0, "the pages start below the window's top");
         h.click(menu.center());
         h.frames(2, vec![]);
         assert!(h.text_rect("Open…").is_none(), "the hidden menu opened");
+    }
+
+    /// Fullscreen gives the pages the window: no margin above, below or
+    /// beside them. Fit page takes the whole height.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn fullscreen_fit_page_fills_the_height() {
+        let mut h = Harness::new();
+        h.press(egui::Key::F, Modifiers::NONE);
+        h.press(egui::Key::F11, Modifiers::NONE);
+        h.frames(3, vec![]);
+        assert!(h.fullscreen);
+        let rect = h.app.view.layout().page_rect(0).expect("no page");
+        assert_eq!(rect.y, 0.0, "the page keeps a margin above it");
+        assert!(
+            (rect.height - h.size.y).abs() < 1.0,
+            "the page is {} tall in a {} window",
+            rect.height,
+            h.size.y
+        );
+        let pages = h.app.last_scroll.expect("no pages").inner;
+        assert_eq!(pages.top(), 0.0, "the desk keeps a band above the pages");
+        assert_eq!(pages.left(), 0.0, "the desk keeps a band at the side");
+        assert_eq!(pages.right(), h.size.x, "the desk keeps a band at the side");
+    }
+
+    /// Fit width in fullscreen fills the width, from the window's top.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn fullscreen_fit_width_fills_the_width() {
+        let mut h = Harness::new();
+        h.press(egui::Key::W, Modifiers::NONE);
+        h.press(egui::Key::F11, Modifiers::NONE);
+        h.frames(3, vec![]);
+        let rect = h.app.view.layout().page_rect(0).expect("no page");
+        assert_eq!(rect.x, 0.0, "the page keeps a margin beside it");
+        assert_eq!(rect.y, 0.0, "the page keeps a margin above it");
+        assert!(
+            (rect.width - h.size.x).abs() < 1.0,
+            "the page is {} wide in a {} window",
+            rect.width,
+            h.size.x
+        );
+        let pages = h.app.last_scroll.expect("no pages").inner;
+        assert_eq!(pages.left(), 0.0);
+        assert_eq!(pages.top(), 0.0);
+    }
+
+    /// A custom zoom is no fit, but fullscreen still gives it the window.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn fullscreen_custom_zoom_keeps_no_margin() {
+        let mut h = Harness::new();
+        h.press(egui::Key::F11, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.last_scroll.expect("no pages").inner.top(), 0.0);
+        h.press(egui::Key::Equals, Modifiers::COMMAND);
+        h.frames(2, vec![]);
+        assert_eq!(h.app.view.mode(), noido_core::ZoomMode::Custom);
+        let rect = h.app.view.layout().page_rect(0).expect("no page");
+        assert_eq!(rect.x, 0.0, "the page's margin is back");
+        assert_eq!(rect.y, 0.0, "the page's margin is back");
+        let pages = h.app.last_scroll.expect("no pages").inner;
+        assert_eq!(pages.top(), 0.0, "the desk's band is back");
+        assert_eq!(pages.left(), 0.0, "the desk's band is back");
     }
 
     #[cfg(not(target_os = "macos"))]
