@@ -208,6 +208,21 @@ fn configure(ctx: &egui::Context) {
         o.input_options.line_scroll_speed = WHEEL_SCROLL_SPEED;
         o.input_options.scroll_zoom_speed /= factor;
     });
+    configure_wheel_zoom(ctx);
+}
+
+/// The wheel zooms the document only with Mod down. egui's matcher counts
+/// Ctrl as the command key, so on macOS, where Mod is Cmd, Ctrl+wheel would
+/// zoom as well; name Cmd alone there.
+pub(crate) fn configure_wheel_zoom(ctx: &egui::Context) {
+    let mac = ctx.os().is_mac();
+    ctx.options_mut(|o| {
+        o.input_options.zoom_modifier = if mac {
+            egui::Modifiers::MAC_CMD
+        } else {
+            egui::Modifiers::COMMAND
+        };
+    });
 }
 
 /// On macOS: hands the file to this executable's running app, or starts

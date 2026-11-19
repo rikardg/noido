@@ -4085,8 +4085,10 @@ pub(crate) mod tests {
             let ctx = egui::Context::default();
             crate::theme::install_preset(&ctx, preset);
             ctx.set_theme(egui::ThemePreference::Dark);
-            // As in main: quitting goes through the keymap.
+            // As in main: quitting goes through the keymap, and the wheel
+            // zooms with Mod only.
             ctx.options_mut(|o| o.quit_shortcuts.clear());
+            crate::configure_wheel_zoom(&ctx);
             let (reloads, watcher) = crate::watch::Watcher::fake();
             let mut harness = Self {
                 ctx,
@@ -5463,6 +5465,80 @@ pub(crate) mod tests {
         };
         h.frames(1, vec![sideways, shifted]);
         assert_eq!(h.app.view.current_spread(), Some(0));
+    }
+
+    /// On macOS, egui counts Ctrl as the command key, so Ctrl+wheel used to
+    /// zoom as well as turn the page. Only Mod (Cmd) zooms the document;
+    /// Ctrl is then a plain wheel and turns the page.
+    #[test]
+    fn ctrl_wheel_does_not_zoom_on_macos() {
+        let mut h = fitted_paged();
+        h.ctx.set_os(egui::os::OperatingSystem::Mac);
+        crate::configure_wheel_zoom(&h.ctx);
+        let before = h.app.view.scale();
+        let step = Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, -1.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::NONE
+            },
+        };
+        h.frames(4, vec![step]);
+        assert_eq!(h.app.view.scale(), before);
+        assert_eq!(h.app.view.current_spread(), Some(1));
+    }
+
+    /// Off macOS the command key is Ctrl, so Ctrl+wheel still zooms.
+    #[test]
+    fn ctrl_wheel_zooms_off_macos() {
+        let mut h = fitted_paged();
+        h.ctx.set_os(egui::os::OperatingSystem::Nix);
+        crate::configure_wheel_zoom(&h.ctx);
+        let before = h.app.view.scale();
+        let step = Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, 3.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: Modifiers {
+                ctrl: true,
+                command: true,
+                ..Modifiers::NONE
+            },
+        };
+        h.frames(4, vec![step]);
+        assert!(h.app.view.scale() > before);
+    }
+
+    #[test]
+    fn mod_wheel_zooms_without_flipping() {
+        let mut h = fitted_paged();
+        let before = h.app.view.scale();
+        let step = Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, 3.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: Modifiers {
+                command: true,
+                mac_cmd: true,
+                ..Modifiers::NONE
+            },
+        };
+        h.frames(4, vec![step]);
+        assert!(h.app.view.scale() > before);
+        assert_eq!(h.app.view.current_spread(), Some(0));
+    }
+
+    #[test]
+    fn pinch_zooms() {
+        let mut h = fitted_paged();
+        let before = h.app.view.scale();
+        h.frames(2, vec![Event::Zoom(1.1)]);
+        assert!(h.app.view.scale() > before);
     }
 
     #[test]
