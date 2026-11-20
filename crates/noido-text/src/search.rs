@@ -61,7 +61,7 @@ pub struct Context {
 /// A page's text folded for search, each folded character mapped back to the
 /// character of the page's text it came from.
 #[derive(Debug, Default)]
-pub(crate) struct Forms {
+struct Forms {
     chars: Vec<char>,
     accented: Folded,
     plain: Folded,
@@ -193,17 +193,6 @@ pub(crate) fn line_end_hyphen(chars: &[char], i: usize, marked: bool) -> Option<
 }
 
 impl Forms {
-    /// The bytes the folded forms and their source indices hold.
-    pub(crate) fn memory_bytes(&self) -> usize {
-        let folded = |f: &Folded| {
-            f.chars.capacity() * std::mem::size_of::<char>()
-                + f.source.capacity() * std::mem::size_of::<usize>()
-        };
-        self.chars.capacity() * std::mem::size_of::<char>()
-            + folded(&self.accented)
-            + folded(&self.plain)
-    }
-
     fn new(text: &str, marked: bool) -> Forms {
         let chars: Vec<char> = text.chars().collect();
         let folds = fold(&chars, true, |_| marked);
@@ -224,9 +213,8 @@ impl Forms {
 impl PageText {
     /// The matches of `query`, in text order, not overlapping.
     pub fn find(&self, query: &Query) -> Vec<TextHit> {
-        let forms = self
-            .forms
-            .get_or_init(|| Forms::new(self.text(), self.marked_hyphens()));
+        // Built for this search and dropped with it: a page holds no forms.
+        let forms = Forms::new(self.text(), self.marked_hyphens());
         let folded = if query.accented {
             &forms.accented
         } else {
