@@ -5649,6 +5649,28 @@ pub(crate) mod tests {
         assert_eq!(h.app.view.layout().spread_pages(0), 0..2);
     }
 
+    #[test]
+    fn the_gap_between_rows_follows_the_zoom() {
+        let mut h = Harness::new();
+        let gap = |h: &Harness| {
+            let layout = h.app.view.layout();
+            let (above, below) = (layout.page_rect(0).unwrap(), layout.page_rect(1).unwrap());
+            below.y - (above.y + above.height)
+        };
+        // Fit width in a 900-wide window shows the page larger than 100%, so
+        // the gap is more than PAGE_GAP and the test would catch a fixed one.
+        let scale = h.app.view.scale();
+        assert!(scale > 1.0, "scale {scale}");
+        let (drawn, wanted) = (gap(&h), noido_core::PAGE_GAP * scale);
+        assert!((drawn - wanted).abs() < 0.01, "{drawn} for {wanted}");
+
+        h.press(egui::Key::Plus, Modifiers::COMMAND);
+        let zoomed = h.app.view.scale();
+        assert!(zoomed > scale, "no zoom: {scale} to {zoomed}");
+        let (drawn, wanted) = (gap(&h), noido_core::PAGE_GAP * zoomed);
+        assert!((drawn - wanted).abs() < 0.01, "{drawn} for {wanted}");
+    }
+
     fn wheel(unit: egui::MouseWheelUnit, dy: f32, source: egui::MouseWheelSource) -> Event {
         Event::MouseWheel {
             unit,

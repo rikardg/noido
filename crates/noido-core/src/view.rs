@@ -1048,15 +1048,24 @@ impl View {
 
     /// The fitted scale for `mode` and `spread` in a (width, height) viewport.
     fn fit_scale_in(&self, mode: ZoomMode, spread: usize, viewport: (f32, f32)) -> f32 {
-        let gap = self.layout.spread_gap(spread);
-        let width = viewport.0 - 2.0 * self.layout.margin() - gap;
+        // The gap grows with the scale, so the fit solves for it rather than
+        // taking a fixed number of points off its room: a page's room is its
+        // length times the scale and the gutter's is the gap times the scale,
+        // so `room = (length + gap) * scale`. Only the width has a gutter.
+        let gap = self.layout.gap_points(spread);
+        let width = viewport.0 - 2.0 * self.layout.margin();
         let height = viewport.1 - 2.0 * self.layout.margin();
-        let ratio = |available: f32, length: f32| (length > 0.0).then(|| available / length);
+        let ratio = |available: f32, length: f32, gap: f32| {
+            (length > 0.0).then(|| available / (length + gap))
+        };
         let scale = match mode {
             ZoomMode::Custom => Some(self.scale()),
-            ZoomMode::FitWidth => ratio(width, self.layout.widest_spread()),
+            ZoomMode::FitWidth => ratio(width, self.layout.widest_spread(), gap),
             ZoomMode::FitPage => self.layout.spread_size(spread).and_then(|size| {
-                match (ratio(width, size.width), ratio(height, size.height)) {
+                match (
+                    ratio(width, size.width, gap),
+                    ratio(height, size.height, 0.0),
+                ) {
                     (Some(a), Some(b)) => Some(a.min(b)),
                     (a, b) => a.or(b),
                 }
@@ -1148,6 +1157,34 @@ mod tests {
         assert_eq!(
             view.spread_viewport_size(),
             Some((2.0 * 300.0 + 2.0 * MARGIN, 400.0 + 2.0 * MARGIN))
+        );
+    }
+
+    #[test]
+    fn spread_viewport_size_carries_the_gap_at_the_scale_it_has() {
+        let mut view = View::new(vec![size(300.0, 400.0); 4]);
+        view.set_viewport_size(700.0, 900.0);
+        view.restore(&ViewState {
+            zoom: ZoomMode::Custom,
+            scale: 2.0,
+            continuous: true,
+            dual: true,
+            odd_left: true,
+            gapless: false,
+            centre: DocPoint {
+                page: 0,
+                x: 0.0,
+                y: 0.0,
+            },
+        });
+        // A 12-point gap is 24 at twice the size, and the window asks for the
+        // gutter the spread has.
+        assert_eq!(
+            view.spread_viewport_size(),
+            Some((
+                2.0 * 300.0 * 2.0 + 2.0 * PAGE_GAP + 2.0 * MARGIN,
+                400.0 * 2.0 + 2.0 * MARGIN
+            ))
         );
     }
 
@@ -1436,12 +1473,46 @@ mod tests {
     fn anchor_in_gap_is_stable() {
         let mut view = letter_view();
         view.scrolled_to(0.0, 2000.0);
-        // Content y 2418 is in the gap below page 2 (which ends at 2412).
-        let pointer = Some((318.0, 418.0));
+        // Just short of the page below, in the gap: the point nearest falling
+        // through to it, which a gap of a fixed number of UI points does.
+        let below = view.layout().page_rect(2).unwrap();
+        let pointer = Some((318.0, below.y + below.height - 2000.0 + PAGE_GAP - 1.0));
         view.zoom_by(2.0, pointer);
         view.zoom_by(0.5, pointer);
-        // Gaps do not scale, so a point inside one can shift by at most a gap.
-        assert_near(view.offset(), (0.0, 2000.0), PAGE_GAP);
+        // The gap is part of the document, so a point inside one comes back
+        // where it was.
+        assert_near(view.offset(), (0.0, 2000.0), 0.01);
+    }
+
+    /// The gutter between the two pages of a spread is part of the document
+    /// too: a point in it keeps its place through zooming, as one in a row gap
+    /// does. The content is wider than the viewport at both scales, so the
+    /// horizontal offset is free to move either way.
+    #[test]
+    fn anchor_in_a_gutter_is_stable() {
+        let mut view = View::new(vec![size(612.0, 792.0); 10]);
+        view.set_viewport_size(636.0, 800.0);
+        view.restore(&ViewState {
+            zoom: ZoomMode::Custom,
+            scale: 1.0,
+            continuous: true,
+            dual: true,
+            odd_left: true,
+            gapless: false,
+            centre: DocPoint {
+                page: 0,
+                x: 0.0,
+                y: 0.0,
+            },
+        });
+        view.scrolled_to(0.0, 2000.0);
+        // Just short of the right page: a point in the gutter at every scale,
+        // and the one nearest falling through to the page beside it.
+        let pointer = Some((MARGIN + 612.0 + PAGE_GAP - 1.0, 418.0));
+        assert_eq!(view.offset(), (0.0, 2000.0));
+        view.zoom_by(2.0, pointer);
+        view.zoom_by(0.5, pointer);
+        assert_near(view.offset(), (0.0, 2000.0), 0.01);
     }
 
     #[test]
@@ -1750,7 +1821,23 @@ mod tests {
         let mut view = letter_view();
         view.apply(Action::ToggleDual);
         assert!(view.dual());
-        assert_eq!(view.scale(), (636.0 - 24.0 - 12.0) / 1224.0);
+        assert_eq!(view.scale(), (636.0 - 2.0 * MARGIN) / (1224.0 + PAGE_GAP));
+    }
+
+    /// The gutter grows with the pages, so the fit divides the room between
+    /// the spread and the gutter at the scale it lands on, and no room is
+    /// left over.
+    #[test]
+    fn fit_width_dual_fills_the_room_with_the_scaled_gap() {
+        let mut view = letter_view();
+        view.apply(Action::ToggleDual);
+        assert_eq!(view.layout().content_width(), 636.0);
+        let (left, right) = (
+            view.layout().page_rect(0).unwrap(),
+            view.layout().page_rect(1).unwrap(),
+        );
+        let drawn = right.x - (left.x + left.width);
+        assert!((drawn - PAGE_GAP * view.scale()).abs() < 0.01, "{drawn}");
     }
 
     #[test]
@@ -1760,8 +1847,23 @@ mod tests {
         view.apply(Action::ToggleDual);
         view.apply(Action::ToggleContinuous);
         view.apply(Action::FitPage);
-        let expected = ((1260.0 - 24.0 - 12.0) / 1224.0_f32).min((600.0 - 24.0) / 792.0);
+        // The width has room for the spread and its gutter; the height is the
+        // one that binds here.
+        let expected =
+            ((1260.0 - 2.0 * MARGIN) / (1224.0 + PAGE_GAP)).min((600.0 - 2.0 * MARGIN) / 792.0);
         assert_eq!(view.scale(), expected);
+    }
+
+    /// Fit page in dual mode takes the gutter out of the width it fits into,
+    /// as fit width does: a width-bound fit fills the room.
+    #[test]
+    fn fit_page_dual_fits_the_width_when_the_width_binds() {
+        let mut view = View::new(vec![size(612.0, 792.0); 10]);
+        view.set_viewport_size(700.0, 4000.0);
+        view.apply(Action::ToggleDual);
+        view.apply(Action::FitPage);
+        assert_eq!(view.scale(), (700.0 - 2.0 * MARGIN) / (1224.0 + PAGE_GAP));
+        assert_eq!(view.layout().content_width(), 700.0);
     }
 
     #[test]
