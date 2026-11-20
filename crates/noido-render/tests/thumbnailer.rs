@@ -6,6 +6,9 @@ use noido_core::Direction;
 use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 use noido_render::Thumbnailer;
 
+/// A passing test never waits for it: it only stops a hang.
+const HANG: Duration = Duration::from_secs(30);
+
 /// Letter pages that log each render; with a gate, each render waits for a
 /// token (or for the gate's sender to be dropped).
 struct LogEngine {
@@ -89,13 +92,16 @@ fn start(pages: usize, gated: bool) -> Setup {
 
 /// Waits until `count` renders were logged; returns the log.
 fn wait_for(log: &Mutex<Vec<usize>>, count: usize) -> Vec<usize> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     loop {
         let current = log.lock().unwrap().clone();
         if current.len() >= count {
             return current;
         }
-        assert!(Instant::now() < deadline, "only {current:?} within 5 s");
+        assert!(
+            Instant::now() < deadline,
+            "only {current:?} within {HANG:?}"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -107,7 +113,7 @@ fn renders_nearest_first_from_focus() {
     let log = wait_for(&s.log, 20);
     assert_eq!(log[..4], [10, 11, 12, 9]);
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     let mut received = vec![];
     while received.len() < 20 && Instant::now() < deadline {
         match s.thumbnailer.try_recv() {
@@ -119,6 +125,11 @@ fn renders_nearest_first_from_focus() {
         }
     }
     received.sort();
+    assert!(
+        Instant::now() < deadline,
+        "only {} of 20 thumbnails within {HANG:?}",
+        received.len()
+    );
     assert_eq!(received, (0..20).collect::<Vec<_>>());
 }
 
@@ -179,7 +190,7 @@ fn a_panicking_page_does_not_end_the_thumbnails() {
     );
     thumbnailer.set_focus(0, Direction::Forward);
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     let mut received = Vec::new();
     while received.len() < 3 {
         match thumbnailer.try_recv() {
@@ -187,7 +198,7 @@ fn a_panicking_page_does_not_end_the_thumbnails() {
             None => {
                 assert!(
                     Instant::now() < deadline,
-                    "only {} thumbnails within 5 s",
+                    "only {} thumbnails within {HANG:?}",
                     received.len()
                 );
                 std::thread::sleep(Duration::from_millis(2));
@@ -262,12 +273,12 @@ fn thumbnails_have_no_light_edge() {
         Box::new(|| {}),
     );
     thumbnailer.set_focus(0, Direction::Forward);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     let image = loop {
         if let Some(thumbnail) = thumbnailer.try_recv() {
             break thumbnail.result.unwrap();
         }
-        assert!(Instant::now() < deadline, "no thumbnail within 5 s");
+        assert!(Instant::now() < deadline, "no thumbnail within {HANG:?}");
         std::thread::sleep(Duration::from_millis(2));
     };
     assert_eq!((image.width(), image.height()), (120, 155));
@@ -309,12 +320,17 @@ fn thumbnail_refresh_renders_again_with_its_stamp() {
     thumbnailer.refresh(1);
     let log = wait_for(&log, 4);
     assert_eq!(log[3], 1);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     let mut stamps = vec![];
     while stamps.len() < 4 && Instant::now() < deadline {
         if let Some(t) = thumbnailer.try_recv() {
             stamps.push((t.page, t.transform.rotation));
         }
     }
+    assert!(
+        Instant::now() < deadline,
+        "only {} of 4 stamps within {HANG:?}",
+        stamps.len()
+    );
     assert_eq!(stamps.last(), Some(&(1, Rotation::R90)));
 }

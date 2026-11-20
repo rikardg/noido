@@ -7,6 +7,9 @@ use noido_engine::{
 };
 use noido_render::{FLASH_BAR_HEIGHT, LinkReply, Linker};
 
+/// A passing test never waits for it: it only stops a hang.
+const HANG: Duration = Duration::from_secs(30);
+
 /// Letter pages, each with lines of text and links. Lines start at x = 72
 /// with baselines 20 pt apart from y = 100; glyphs are 6 pt wide, their
 /// boxes from 10 pt above the baseline to 2 pt below.
@@ -130,12 +133,12 @@ fn linker() -> Linker {
 }
 
 fn recv(linker: &Linker) -> LinkReply {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     loop {
         if let Some(reply) = linker.try_recv() {
             return reply;
         }
-        assert!(Instant::now() < deadline, "no reply within 5 s");
+        assert!(Instant::now() < deadline, "no reply within {HANG:?}");
         std::thread::sleep(Duration::from_millis(5));
     }
 }
