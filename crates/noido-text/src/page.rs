@@ -1320,6 +1320,8 @@ mod tests {
         assert_eq!(page.glyph_bounds(2), None);
         assert_eq!(page.line_of(2), 0, "the inserted space is on line 0");
         assert_eq!(page.glyph_of(2), None);
+        // The gap is skipped, not a break: one rect across the whole word.
+        assert_eq!(page.rects(0..5), vec![rect(72.0, 92.0, 28.0, 10.0)]);
     }
 
     #[test]
