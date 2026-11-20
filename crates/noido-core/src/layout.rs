@@ -2,8 +2,10 @@ use std::ops::Range;
 
 use noido_engine::Size;
 
-/// Space between pages, in UI points.
-pub const PAGE_GAP: f32 = 12.0;
+/// Space between pages at 100% zoom, in PDF points. The layout gives it
+/// `scale` UI points per point, so it keeps its size against the pages at
+/// every zoom.
+pub const PAGE_GAP: f32 = 8.0;
 /// Space around the column of pages, in UI points.
 pub const MARGIN: f32 = 12.0;
 /// How far content may come out larger than its room and still fit it, in
@@ -272,6 +274,13 @@ impl Layout {
 
     /// The gap between the pages of a spread, in UI points.
     pub fn spread_gap(&self, _spread: usize) -> f32 {
+        if self.mode.dual { self.gap() } else { 0.0 }
+    }
+
+    /// The page gap in PDF points: the number a fit solves with, since it is
+    /// in the room the fit has at the scale it is solving for. Zero in single
+    /// mode, whose rows have no gutter, and when gapless.
+    pub fn gap_points(&self, _spread: usize) -> f32 {
         if self.mode.dual && !self.mode.gapless {
             PAGE_GAP
         } else {
@@ -281,7 +290,16 @@ impl Layout {
 
     /// The gap between rows, in UI points.
     fn row_gap(&self) -> f32 {
-        if self.mode.gapless { 0.0 } else { PAGE_GAP }
+        self.gap()
+    }
+
+    /// The page gap at the arranged scale, in UI points; zero when gapless.
+    fn gap(&self) -> f32 {
+        if self.mode.gapless {
+            0.0
+        } else {
+            PAGE_GAP * self.scale
+        }
     }
 
     /// Width of the widest spread in PDF points, gap excluded.
@@ -386,8 +404,8 @@ mod tests {
         assert_eq!(
             layout.page_rect(0),
             Some(PageRect {
-                x: 12.0,
-                y: 12.0,
+                x: MARGIN,
+                y: MARGIN,
                 width: 612.0,
                 height: 792.0
             })
@@ -395,13 +413,16 @@ mod tests {
         assert_eq!(
             layout.page_rect(1),
             Some(PageRect {
-                x: 12.0 + 153.0,
-                y: 12.0 + 792.0 + 12.0,
+                x: MARGIN + 153.0,
+                y: MARGIN + 792.0 + PAGE_GAP,
                 width: 306.0,
                 height: 396.0
             })
         );
-        assert_eq!(layout.content_height(), 12.0 + 792.0 + 12.0 + 396.0 + 12.0);
+        assert_eq!(
+            layout.content_height(),
+            MARGIN + 792.0 + PAGE_GAP + 396.0 + MARGIN
+        );
         assert_eq!(layout.content_width(), 636.0);
     }
 
@@ -459,9 +480,11 @@ mod tests {
     #[test]
     fn doc_point_in_gap_refers_to_page_above() {
         let layout = two_pages();
-        let p = layout.doc_point(100.0, 12.0 + 792.0 + 6.0).unwrap();
+        let p = layout
+            .doc_point(100.0, MARGIN + 792.0 + PAGE_GAP / 2.0)
+            .unwrap();
         assert_eq!(p.page, 0);
-        assert!((p.y - 798.0).abs() < 1e-3);
+        assert!((p.y - (792.0 + PAGE_GAP / 2.0)).abs() < 1e-3);
     }
 
     fn letters(count: usize) -> Vec<Size> {
@@ -546,14 +569,58 @@ mod tests {
         assert_eq!(layout.spread_of(3), 3);
     }
 
+    /// Two Letter pages and the gutter between them, margins included: the
+    /// width a dual row fills exactly.
+    fn dual_row_width() -> f32 {
+        2.0 * 612.0 + PAGE_GAP + 2.0 * MARGIN
+    }
+
     #[test]
     fn dual_rows_side_by_side() {
-        let layout = arranged(letters(4), DUAL, 1260.0);
-        assert_eq!(layout.page_rect(0).unwrap().x, 12.0);
-        assert_eq!(layout.page_rect(1).unwrap().x, 12.0 + 612.0 + 12.0);
-        assert_eq!(layout.page_rect(1).unwrap().y, 12.0);
-        assert_eq!(layout.page_rect(2).unwrap().y, 12.0 + 792.0 + 12.0);
-        assert_eq!(layout.content_width(), 1260.0);
+        let layout = arranged(letters(4), DUAL, dual_row_width());
+        assert_eq!(layout.page_rect(0).unwrap().x, MARGIN);
+        assert_eq!(layout.page_rect(1).unwrap().x, MARGIN + 612.0 + PAGE_GAP);
+        assert_eq!(layout.page_rect(1).unwrap().y, MARGIN);
+        assert_eq!(layout.page_rect(2).unwrap().y, MARGIN + 792.0 + PAGE_GAP);
+        assert_eq!(layout.content_width(), dual_row_width());
+    }
+
+    /// The gap is part of the document: it doubles with the pages, so they
+    /// keep their share of the space between them.
+    #[test]
+    fn gaps_grow_with_the_scale() {
+        let mut dual = Layout::new(letters(2));
+        dual.set_mode(DUAL);
+        dual.arrange(2.0, 0.0, 0.0);
+        assert_eq!(
+            dual.page_rect(1).unwrap().x,
+            12.0 + 612.0 * 2.0 + 2.0 * PAGE_GAP
+        );
+
+        let mut single = Layout::new(letters(2));
+        single.arrange(0.5, 0.0, 0.0);
+        let (above, below) = (single.page_rect(0).unwrap(), single.page_rect(1).unwrap());
+        assert_eq!(below.y - (above.y + above.height), PAGE_GAP / 2.0);
+    }
+
+    /// The fit solves for the gap with the scale it is solving for, so it
+    /// needs the gap in document points rather than UI points. Zero in single
+    /// mode, whose rows have no gutter, and when gapless.
+    #[test]
+    fn the_gap_in_points_is_what_a_fit_solves_with() {
+        let single = arranged(letters(2), LayoutMode::default(), 636.0);
+        assert_eq!(single.gap_points(0), 0.0);
+        let dual = arranged(letters(2), DUAL, 1260.0);
+        assert_eq!(dual.gap_points(0), PAGE_GAP);
+        let gapless = arranged(
+            letters(2),
+            LayoutMode {
+                gapless: true,
+                ..DUAL
+            },
+            1224.0,
+        );
+        assert_eq!(gapless.gap_points(0), 0.0);
     }
 
     #[test]
@@ -621,8 +688,10 @@ mod tests {
 
     #[test]
     fn doc_point_picks_page_in_row() {
-        let layout = arranged(letters(2), DUAL, 1260.0);
-        let p = layout.doc_point(12.0 + 612.0 + 12.0 + 100.0, 50.0).unwrap();
+        let layout = arranged(letters(2), DUAL, dual_row_width());
+        let p = layout
+            .doc_point(MARGIN + 612.0 + PAGE_GAP + 100.0, 50.0)
+            .unwrap();
         assert_eq!(p.page, 1);
         assert!((p.x - 100.0).abs() < 1e-3);
     }
@@ -655,10 +724,10 @@ mod tests {
     fn tall_content_is_not_shifted() {
         let mut layout = Layout::new(letters(3));
         layout.arrange(1.0, 636.0, 1000.0);
-        assert_eq!(layout.page_rect(0).unwrap().y, 12.0);
+        assert_eq!(layout.page_rect(0).unwrap().y, MARGIN);
         assert_eq!(
             layout.content_height(),
-            12.0 + 3.0 * 792.0 + 2.0 * 12.0 + 12.0
+            MARGIN + 3.0 * 792.0 + 2.0 * PAGE_GAP + MARGIN
         );
     }
 
