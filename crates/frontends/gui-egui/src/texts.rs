@@ -7,11 +7,10 @@ use std::sync::Arc;
 use noido_core::PageTextState;
 use noido_text::PageText;
 
-/// How many bytes of page text are kept. A page of prose is about 20 kB
-/// unsearched and 100 kB with its folded forms, so this is some eight hundred
-/// pages, or 160 searched: more reach than a reader has, and a bound on the
-/// document rather than a working set.
-pub const TEXT_BUDGET: usize = 16 << 20;
+/// How many bytes of page text are kept. A page of prose is about 20 kB, so
+/// this is some four hundred and seventy pages: more reach than a reader has,
+/// and a bound on the document rather than a working set.
+pub const TEXT_BUDGET: usize = 9 << 20;
 
 enum Slot {
     Unasked,
@@ -59,10 +58,9 @@ impl Texts {
     /// being made, of a highlight under edit, of a selection's ends. Returns
     /// the pages it let go, for the thread to forget too.
     ///
-    /// A page is counted by what it holds now, so the folded forms a search
-    /// builds over it are seen. A copy can need more pages than the budget
-    /// holds, and then the budget gives way: it is a bound on what is kept
-    /// for later, not on what is being used now.
+    /// A copy can need more pages than the budget holds, and then the budget
+    /// gives way: it is a bound on what is kept for later, not on what is
+    /// being used now.
     pub fn evict(&mut self, in_view: Range<usize>, pinned: impl Fn(usize) -> bool) -> Vec<usize> {
         let mut total: usize = self
             .pages
