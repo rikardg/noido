@@ -127,6 +127,24 @@ pub fn elide_to_width(text: &str, max: f32, width_of: &dyn Fn(&str) -> f32) -> S
     best
 }
 
+/// The view's entries: continuous or paged, single or dual, and the
+/// settings that go with them. A section of [`menu`], drawn by the page
+/// menu too.
+pub fn view_entries() -> Vec<MenuEntry> {
+    let check = |action, label, check| MenuEntry {
+        action,
+        label,
+        check: Some(check),
+    };
+    vec![
+        check(Action::ToggleContinuous, "Continuous", Check::Continuous),
+        check(Action::ToggleDual, "Dual page", Check::Dual),
+        check(Action::ToggleOddLeft, "Odd pages left", Check::OddLeft),
+        check(Action::ToggleGapless, "Gapless mode", Check::Gapless),
+        check(Action::ToggleScaleToFit, "Scale to fit", Check::ScaleToFit),
+    ]
+}
+
 /// The menu's sections, in order; frontends separate them.
 pub fn menu() -> Vec<Vec<MenuEntry>> {
     let entry = |action, label| MenuEntry {
@@ -149,13 +167,7 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
             entry(Action::ZoomIn, "Zoom in"),
             entry(Action::ZoomOut, "Zoom out"),
         ],
-        vec![
-            check(Action::ToggleContinuous, "Continuous", Check::Continuous),
-            check(Action::ToggleDual, "Dual page", Check::Dual),
-            check(Action::ToggleOddLeft, "Odd pages left", Check::OddLeft),
-            check(Action::ToggleGapless, "Gapless mode", Check::Gapless),
-            check(Action::ToggleScaleToFit, "Scale to fit", Check::ScaleToFit),
-        ],
+        view_entries(),
         // The bar, and with it the menu, is hidden in fullscreen; the
         // entry is there for completeness, checked while the window is.
         // macOS's AppKit menu has its own entry.

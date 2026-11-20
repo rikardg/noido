@@ -2,6 +2,7 @@
 //! colour. No icon font, no sprite sheet.
 
 use eframe::egui::{self, Color32, Painter, Rect, Stroke, pos2, vec2};
+use noido_core::ViewMode;
 
 /// A square button `side` points across, with `paint`'s icon in it,
 /// highlighted while `selected` or hovered. The response carries `id`, so
@@ -10,6 +11,20 @@ pub fn button(
     ui: &mut egui::Ui,
     id: egui::Id,
     side: f32,
+    selected: bool,
+    paint: impl FnOnce(&Painter, Rect, Color32),
+) -> egui::Response {
+    // The title bar's share of the button for its icon: 8 of 28 points.
+    button_with_glyph(ui, id, side, side * 12.0 / 28.0, selected, paint)
+}
+
+/// [`button`] with the icon in a `glyph`-point square at its centre, for
+/// buttons whose icons fill more of them.
+pub fn button_with_glyph(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    side: f32,
+    glyph: f32,
     selected: bool,
     paint: impl FnOnce(&Painter, Rect, Color32),
 ) -> egui::Response {
@@ -22,8 +37,7 @@ pub fn button(
         ui.painter()
             .rect_filled(rect, visuals.corner_radius, visuals.weak_bg_fill);
     }
-    // The title bar's share of the button for its icon: 8 of 28 points.
-    let glyph = rect.shrink(side * 8.0 / 28.0);
+    let glyph = Rect::from_center_size(rect.center(), vec2(glyph, glyph));
     paint(ui.painter(), glyph, visuals.fg_stroke.color);
     response
 }
@@ -80,4 +94,39 @@ pub fn paint_folder_icon(painter: &Painter, rect: Rect, colour: Color32) {
         ],
         stroke,
     ));
+}
+
+/// Where a single page starts across a view mode glyph, as a fraction of
+/// it.
+pub(crate) const SINGLE_PAGE_LEFT: f32 = 0.27;
+
+/// A page or spread, with two chevrons under it when the pages scroll:
+/// the four view modes in one glyph.
+pub fn paint_view_mode_icon(painter: &Painter, rect: Rect, colour: Color32, mode: ViewMode) {
+    let stroke = Stroke::new(1.5, colour);
+    let side = rect.width();
+    let at = |x: f32, y: f32| pos2(rect.left() + x * side, rect.top() + y * side);
+    let page = |left: f32, right: f32| {
+        painter.rect_stroke(
+            Rect::from_min_max(at(left, 0.02), at(right, 0.58)),
+            1.0,
+            stroke,
+            egui::StrokeKind::Inside,
+        );
+    };
+    if mode.dual {
+        page(0.02, 0.44);
+        page(0.56, 0.98);
+    } else {
+        page(SINGLE_PAGE_LEFT, 1.0 - SINGLE_PAGE_LEFT);
+    }
+    if mode.continuous {
+        // Two chevrons down, as Lucide's `chevrons-down`: the strip goes on.
+        for y in [0.68, 0.84] {
+            painter.add(egui::Shape::line(
+                vec![at(0.36, y), at(0.5, y + 0.10), at(0.64, y)],
+                stroke,
+            ));
+        }
+    }
 }
