@@ -2,14 +2,11 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::OnceLock;
 
 pub use noido_engine::Rect;
 use noido_engine::{Glyph, Point, Rotation, Size};
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
-
-use crate::search::Forms;
 
 /// A move across the baseline further than this many ems starts a new line,
 /// as does a move back along it.
@@ -46,8 +43,6 @@ pub struct PageText {
     /// The turn from the upright frame to the page's: the direction most
     /// of the page's text runs in.
     upright: Rotation,
-    /// The forms search matches against, built on the first search.
-    pub(crate) forms: OnceLock<Forms>,
     /// Whether the page is typeset: a line-end `-` is then the source's own,
     /// and only a soft hyphen (the typesetter's added one) breaks a word.
     marked_hyphens: bool,
@@ -198,7 +193,6 @@ impl PageText {
             spans: Spans::new(&rects),
             line_bounds,
             upright,
-            forms: OnceLock::new(),
             marked_hyphens,
         }
     }
@@ -214,8 +208,8 @@ impl PageText {
     }
 
     /// What holding this page costs, in bytes: the struct and the buffers it
-    /// owns, the folded forms included once it has been searched. An
-    /// estimate of the heap behind it, for a cache that keeps a budget.
+    /// owns. An estimate of the heap behind it, for a cache that keeps a
+    /// budget.
     pub fn memory_bytes(&self) -> usize {
         std::mem::size_of::<PageText>()
             + self.text.capacity()
@@ -223,7 +217,6 @@ impl PageText {
             + self.line_starts.capacity() * std::mem::size_of::<u32>()
             + self.line_bounds.capacity() * std::mem::size_of::<Option<Rect>>()
             + self.spans.memory_bytes()
-            + self.forms.get().map_or(0, Forms::memory_bytes)
     }
 
     /// The line character `char` is on; a newline is on the line it ends.
@@ -1336,6 +1329,8 @@ mod tests {
             .collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
         let page = PageText::new(page(&refs));
+        let query = crate::Query::new("fox").unwrap();
+        assert_eq!(page.find(&query).len(), 44);
         assert!(
             page.memory_bytes() < 40_000,
             "{} bytes for {} characters",
@@ -1366,18 +1361,25 @@ mod tests {
             21 * std::mem::size_of::<[i16; 2]>()
         );
 
-        // Searching it folds both forms and keeps them: the page costs more
-        // from then on, which is what a budget has to see. The two folded
-        // character lists alone are four bytes a character each.
+        // Searching folds the page and lets the fold go: the page costs the
+        // same from then on. The guarantee is structural — there is no field
+        // to keep a form — so this is not a leak detector.
         let before = page.memory_bytes();
         let query = crate::Query::new("cat").unwrap();
         assert_eq!(page.find(&query).len(), 1);
-        let after = page.memory_bytes();
-        let folded = 2 * page.char_count() * std::mem::size_of::<char>();
-        assert!(
-            after >= before + folded,
-            "{after} bytes after searching, {before} before: the forms are not counted"
-        );
+        assert_eq!(page.memory_bytes(), before);
+    }
+
+    #[test]
+    fn finding_twice_keeps_nothing() {
+        let page = PageText::new(page(&["the cat sat", "on the mat"]));
+        let query = crate::Query::new("the").unwrap();
+        let before = page.memory_bytes();
+        let first = page.find(&query);
+        let second = page.find(&query);
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 2);
+        assert_eq!(page.memory_bytes(), before);
     }
 
     #[test]
