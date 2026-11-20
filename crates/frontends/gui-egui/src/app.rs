@@ -622,7 +622,14 @@ impl NoidoApp {
     /// Puts a link to the page the title bar shows on the clipboard: bare,
     /// or as a Markdown link labelled with the document's name.
     fn copy_link(&self, ctx: &egui::Context, markdown: bool) {
-        let (Some(path), Some(page)) = (&self.link_path, self.view.centre_page()) else {
+        if let Some(page) = self.view.centre_page() {
+            self.copy_page_link(ctx, page, markdown);
+        }
+    }
+
+    /// Copies the link to `page`, as a plain noido link or a Markdown one.
+    fn copy_page_link(&self, ctx: &egui::Context, page: usize, markdown: bool) {
+        let Some(path) = &self.link_path else {
             return;
         };
         let link = if markdown {
@@ -1937,9 +1944,15 @@ impl NoidoApp {
         let mut turn = None;
         if let Some(page) = self.menu_page {
             let current = self.transforms.get(page).rotation;
-            match crate::rotation_menu::on(&response, current) {
+            match crate::rotation_menu::on(&response, current, &self.keymap) {
                 None => self.menu_page = None,
-                Some(chosen) => turn = chosen.map(|rotation| (page, rotation)),
+                Some(Some(crate::rotation_menu::Choice::Rotation(rotation))) => {
+                    turn = Some((page, rotation));
+                }
+                Some(Some(crate::rotation_menu::Choice::CopyLink { markdown })) => {
+                    self.copy_page_link(ui.ctx(), page, markdown);
+                }
+                Some(None) => {}
             }
         }
         // Not over a scroll bar, the sidebar or a popup.
@@ -3333,10 +3346,14 @@ impl NoidoApp {
                 locations: &self.locations,
                 preview: self.pin_preview.as_ref().map(|preview| preview.page),
                 transforms: &self.transforms,
+                keymap: &self.keymap,
             };
             let output = self.sidebar_view.show(ui, &mut self.sidebar, &mut input);
             if let Some((page, rotation)) = output.rotate {
                 self.set_rotation(page, rotation);
+            }
+            if let Some((page, markdown)) = output.copy_link {
+                self.copy_page_link(&ctx, page, markdown);
             }
             if let Some(page) = output.clicked {
                 self.leave_here();
@@ -18051,24 +18068,138 @@ pub(crate) mod tests {
         ANGLES.iter().all(|a| texts.iter().any(|t| t == a))
     }
 
-    /// Whether the check mark beside `angle` is drawn in a visible colour.
-    fn checked(h: &Harness, angle: &str) -> bool {
-        fn marks(shape: &egui::Shape, out: &mut Vec<(Rect, Color32)>) {
+    /// Opens the Rotation submenu of the page's right-click menu.
+    fn open_rotation(h: &mut Harness) {
+        h.click_text("Rotation");
+        h.frames(2, vec![]);
+    }
+
+    /// Every check mark drawn, with the rect it was drawn in and its colour.
+    fn marks(h: &Harness) -> Vec<(Rect, Color32)> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<(Rect, Color32)>) {
             match shape {
                 egui::Shape::Text(t) if t.galley.text() == crate::titlebar::MARK => {
                     let rect = Rect::from_min_size(t.pos, t.galley.size());
                     out.push((rect, text_shape_color(t)));
                 }
-                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| marks(s, out)),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, out)),
                 _ => {}
             }
         }
-        let label = h.text_rect(angle).unwrap();
         let mut all = Vec::new();
-        h.shapes.iter().for_each(|c| marks(&c.shape, &mut all));
-        all.iter()
+        h.shapes.iter().for_each(|c| collect(&c.shape, &mut all));
+        all
+    }
+
+    /// Whether the check mark beside `angle` is drawn in a visible colour.
+    fn checked(h: &Harness, angle: &str) -> bool {
+        let label = h.text_rect(angle).unwrap();
+        marks(h)
+            .iter()
             .find(|(rect, _)| (rect.center().y - label.center().y).abs() < label.height() / 2.0)
             .is_some_and(|(_, colour)| colour.a() > 0)
+    }
+
+    #[test]
+    fn the_page_menu_puts_the_links_above_rotation() {
+        let mut h = Harness::new();
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        let link = h
+            .text_rect("Copy link to page")
+            .expect("no Copy link entry");
+        let markdown = h
+            .text_rect("Copy Markdown link to page")
+            .expect("no Copy Markdown link entry");
+        let rotation = h.text_rect("Rotation").expect("no Rotation entry");
+        assert!(link.max.y <= markdown.min.y, "{link:?} over {markdown:?}");
+        assert!(
+            markdown.max.y <= rotation.min.y,
+            "{markdown:?} over {rotation:?}"
+        );
+        assert!(h.text_rect("0°").is_none(), "the angles are in the submenu");
+    }
+
+    #[test]
+    fn the_link_entries_show_their_shortcuts() {
+        let mut h = Harness::new();
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        let (link, markdown) = if cfg!(target_os = "macos") {
+            ("⌘L", "⇧⌘L")
+        } else {
+            ("Ctrl+L", "Shift+Ctrl+L")
+        };
+        let texts = h.texts();
+        assert!(texts.iter().any(|t| t == link), "{texts:?}");
+        assert!(texts.iter().any(|t| t == markdown), "{texts:?}");
+    }
+
+    #[test]
+    fn the_angles_are_right_aligned_with_their_marks_on_the_left() {
+        let mut h = Harness::new();
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        open_rotation(&mut h);
+        let angles: Vec<Rect> = ANGLES
+            .iter()
+            .map(|angle| h.text_rect(angle).unwrap_or_else(|| panic!("no {angle}")))
+            .collect();
+        let right = angles[0].max.x;
+        for (angle, rect) in ANGLES.iter().zip(&angles) {
+            assert!(
+                (rect.max.x - right).abs() < 0.5,
+                "{angle} ends at {}, not {right}",
+                rect.max.x
+            );
+        }
+        let beside: Vec<(Rect, Rect)> = angles
+            .iter()
+            .map(|angle| {
+                let (mark, _) = marks(&h)
+                    .into_iter()
+                    .find(|(mark, _)| {
+                        (mark.center().y - angle.center().y).abs() < angle.height() / 2.0
+                    })
+                    .expect("no mark beside an angle");
+                (mark, *angle)
+            })
+            .collect();
+        let left = beside[0].0.min.x;
+        for (mark, angle) in &beside {
+            assert!(
+                (mark.min.x - left).abs() < 0.5,
+                "a mark starts at {}, not {left}",
+                mark.min.x
+            );
+            assert!(mark.max.x < angle.min.x, "{mark:?} not left of {angle:?}");
+        }
+    }
+
+    #[test]
+    fn copying_from_the_page_menu_uses_the_page_it_was_opened_on() {
+        let mut h = Harness::build(|app| {
+            app.with_name("Some Book.pdf".into())
+                .with_link_path("/b/Some Book.pdf".into())
+        });
+        h.press(egui::Key::D, Modifiers::NONE);
+        h.frames(2, vec![]);
+        // The click is on the right-hand page of the second spread, not
+        // the page the reader is centred on.
+        let page = 2;
+        assert_ne!(h.centre().page, page);
+        let at = screen_pos(&h, page, 306.0, 300.0);
+        h.right_click(at);
+        h.click_text("Copy link to page");
+        h.frames(2, vec![]);
+        h.right_click(at);
+        h.click_text("Copy Markdown link to page");
+        h.frames(2, vec![]);
+        let number = page + 1;
+        assert_eq!(
+            h.copied,
+            vec![
+                format!("noido:///b/Some%20Book.pdf#page={number}"),
+                format!("[Some Book, p. {number}](noido:///b/Some%20Book.pdf#page={number})"),
+            ]
+        );
     }
 
     #[test]
@@ -18079,41 +18210,52 @@ pub(crate) mod tests {
             h.ctx.set_theme(mode);
             h.frames(2, vec![]);
             h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+            open_rotation(&mut h);
             let label = h.text_color("0°").expect("no 0°");
             assert_eq!(shown_checkmarks(&h), vec![label.to_opaque()], "{mode:?}");
         }
     }
 
     #[test]
-    fn the_rotation_menu_is_headed_rotation() {
+    fn the_rotation_entry_opens_the_angles() {
         let mut h = Harness::new();
         h.right_click(screen_pos(&h, 0, 306.0, 400.0));
-        let heading = h.text_rect("Rotation").expect("no heading");
-        let first = h.text_rect("0°").unwrap();
-        assert!(heading.max.y <= first.min.y, "{heading:?} above {first:?}");
-        // A heading, not an entry: clicking it turns nothing and leaves
-        // the menu open.
-        h.click(heading.center());
-        h.frames(2, vec![]);
+        assert!(!offers_angles(&h), "the angles showed before the entry");
+        open_rotation(&mut h);
         assert_eq!(h.app.transforms.get(0).rotation, Rotation::R0);
         assert!(offers_angles(&h), "{:?}", h.texts());
     }
 
     #[test]
-    fn a_click_outside_closes_the_rotation_menu() {
+    fn a_click_outside_closes_the_page_menu() {
         let mut h = Harness::new();
         h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        open_rotation(&mut h);
         assert!(offers_angles(&h));
         h.click(screen_pos(&h, 0, 500.0, 700.0));
         h.frames(2, vec![]);
         assert!(!offers_angles(&h), "{:?}", h.texts());
+        assert!(h.text_rect("Rotation").is_none(), "{:?}", h.texts());
         assert_eq!(h.app.transforms.get(0).rotation, Rotation::R0);
     }
 
     #[test]
-    fn right_click_on_a_page_offers_four_angles() {
+    fn right_click_on_a_page_offers_links_and_rotation() {
         let mut h = Harness::new();
         h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        assert!(
+            h.text_rect("Copy link to page").is_some(),
+            "{:?}",
+            h.texts()
+        );
+        assert!(
+            h.text_rect("Copy Markdown link to page").is_some(),
+            "{:?}",
+            h.texts()
+        );
+        assert!(h.text_rect("Rotation").is_some(), "{:?}", h.texts());
+        assert!(!offers_angles(&h), "{:?}", h.texts());
+        open_rotation(&mut h);
         assert!(offers_angles(&h), "{:?}", h.texts());
     }
 
@@ -18126,6 +18268,7 @@ pub(crate) mod tests {
         // Page 0 alone, then 1|2: the right-hand page of the second spread.
         let at = screen_pos(&h, 2, 306.0, 300.0);
         h.right_click(at);
+        open_rotation(&mut h);
         h.click_text("90°");
         h.frames(2, vec![]);
         assert_eq!(h.app.transforms.get(2).rotation, Rotation::R90);
@@ -18138,6 +18281,7 @@ pub(crate) mod tests {
         h.app.set_rotation(0, Rotation::R180);
         h.frames(2, vec![]);
         h.right_click(screen_pos(&h, 0, 300.0, 300.0));
+        open_rotation(&mut h);
         assert!(checked(&h, "180°"));
         assert!(!checked(&h, "0°"));
         assert!(!checked(&h, "90°"));
@@ -18149,6 +18293,7 @@ pub(crate) mod tests {
         let pick = |h: &mut Harness, angle: &str| {
             let at = screen_pos(h, 0, 200.0, 200.0);
             h.right_click(at);
+            open_rotation(h);
             h.click_text(angle);
             h.frames(2, vec![]);
         };
@@ -18177,6 +18322,7 @@ pub(crate) mod tests {
         let mut h = sidebar_on(Arc::new(BlankEngine));
         let before = h.centre();
         h.right_click(drawn_card(&h, 2).center());
+        open_rotation(&mut h);
         assert!(offers_angles(&h), "{:?}", h.texts());
         h.click_text("270°");
         h.frames(2, vec![]);
@@ -18185,11 +18331,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn right_click_on_a_thumbnail_copies_that_pages_link() {
+        let mut h = Harness::build_with(Arc::new(BlankEngine), |app| {
+            app.with_name("Some Book.pdf".into())
+                .with_link_path("/b/Some Book.pdf".into())
+        });
+        h.press(egui::Key::F9, Modifiers::NONE);
+        h.frames(2, vec![]);
+        h.right_click(drawn_card(&h, 2).center());
+        h.click_text("Copy link to page");
+        h.frames(2, vec![]);
+        assert_eq!(h.copied, vec!["noido:///b/Some%20Book.pdf#page=3"]);
+    }
+
+    #[test]
     fn right_click_on_a_pin_turns_that_page() {
         let mut h = pinned_on(&[4]);
         h.frames(2, vec![]);
         let before = h.centre();
         h.right_click(drawn_card(&h, 4).center());
+        open_rotation(&mut h);
         assert!(offers_angles(&h), "{:?}", h.texts());
         h.click_text("90°");
         h.frames(2, vec![]);
@@ -18203,11 +18364,19 @@ pub(crate) mod tests {
         // Left of page 0, in the desk beside it.
         let page = screen_pos(&h, 0, 0.0, 300.0);
         h.right_click(page - vec2(6.0, 0.0));
-        assert!(!h.texts().iter().any(|t| t == "90°"), "{:?}", h.texts());
+        assert!(
+            !h.texts().iter().any(|t| t == "Copy link to page"),
+            "{:?}",
+            h.texts()
+        );
         // In the gap between pages 0 and 1.
         let below = screen_pos(&h, 0, 306.0, 792.0);
         h.right_click(below + vec2(0.0, 6.0));
-        assert!(!h.texts().iter().any(|t| t == "90°"), "{:?}", h.texts());
+        assert!(
+            !h.texts().iter().any(|t| t == "Copy link to page"),
+            "{:?}",
+            h.texts()
+        );
     }
 
     #[test]

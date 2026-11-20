@@ -10,9 +10,9 @@ use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
-    Column, Eased, Highlight, Hits, Keep, Layout, MAX_RENDER_SIDE, OutlineRow, OutlineTree, Pace,
-    PageNumber, PageNumbers, PageTextState, Pins, RenderTracker, SIDEBAR_MIN_WIDTH, SidebarState,
-    SidebarTab, max_width, render_scale, reveal_row,
+    Column, Eased, Highlight, Hits, Keep, Keymap, Layout, MAX_RENDER_SIDE, OutlineRow, OutlineTree,
+    Pace, PageNumber, PageNumbers, PageTextState, Pins, RenderTracker, SIDEBAR_MIN_WIDTH,
+    SidebarState, SidebarTab, max_width, render_scale, reveal_row,
 };
 use noido_engine::LinkTarget;
 use noido_render::{RenderRequest, Renderer};
@@ -119,6 +119,8 @@ pub struct Input<'a> {
     pub locations: &'a noido_engine::LocationMap,
     /// How the reader turns pages, for the right-click menu's check.
     pub transforms: &'a noido_render::Transforms,
+    /// The bindings, for the right-click menu's shortcut labels.
+    pub keymap: &'a Keymap,
     /// The page the pagelet shows, if it is open.
     pub preview: Option<usize>,
 }
@@ -151,6 +153,9 @@ pub struct Output {
     pub pagelet: Option<usize>,
     /// A turn was chosen from a card's right-click menu: the page and how.
     pub rotate: Option<(usize, noido_core::Rotation)>,
+    /// A link was asked for from a card's right-click menu: the page it
+    /// points at, and whether it is the Markdown form.
+    pub copy_link: Option<(usize, bool)>,
 }
 
 /// A visible outline row, for the tests.
@@ -929,6 +934,7 @@ impl SidebarView {
         let mut toggled = None;
         let mut pagelet = None;
         let mut rotate = None;
+        let mut copy_link = None;
         let now = ui.input(|i| i.time);
         let mut fading = false;
         self.drawn.clear();
@@ -950,8 +956,14 @@ impl SidebarView {
                 clicked = Some(page);
             }
             let current = input.transforms.get(page).rotation;
-            if let Some(Some(rotation)) = crate::rotation_menu::on(&thumb, current) {
-                rotate = Some((page, rotation));
+            match crate::rotation_menu::on(&thumb, current, input.keymap) {
+                Some(Some(crate::rotation_menu::Choice::Rotation(rotation))) => {
+                    rotate = Some((page, rotation));
+                }
+                Some(Some(crate::rotation_menu::Choice::CopyLink { markdown })) => {
+                    copy_link = Some((page, markdown));
+                }
+                _ => {}
             }
             let current = input.highlighted.contains(&page);
             let painter = ui.painter();
@@ -1078,6 +1090,7 @@ impl SidebarView {
             toggle_pin: toggled,
             pagelet,
             rotate,
+            copy_link,
             ..Output::default()
         }
     }
@@ -1167,6 +1180,7 @@ impl SidebarView {
             toggle_pin: shown.inner.toggle_pin,
             pagelet: shown.inner.pagelet,
             rotate: shown.inner.rotate,
+            copy_link: shown.inner.copy_link,
             ..Output::default()
         }
     }
