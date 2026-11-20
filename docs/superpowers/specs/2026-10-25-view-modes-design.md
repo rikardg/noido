@@ -2,6 +2,10 @@
 
 Date: 2026-10-25 · Status: draft for review
 
+> **Superseded in part:** the page gap is no longer a number of UI points
+> taken off the room a fit has; it grows with the scale. See
+> [2026-11-20-proportional-page-gaps-design.md](2026-11-20-proportional-page-gaps-design.md).
+
 ## Intent
 
 Let the reader choose how pages are arranged: one page or two side by side,
