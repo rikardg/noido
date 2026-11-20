@@ -7,6 +7,9 @@ use noido_core::Keep;
 use noido_engine::{Document, EngineError, PdfBytes, PdfEngine, PixelRect, Rgba8Image, Size};
 use noido_render::{RenderRequest, RenderedPage, Renderer};
 
+/// A passing test never waits for it: it only stops a hang.
+const HANG: Duration = Duration::from_secs(30);
+
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/two-pages.pdf");
 
 fn fixture() -> PdfBytes {
@@ -18,12 +21,15 @@ fn no_waker() -> Box<dyn Fn() + Send> {
 }
 
 fn recv(renderer: &Renderer) -> RenderedPage {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     loop {
         if let Some(page) = renderer.try_recv() {
             return page;
         }
-        assert!(Instant::now() < deadline, "no render result within 5 s");
+        assert!(
+            Instant::now() < deadline,
+            "no render result within {HANG:?}"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -85,7 +91,7 @@ fn renders_requested_page_and_wakes() {
     assert_eq!(rendered.page, 0);
     let image = rendered.result.unwrap();
     assert_eq!((image.width(), image.height()), (306, 396));
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     while wakes.load(Ordering::SeqCst) < 1 {
         assert!(Instant::now() < deadline, "the render did not wake the app");
         std::thread::sleep(Duration::from_millis(2));

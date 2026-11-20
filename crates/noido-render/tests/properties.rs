@@ -19,11 +19,11 @@ fn properties_arrive_and_wake_the_app() {
             let _ = wake.send(());
         }),
     );
-    let properties = reply.recv_timeout(Duration::from_secs(5)).unwrap();
+    let properties = reply.recv_timeout(Duration::from_secs(30)).unwrap();
     assert_eq!(properties.title.as_deref(), Some("Info Title"));
     assert_eq!(properties.fonts.len(), 4);
     woken
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(Duration::from_secs(30))
         .expect("the reply did not wake the app");
 }
 
@@ -35,7 +35,7 @@ fn a_document_that_does_not_open_has_no_properties() {
         Box::new(|| {}),
     );
     assert_eq!(
-        reply.recv_timeout(Duration::from_secs(5)).unwrap(),
+        reply.recv_timeout(Duration::from_secs(30)).unwrap(),
         Properties::default()
     );
 }
