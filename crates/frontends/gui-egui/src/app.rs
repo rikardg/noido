@@ -8,8 +8,8 @@ use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, Vec2, pos2, v
 use noido_core::{
     Action, Defaults, Direction, DragKind, Highlight, HighlightColour, Highlights, History, Keep,
     Key, KeyPress, Keymap, MAX_RENDER_SIDE, PageRect, PageTextState, Pins, RenderTracker,
-    SidebarState, Spot, THUMBNAIL_BUDGET, Target, View, ViewState, drag_kind, fit_page, page_point,
-    render_bytes, render_scale, window_keep, window_order,
+    SidebarState, Spot, THUMBNAIL_BUDGET, Target, View, ViewMode, ViewState, drag_kind, fit_page,
+    page_point, render_bytes, render_scale, window_keep, window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
 use noido_settings::{Settings, SettingsFile};
@@ -190,6 +190,10 @@ pub struct NoidoApp {
     /// frame, after egui's scrolling is taken in, which would undo the
     /// view keeping its place.
     pending_rotations: Vec<(usize, noido_core::Rotation)>,
+    /// A view mode chosen from a menu, applied at the start of the next
+    /// frame for the same reason: the scrolling egui reports for the frame
+    /// it was chosen in belongs to the old arrangement.
+    pending_view_mode: Option<ViewMode>,
     /// A hit was jumped to since the reader last moved: later hits, of this
     /// search or a new one, add no history entry.
     searched_away: bool,
@@ -385,6 +389,7 @@ impl NoidoApp {
             clicked_target: None,
             menu_page: None,
             pending_rotations: Vec::new(),
+            pending_view_mode: None,
             pin_preview: None,
             searched_away: false,
             thumbnails: None,
@@ -1049,6 +1054,16 @@ impl NoidoApp {
     /// the start of the next frame.
     pub(crate) fn set_rotation(&mut self, page: usize, rotation: noido_core::Rotation) {
         self.pending_rotations.push((page, rotation));
+    }
+
+    /// Lays the pages out the new way, keeping the reader's place.
+    fn choose_view_mode(&mut self, mode: ViewMode) {
+        let place = |view: &View| (view.offset(), view.current_spread(), view.scale());
+        let before = place(&self.view);
+        self.view.set_view_mode(mode);
+        if place(&self.view) != before {
+            self.reader_moved();
+        }
     }
 
     /// Turns `page` to `rotation` now. The view keeps its place; what was
@@ -1942,12 +1957,26 @@ impl NoidoApp {
             });
         }
         let mut turn = None;
+        let mut view_mode = None;
         if let Some(page) = self.menu_page {
-            let current = self.transforms.get(page).rotation;
-            match crate::rotation_menu::on(&response, current, &self.keymap) {
+            let state = crate::rotation_menu::State {
+                rotation: self.transforms.get(page).rotation,
+                mode: self.view.view_mode(),
+                odd_left: self.view.odd_left(),
+                gapless: self.view.gapless(),
+                scale_to_fit: self.transforms.scale_to_fit(),
+            };
+            match crate::rotation_menu::on(&response, state, &self.keymap) {
                 None => self.menu_page = None,
                 Some(Some(crate::rotation_menu::Choice::Rotation(rotation))) => {
                     turn = Some((page, rotation));
+                }
+                Some(Some(crate::rotation_menu::Choice::ViewMode(mode))) => {
+                    view_mode = Some(mode);
+                }
+                Some(Some(crate::rotation_menu::Choice::Action(action))) => {
+                    self.queued.push(action);
+                    ui.ctx().request_repaint();
                 }
                 Some(Some(crate::rotation_menu::Choice::CopyLink { markdown })) => {
                     self.copy_page_link(ui.ctx(), page, markdown);
@@ -2377,6 +2406,10 @@ impl NoidoApp {
             } else {
                 self.screen_edge = None;
             }
+        }
+        if let Some(mode) = view_mode {
+            self.pending_view_mode = Some(mode);
+            ui.ctx().request_repaint();
         }
         if let Some((page, rotation)) = turn {
             self.set_rotation(page, rotation);
@@ -3241,6 +3274,9 @@ impl NoidoApp {
         let lowres = self.thumbnails.as_ref().map(|t| &t.textures);
         self.sidebar_view.receive(&ctx, lowres, &self.transforms);
         self.sync_from_egui();
+        if let Some(mode) = self.pending_view_mode.take() {
+            self.choose_view_mode(mode);
+        }
         for (page, rotation) in std::mem::take(&mut self.pending_rotations) {
             self.turn_page(page, rotation);
         }
@@ -3346,6 +3382,10 @@ impl NoidoApp {
                 locations: &self.locations,
                 preview: self.pin_preview.as_ref().map(|preview| preview.page),
                 transforms: &self.transforms,
+                view_mode: self.view.view_mode(),
+                odd_left: self.view.odd_left(),
+                gapless: self.view.gapless(),
+                scale_to_fit: self.transforms.scale_to_fit(),
                 keymap: &self.keymap,
             };
             let output = self.sidebar_view.show(ui, &mut self.sidebar, &mut input);
@@ -3354,6 +3394,14 @@ impl NoidoApp {
             }
             if let Some((page, markdown)) = output.copy_link {
                 self.copy_page_link(&ctx, page, markdown);
+            }
+            if let Some(mode) = output.view_mode {
+                self.pending_view_mode = Some(mode);
+                ctx.request_repaint();
+            }
+            if let Some(action) = output.action {
+                self.queued.push(action);
+                ctx.request_repaint();
             }
             if let Some(page) = output.clicked {
                 self.leave_here();
@@ -17761,7 +17809,7 @@ pub(crate) mod tests {
 
     // ---- Turning a page ----
 
-    use noido_core::{PageTransform, PageTransforms, Rotation};
+    use noido_core::{PageTransform, PageTransforms, Rotation, ViewMode};
 
     fn letter_turned() -> Size {
         Size {
@@ -18091,13 +18139,22 @@ pub(crate) mod tests {
         all
     }
 
-    /// Whether the check mark beside `angle` is drawn in a visible colour.
-    fn checked(h: &Harness, angle: &str) -> bool {
-        let label = h.text_rect(angle).unwrap();
+    /// The check mark immediately left of `label` on its row, if one was
+    /// drawn.
+    fn mark_beside(h: &Harness, label: Rect) -> Option<(Rect, Color32)> {
         marks(h)
-            .iter()
-            .find(|(rect, _)| (rect.center().y - label.center().y).abs() < label.height() / 2.0)
-            .is_some_and(|(_, colour)| colour.a() > 0)
+            .into_iter()
+            .filter(|(mark, _)| {
+                (mark.center().y - label.center().y).abs() < label.height() / 2.0
+                    && mark.max.x <= label.min.x + 0.5
+            })
+            .max_by(|(a, _), (b, _)| a.max.x.total_cmp(&b.max.x))
+    }
+
+    /// Whether the check mark beside `label` is drawn in a visible colour.
+    fn checked(h: &Harness, label: &str) -> bool {
+        let label = h.text_rect(label).unwrap();
+        mark_beside(h, label).is_some_and(|(_, colour)| colour.a() > 0)
     }
 
     #[test]
@@ -18117,6 +18174,241 @@ pub(crate) mod tests {
             "{markdown:?} over {rotation:?}"
         );
         assert!(h.text_rect("0°").is_none(), "the angles are in the submenu");
+    }
+
+    #[test]
+    fn the_page_menu_repeats_the_view_toggles() {
+        let mut h = Harness::new();
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        h.frames(3, vec![]);
+        assert!(
+            h.text_rect("View mode").is_none(),
+            "the entry is still there"
+        );
+        let row = ViewMode::ALL
+            .iter()
+            .map(|mode| h.widget_rect(crate::rotation_menu::view_mode_button_id(*mode)))
+            .fold(Rect::NOTHING, |row, button| row.union(button));
+        let mut last = row;
+        for label in [
+            "Continuous",
+            "Dual page",
+            "Odd pages left",
+            "Gapless mode",
+            "Scale to fit",
+        ] {
+            let entry = h.text_rect(label).unwrap_or_else(|| panic!("no {label}"));
+            assert!(last.max.y <= entry.min.y, "{label} not below the last");
+            last = entry;
+        }
+        let rotation = h.text_rect("Rotation").expect("no Rotation entry");
+        assert!(
+            last.max.y <= rotation.min.y,
+            "{rotation:?} above the toggles"
+        );
+    }
+
+    #[test]
+    fn the_page_menus_view_toggles_take_effect() {
+        let mut h = Harness::new();
+        assert!(!h.app.view.dual() && h.app.view.continuous());
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        h.click_text("Dual page");
+        h.frames(2, vec![]);
+        assert!(h.app.view.dual(), "Dual page did nothing");
+        assert!(!h.app.transforms.scale_to_fit());
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        h.click_text("Scale to fit");
+        h.frames(2, vec![]);
+        assert!(h.app.transforms.scale_to_fit(), "Scale to fit did nothing");
+    }
+
+    #[test]
+    fn the_page_menus_view_toggles_show_the_checks() {
+        let mut h = Harness::new();
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        assert!(checked(&h, "Continuous"));
+        assert!(!checked(&h, "Dual page"));
+        assert!(checked(&h, "Odd pages left"));
+        assert!(!checked(&h, "Gapless mode"));
+        assert!(!checked(&h, "Scale to fit"));
+        h.click(screen_pos(&h, 0, 500.0, 700.0));
+        h.frames(2, vec![]);
+        h.app.view.apply(Action::ToggleGapless);
+        h.frames(2, vec![]);
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        assert!(checked(&h, "Gapless mode"));
+    }
+
+    #[test]
+    fn the_view_mode_icons_sit_in_a_row() {
+        let mut h = Harness::new();
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        h.frames(3, vec![]);
+        let at = |mode| h.widget_rect(crate::rotation_menu::view_mode_button_id(mode));
+        let single_paged = at(ViewMode {
+            dual: false,
+            continuous: false,
+        });
+        let spread_paged = at(ViewMode {
+            dual: true,
+            continuous: false,
+        });
+        let single_cont = at(ViewMode {
+            dual: false,
+            continuous: true,
+        });
+        let spread_cont = at(ViewMode {
+            dual: true,
+            continuous: true,
+        });
+        // One row: single paged, spread paged, single continuous, spread
+        // continuous.
+        let y = single_paged.center().y;
+        for rect in [single_paged, spread_paged, single_cont, spread_cont] {
+            assert!((rect.center().y - y).abs() < 0.5, "{rect:?}");
+        }
+        assert!(single_paged.max.x < spread_paged.min.x);
+        assert!(spread_paged.max.x < single_cont.min.x);
+        assert!(single_cont.max.x < spread_cont.min.x);
+        // The row is inset to the labels, not their check marks.
+        let label = h.text_rect("Continuous").expect("no Continuous label");
+        assert!(
+            (single_paged.left() - label.left()).abs() < 0.5,
+            "the row starts at {}, the labels at {}",
+            single_paged.left(),
+            label.left()
+        );
+    }
+
+    /// The stroked page rectangles painted into `mode`'s View mode button.
+    fn drawn_page_rects(h: &Harness, mode: ViewMode) -> Vec<Rect> {
+        let button = h.widget_rect(crate::rotation_menu::view_mode_button_id(mode));
+        fn collect(shape: &egui::Shape, button: Rect, out: &mut Vec<Rect>) {
+            match shape {
+                egui::Shape::Rect(rect) if rect.stroke.width > 0.0 => {
+                    if button.contains(rect.rect.center()) {
+                        out.push(rect.rect);
+                    }
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, button, out)),
+                _ => {}
+            }
+        }
+        let mut pages = Vec::new();
+        h.shapes
+            .iter()
+            .for_each(|c| collect(&c.shape, button, &mut pages));
+        pages
+    }
+
+    #[test]
+    fn the_paged_icons_sit_at_the_top_like_the_continuing_ones() {
+        let mut h = Harness::new();
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        h.frames(3, vec![]);
+        for (paged, continuing) in [
+            (
+                ViewMode {
+                    dual: false,
+                    continuous: false,
+                },
+                ViewMode {
+                    dual: false,
+                    continuous: true,
+                },
+            ),
+            (
+                ViewMode {
+                    dual: true,
+                    continuous: false,
+                },
+                ViewMode {
+                    dual: true,
+                    continuous: true,
+                },
+            ),
+        ] {
+            let paged = drawn_page_rects(&h, paged);
+            let continuing = drawn_page_rects(&h, continuing);
+            assert_eq!(paged.len(), continuing.len(), "{paged:?} vs {continuing:?}");
+            for (without, with) in paged.iter().zip(&continuing) {
+                assert!(
+                    (without.top() - with.top()).abs() < 0.5,
+                    "a paged icon sits at {}, a continuing one at {}",
+                    without.top(),
+                    with.top()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn choosing_a_view_mode_sets_both_axes() {
+        let mut h = Harness::new();
+        for mode in ViewMode::ALL {
+            h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+            h.click_id(crate::rotation_menu::view_mode_button_id(mode));
+            h.frames(2, vec![]);
+            assert_eq!(
+                (h.app.view.dual(), h.app.view.continuous()),
+                (mode.dual, mode.continuous),
+                "{mode:?}"
+            );
+            assert!(
+                h.ctx
+                    .read_response(crate::rotation_menu::view_mode_button_id(mode))
+                    .is_none(),
+                "the menu stayed open"
+            );
+        }
+    }
+
+    #[test]
+    fn switching_to_continuous_from_the_page_menu_keeps_the_page() {
+        let mut h = Harness::new();
+        // Spread, one spread at a time, a few spreads in.
+        h.press(egui::Key::D, Modifiers::NONE);
+        h.press(egui::Key::C, Modifiers::NONE);
+        h.frames(2, vec![]);
+        assert!(h.app.view.dual() && !h.app.view.continuous());
+        for _ in 0..3 {
+            h.press(egui::Key::PageDown, Modifiers::NONE);
+        }
+        h.frames(2, vec![]);
+        let before = h.centre().page;
+        assert!(before >= 4, "only reached page {before}");
+        h.right_click(screen_pos(&h, before, 306.0, 300.0));
+        h.click_id(crate::rotation_menu::view_mode_button_id(ViewMode {
+            dual: true,
+            continuous: true,
+        }));
+        h.frames(2, vec![]);
+        assert!(h.app.view.continuous(), "the mode did not change");
+        assert_eq!(h.centre().page, before, "the reader was sent back");
+    }
+
+    #[test]
+    fn a_view_toggle_from_a_thumbnail_menu_takes_effect() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        assert!(!h.app.view.dual());
+        h.right_click(drawn_card(&h, 2).center());
+        h.click_text("Dual page");
+        h.frames(2, vec![]);
+        assert!(h.app.view.dual(), "Dual page did nothing");
+    }
+
+    #[test]
+    fn a_view_mode_from_a_thumbnail_menu_lays_the_pages_out() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        h.right_click(drawn_card(&h, 2).center());
+        h.click_id(crate::rotation_menu::view_mode_button_id(ViewMode {
+            dual: true,
+            continuous: false,
+        }));
+        h.frames(2, vec![]);
+        assert!(h.app.view.dual());
+        assert!(!h.app.view.continuous());
     }
 
     #[test]
@@ -18153,12 +18445,7 @@ pub(crate) mod tests {
         let beside: Vec<(Rect, Rect)> = angles
             .iter()
             .map(|angle| {
-                let (mark, _) = marks(&h)
-                    .into_iter()
-                    .find(|(mark, _)| {
-                        (mark.center().y - angle.center().y).abs() < angle.height() / 2.0
-                    })
-                    .expect("no mark beside an angle");
+                let (mark, _) = mark_beside(&h, *angle).expect("no mark beside an angle");
                 (mark, *angle)
             })
             .collect();
@@ -18211,8 +18498,13 @@ pub(crate) mod tests {
             h.frames(2, vec![]);
             h.right_click(screen_pos(&h, 0, 306.0, 400.0));
             open_rotation(&mut h);
-            let label = h.text_color("0°").expect("no 0°");
-            assert_eq!(shown_checkmarks(&h), vec![label.to_opaque()], "{mode:?}");
+            let label = h.text_rect("0°").expect("no 0°");
+            let (_, colour) = mark_beside(&h, label).expect("no mark beside 0°");
+            assert_eq!(
+                colour,
+                h.text_color("0°").expect("no 0°").to_opaque(),
+                "{mode:?}"
+            );
         }
     }
 

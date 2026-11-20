@@ -14,6 +14,39 @@ pub const ZOOM_STEP: f32 = 1.25;
 /// line on native.
 pub const SCROLL_STEP: f32 = 40.0;
 
+/// How the pages are laid out: one page or a spread, in a continuous strip
+/// or one screenful at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewMode {
+    /// Two pages side by side.
+    pub dual: bool,
+    /// All pages in one scrolling strip, rather than one spread at a time.
+    pub continuous: bool,
+}
+
+impl ViewMode {
+    /// The four modes, paged before continuous and single before spread:
+    /// the order the page menu's row shows them.
+    pub const ALL: [ViewMode; 4] = [
+        ViewMode {
+            dual: false,
+            continuous: false,
+        },
+        ViewMode {
+            dual: true,
+            continuous: false,
+        },
+        ViewMode {
+            dual: false,
+            continuous: true,
+        },
+        ViewMode {
+            dual: true,
+            continuous: true,
+        },
+    ];
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZoomMode {
     /// Pages fill the viewport width.
@@ -127,6 +160,20 @@ impl View {
     /// Two-page spreads.
     pub fn dual(&self) -> bool {
         self.layout.mode().dual
+    }
+
+    /// How the pages are laid out.
+    pub fn view_mode(&self) -> ViewMode {
+        ViewMode {
+            dual: self.dual(),
+            continuous: self.continuous(),
+        }
+    }
+
+    /// Lays the pages out the way `mode` says, keeping the reader's place.
+    pub fn set_view_mode(&mut self, mode: ViewMode) {
+        let (odd_left, gapless) = (self.odd_left(), self.gapless());
+        self.switch_mode(mode.dual, odd_left, mode.continuous, gapless);
     }
 
     /// Dual mode's pairing: see [`LayoutMode::odd_left`].
@@ -1757,6 +1804,37 @@ mod tests {
         let rect = view.layout().page_rect(page).unwrap();
         let top = view.offset().1;
         assert!(rect.y < top + 800.0 && rect.y + rect.height > top);
+    }
+
+    #[test]
+    fn set_view_mode_takes_both_axes_at_once() {
+        let mut view = letter_view();
+        view.scrolled_to(0.0, 3000.0);
+        for mode in ViewMode::ALL {
+            let page = doc_at(&view, (160.0, 400.0)).page;
+            view.set_view_mode(mode);
+            assert_eq!(view.view_mode(), mode, "{mode:?}");
+            assert_eq!(
+                doc_at(&view, (160.0, 400.0)).page,
+                page,
+                "{mode:?} moved off page {page}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_view_mode_leaves_pairing_and_gaps_alone() {
+        let mut view = letter_view();
+        view.apply(Action::ToggleDual);
+        view.apply(Action::ToggleGapless);
+        let (odd_left, gapless) = (view.odd_left(), view.gapless());
+        assert!(gapless, "the toggle left gapless off");
+        view.set_view_mode(ViewMode {
+            dual: false,
+            continuous: false,
+        });
+        assert!(!view.dual() && !view.continuous());
+        assert_eq!((view.odd_left(), view.gapless()), (odd_left, gapless));
     }
 
     #[test]
