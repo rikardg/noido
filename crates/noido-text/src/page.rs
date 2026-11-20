@@ -30,11 +30,19 @@ pub const LINE_TOLERANCE: f32 = 4.0;
 pub struct PageText {
     /// Lines joined with newlines.
     text: String,
-    /// Per character of `text`.
-    chars: Vec<CharInfo>,
-    /// Per glyph, its bounds, in the upright frame: the page turned so its
-    /// text runs left to right. Picking and line geometry work there.
-    bounds: Vec<Rect>,
+    /// Per character of `text`: the glyph it came from, [`NO_GLYPH`] for an
+    /// inserted space or newline.
+    sources: Vec<u32>,
+    /// Per line, the index of its first character.
+    line_starts: Vec<u32>,
+    /// Per glyph, its horizontal span in the upright frame: the page turned
+    /// so its text runs left to right.
+    spans: Spans,
+    /// Per line, the union of its glyphs' bounds in the upright frame. Every
+    /// line begins with a glyph (the newline that ends the line before it is
+    /// on that line), so this is `Some` for every line; the option is kept
+    /// for a line that would hold inserted characters only.
+    line_bounds: Vec<Option<Rect>>,
     /// The turn from the upright frame to the page's: the direction most
     /// of the page's text runs in.
     upright: Rotation,
@@ -45,11 +53,76 @@ pub struct PageText {
     marked_hyphens: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct CharInfo {
-    /// The glyph it was drawn with; `None` for inserted spaces and newlines.
-    glyph: Option<usize>,
-    line: usize,
+/// The glyph an inserted space or newline has none of.
+const NO_GLYPH: u32 = u32::MAX;
+/// A compact span stores x and width in sixteenths of a point.
+const SPAN_SCALE: f32 = 16.0;
+/// The least compact coordinate: `i16::MIN` sixteenths of a point.
+const SPAN_MIN: f32 = i16::MIN as f32 / SPAN_SCALE;
+/// The greatest compact coordinate: `i16::MAX` sixteenths of a point.
+const SPAN_LIMIT: f32 = i16::MAX as f32 / SPAN_SCALE;
+
+/// One horizontal span per glyph, in the upright frame. The vertical band
+/// belongs to the line.
+#[derive(Debug)]
+enum Spans {
+    /// x and width at a sixteenth of a point.
+    Compact(Vec<[i16; 2]>),
+    /// x and width in points, for a page whose spans do not fit `i16`.
+    Wide(Vec<[f32; 2]>),
+}
+
+impl Default for Spans {
+    fn default() -> Spans {
+        Spans::Compact(Vec::new())
+    }
+}
+
+impl Spans {
+    /// `rects` compactly when they fit, exactly otherwise.
+    fn new(rects: &[Rect]) -> Spans {
+        let fits = rects
+            .iter()
+            .all(|r| r.x >= SPAN_MIN && r.x + r.width <= SPAN_LIMIT && r.width <= SPAN_LIMIT);
+        if fits {
+            Spans::Compact(
+                rects
+                    .iter()
+                    .map(|r| [sixteenths(r.x), sixteenths(r.width)])
+                    .collect(),
+            )
+        } else {
+            Spans::Wide(rects.iter().map(|r| [r.x, r.width]).collect())
+        }
+    }
+
+    /// The glyph's x and width in the upright frame.
+    fn xw(&self, glyph: usize) -> (f32, f32) {
+        match self {
+            Spans::Compact(spans) => {
+                let [x, width] = spans[glyph];
+                (x as f32 / SPAN_SCALE, width as f32 / SPAN_SCALE)
+            }
+            Spans::Wide(spans) => {
+                let [x, width] = spans[glyph];
+                (x, width)
+            }
+        }
+    }
+
+    fn memory_bytes(&self) -> usize {
+        match self {
+            Spans::Compact(spans) => spans.capacity() * std::mem::size_of::<[i16; 2]>(),
+            Spans::Wide(spans) => spans.capacity() * std::mem::size_of::<[f32; 2]>(),
+        }
+    }
+}
+
+/// `value` points in sixteenths of a point, clamped to `i16`.
+fn sixteenths(value: f32) -> i16 {
+    (value * SPAN_SCALE)
+        .round()
+        .clamp(i16::MIN as f32, i16::MAX as f32) as i16
 }
 
 /// A piece of text from one glyph (with any marks joined to it), or
@@ -80,26 +153,50 @@ impl PageText {
 
     fn build(glyphs: Vec<Glyph>, marked_hyphens: bool) -> PageText {
         let upright = writing_direction(&glyphs);
-        let bounds = glyphs
+        let rects: Vec<Rect> = glyphs
             .iter()
             .map(|g| upright.inverse().rect(bounds_of(g), ZERO))
             .collect();
         let clusters = assemble(&glyphs);
         let mut text = String::new();
-        let mut chars = Vec::new();
+        let mut sources = Vec::new();
+        let mut line_starts = Vec::new();
+        let mut line_bounds: Vec<Option<Rect>> = Vec::new();
         for cluster in clusters {
+            while line_starts.len() <= cluster.line {
+                line_starts
+                    .push(u32::try_from(sources.len()).expect("a page's characters fit in u32"));
+            }
+            if line_bounds.len() <= cluster.line {
+                line_bounds.resize(cluster.line + 1, None);
+            }
+            if let Some(glyph) = cluster.glyph {
+                let b = rects[glyph];
+                line_bounds[cluster.line] = Some(match line_bounds[cluster.line] {
+                    None => b,
+                    Some(line) => union(line, b),
+                });
+            }
             for c in cluster.text.nfc() {
                 text.push(c);
-                chars.push(CharInfo {
-                    glyph: cluster.glyph,
-                    line: cluster.line,
+                sources.push(match cluster.glyph {
+                    Some(glyph) => u32::try_from(glyph).expect("a page's glyphs fit in u32"),
+                    None => NO_GLYPH,
                 });
             }
         }
+        line_bounds.resize(line_starts.len(), None);
+        // Pushed a character at a time; trim the growth the pushes left, so
+        // a page costs its characters and not its next power of two.
+        sources.shrink_to_fit();
+        line_starts.shrink_to_fit();
+        line_bounds.shrink_to_fit();
         PageText {
             text,
-            chars,
-            bounds,
+            sources,
+            line_starts,
+            spans: Spans::new(&rects),
+            line_bounds,
             upright,
             forms: OnceLock::new(),
             marked_hyphens,
@@ -113,7 +210,7 @@ impl PageText {
 
     /// How many `char`s the text has; character indices count these.
     pub fn char_count(&self) -> usize {
-        self.chars.len()
+        self.sources.len()
     }
 
     /// What holding this page costs, in bytes: the struct and the buffers it
@@ -122,26 +219,43 @@ impl PageText {
     pub fn memory_bytes(&self) -> usize {
         std::mem::size_of::<PageText>()
             + self.text.capacity()
-            + self.chars.capacity() * std::mem::size_of::<CharInfo>()
-            + self.bounds.capacity() * std::mem::size_of::<Rect>()
+            + self.sources.capacity() * std::mem::size_of::<u32>()
+            + self.line_starts.capacity() * std::mem::size_of::<u32>()
+            + self.line_bounds.capacity() * std::mem::size_of::<Option<Rect>>()
+            + self.spans.memory_bytes()
             + self.forms.get().map_or(0, Forms::memory_bytes)
     }
 
     /// The line character `char` is on; a newline is on the line it ends.
     pub fn line_of(&self, char: usize) -> usize {
-        self.chars[char].line
+        self.line_starts
+            .partition_point(|&start| start as usize <= char)
+            .checked_sub(1)
+            .expect("a character is on a line")
     }
 
-    /// The bounds of the glyph character `char` was drawn with; `None` for
-    /// inserted spaces and newlines.
+    /// The bounds of the glyph character `char` was drawn with: its span,
+    /// with its line's band for height; `None` for inserted spaces and
+    /// newlines.
     pub fn glyph_bounds(&self, char: usize) -> Option<Rect> {
-        self.chars[char].glyph.map(|g| self.out(self.bounds[g]))
+        let glyph = self.sources[char];
+        (glyph != NO_GLYPH).then(|| {
+            let (x, width) = self.spans.xw(glyph as usize);
+            let band = self.line_bounds[self.line_of(char)].expect("a glyph's line has bounds");
+            self.out(Rect {
+                x,
+                y: band.y,
+                width,
+                height: band.height,
+            })
+        })
     }
 
     /// The index of the glyph character `char` was drawn with; `None` for
     /// inserted spaces and newlines.
     pub fn glyph_of(&self, char: usize) -> Option<usize> {
-        self.chars[char].glyph
+        let glyph = self.sources[char];
+        (glyph != NO_GLYPH).then_some(glyph as usize)
     }
 
     /// `r`, in the upright frame, in the page's.
@@ -165,8 +279,9 @@ impl PageText {
     pub fn line_near(&self, x: Option<f32>, y: Option<f32>) -> Option<Rect> {
         let (x, y) = self.upright_target(x, y);
         self.lines()
-            .into_iter()
+            .iter()
             .flatten()
+            .copied()
             .filter(|r| y.is_none_or(|y| r.y >= y - LINE_TOLERANCE))
             .filter(|r| x.is_none_or(|x| r.x + r.width > x))
             .min_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)))
@@ -179,7 +294,7 @@ impl PageText {
     pub fn bar_across(&self, x: Option<f32>, y: Option<f32>, thickness: f32) -> Option<Rect> {
         let (_, y) = self.upright_target(x, y);
         let y = y?;
-        let rects: Vec<Rect> = self.lines().into_iter().flatten().collect();
+        let rects: Vec<Rect> = self.lines().iter().flatten().copied().collect();
         let left = rects.iter().map(|r| r.x).reduce(f32::min)?;
         let right = rects.iter().map(|r| r.x + r.width).reduce(f32::max)?;
         Some(self.out(Rect {
@@ -204,24 +319,10 @@ impl PageText {
         (known(p.x), known(p.y))
     }
 
-    /// Each line's bounds by line index, in the upright frame; `None` for
-    /// a line without glyphs.
-    pub(crate) fn lines(&self) -> Vec<Option<Rect>> {
-        let mut lines: Vec<Option<Rect>> = Vec::new();
-        for info in &self.chars {
-            let Some(glyph) = info.glyph else {
-                continue;
-            };
-            if lines.len() <= info.line {
-                lines.resize(info.line + 1, None);
-            }
-            let b = self.bounds[glyph];
-            lines[info.line] = Some(match lines[info.line] {
-                None => b,
-                Some(r) => union(r, b),
-            });
-        }
-        lines
+    /// Each line's bounds by line index, in the upright frame. `None` would
+    /// be a line without glyphs, which the assembler does not make.
+    pub(crate) fn lines(&self) -> &[Option<Rect>] {
+        &self.line_bounds
     }
 
     /// The line nearest (`x`, `y`). `None` without glyphs.
@@ -245,7 +346,7 @@ impl PageText {
                 let d = |l| dx(rect(l)).hypot(dy(rect(l)));
                 d(a).total_cmp(&d(b))
             })?;
-        let column = columns(&lines)
+        let column = columns(self.lines())
             .into_iter()
             .find(|column| column.contains(&nearest))?;
         let extent = column
@@ -268,13 +369,34 @@ impl PageText {
         Some((line, beyond))
     }
 
-    /// The characters drawn with a glyph on `line`, with their bounds.
+    /// The characters drawn with a glyph on `line`, with their bounds in
+    /// the upright frame.
     fn glyph_chars(&self, line: usize) -> impl Iterator<Item = (usize, Rect)> + '_ {
-        self.chars
+        let start = self.line_starts[line] as usize;
+        let end = self
+            .line_starts
+            .get(line + 1)
+            .map_or(self.sources.len(), |&start| start as usize);
+        let band = self.line_bounds[line];
+        self.sources[start..end]
             .iter()
             .enumerate()
-            .filter(move |(_, info)| info.line == line)
-            .filter_map(|(i, info)| info.glyph.map(|g| (i, self.bounds[g])))
+            .filter_map(move |(i, &glyph)| {
+                if glyph == NO_GLYPH {
+                    return None;
+                }
+                let (x, width) = self.spans.xw(glyph as usize);
+                let band = band.expect("a glyph's line has bounds");
+                Some((
+                    start + i,
+                    Rect {
+                        x,
+                        y: band.y,
+                        width,
+                        height: band.height,
+                    },
+                ))
+            })
     }
 
     /// The caret (`0..=char_count`) a point at (`x`, `y`) places: on the
@@ -331,33 +453,45 @@ impl PageText {
     pub fn line_range_at(&self, x: f32, y: f32) -> Option<Range<usize>> {
         let (x, y) = self.upright_point(x, y);
         let line = self.line_at(x, y)?;
-        let start = self.chars.iter().position(|c| c.line == line)?;
-        let mut end = self.chars.iter().rposition(|c| c.line == line)? + 1;
-        if self.text.chars().nth(end - 1) == Some('\n') {
-            end -= 1;
-        }
+        let start = self.line_starts[line] as usize;
+        // A line that is not the last ends with the newline the next one
+        // starts after; the last has no newline of its own.
+        let end = self
+            .line_starts
+            .get(line + 1)
+            .map_or(self.sources.len(), |&next| next as usize - 1);
         Some(start..end)
     }
 
     /// One rectangle per line `range` touches: the union of its glyphs
     /// there, as tall as the whole line.
     pub fn rects(&self, range: Range<usize>) -> Vec<Rect> {
-        let lines = self.lines();
+        let start = range.start.min(self.sources.len());
+        let end = range.end.min(self.sources.len());
+        if start >= end {
+            return Vec::new();
+        }
+        let mut line = self.line_of(start);
         let mut out: Vec<(usize, Rect)> = Vec::new();
-        for i in range.start..range.end.min(self.chars.len()) {
-            let info = self.chars[i];
-            let (Some(g), Some(Some(line))) = (info.glyph, lines.get(info.line)) else {
+        for i in start..end {
+            while line + 1 < self.line_starts.len() && i >= self.line_starts[line + 1] as usize {
+                line += 1;
+            }
+            let glyph = self.sources[i];
+            if glyph == NO_GLYPH {
                 continue;
-            };
-            let b = self.bounds[g];
+            }
+            let (x, width) = self.spans.xw(glyph as usize);
+            let band = self.line_bounds[line].expect("a glyph's line has bounds");
             let b = Rect {
-                y: line.y,
-                height: line.height,
-                ..b
+                x,
+                y: band.y,
+                width,
+                height: band.height,
             };
             match out.last_mut() {
-                Some((l, r)) if *l == info.line => *r = union(*r, b),
-                _ => out.push((info.line, b)),
+                Some((l, r)) if *l == line => *r = union(*r, b),
+                _ => out.push((line, b)),
             }
         }
         out.into_iter().map(|(_, r)| self.out(r)).collect()
@@ -367,28 +501,31 @@ impl PageText {
     /// edge of the glyph after it, or the right edge of the glyph before
     /// it (the end of a line). `None` without glyphs.
     pub fn caret_rect(&self, caret: usize) -> Option<Rect> {
-        let lines = self.lines();
         let at = |i: usize, right: bool| {
-            let info = self.chars[i];
-            let b = self.bounds[info.glyph?];
-            let line = (*lines.get(info.line)?)?;
+            let glyph = self.sources[i];
+            if glyph == NO_GLYPH {
+                return None;
+            }
+            let (x, width) = self.spans.xw(glyph as usize);
+            let line = self.line_of(i);
+            let band = self.line_bounds[line].expect("a glyph's line has bounds");
             Some(Rect {
-                x: if right { b.x + b.width } else { b.x },
-                y: line.y,
+                x: if right { x + width } else { x },
+                y: band.y,
                 width: 0.0,
-                height: line.height,
+                height: band.height,
             })
         };
-        if caret < self.chars.len()
+        if caret < self.sources.len()
             && let Some(r) = at(caret, false)
         {
             return Some(self.out(r));
         }
-        let before = (0..caret.min(self.chars.len()))
+        let before = (0..caret.min(self.sources.len()))
             .rev()
             .find_map(|i| at(i, true));
         before
-            .or_else(|| (caret..self.chars.len()).find_map(|i| at(i, false)))
+            .or_else(|| (caret..self.sources.len()).find_map(|i| at(i, false)))
             .map(|r| self.out(r))
     }
 
@@ -400,8 +537,12 @@ impl PageText {
 
     /// [`PageText::line_rect_of`] in the upright frame.
     pub(crate) fn upright_line_rect_of(&self, char: usize) -> Option<Rect> {
-        let line = self.chars.get(char).or(self.chars.last())?.line;
-        *self.lines().get(line)?
+        let line = if char < self.sources.len() {
+            self.line_of(char)
+        } else {
+            self.line_starts.len().checked_sub(1)?
+        };
+        self.line_bounds.get(line).copied().flatten()
     }
 }
 
@@ -726,6 +867,16 @@ mod tests {
         width: 0.0,
         height: 0.0,
     };
+
+    /// What `memory_bytes` should report, from the page's own buffers.
+    fn parts(page: &PageText) -> usize {
+        std::mem::size_of::<PageText>()
+            + page.text.capacity()
+            + page.sources.capacity() * std::mem::size_of::<u32>()
+            + page.line_starts.capacity() * std::mem::size_of::<u32>()
+            + page.line_bounds.capacity() * std::mem::size_of::<Option<Rect>>()
+            + page.spans.memory_bytes()
+    }
 
     #[test]
     fn a_character_knows_its_glyph_and_inserted_ones_have_none() {
@@ -1174,16 +1325,46 @@ mod tests {
         assert_eq!(page.text(), "ab cd");
         assert!(page.glyph_bounds(1).is_some());
         assert_eq!(page.glyph_bounds(2), None);
+        assert_eq!(page.line_of(2), 0, "the inserted space is on line 0");
+        assert_eq!(page.glyph_of(2), None);
+    }
+
+    #[test]
+    fn a_page_of_prose_costs_under_forty_kilobytes() {
+        let lines: Vec<String> = (0..44)
+            .map(|_| "the quick brown fox jumps over the lazy dog. ".to_owned())
+            .collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let page = PageText::new(page(&refs));
+        assert!(
+            page.memory_bytes() < 40_000,
+            "{} bytes for {} characters",
+            page.memory_bytes(),
+            page.char_count()
+        );
+    }
+
+    #[test]
+    fn a_glyphs_bounds_is_its_lines_band() {
+        // A 10 pt glyph and a 20 pt one on one baseline: the line's band is
+        // the taller glyph's extent, 84..104.
+        let small = glyph_along("a", 72.0, 100.0, 10.0, 0.5, (1.0, 0.0));
+        let large = glyph_along("b", 77.0, 100.0, 20.0, 0.5, (1.0, 0.0));
+        let page = PageText::new(vec![small, large]);
+        assert_eq!(page.glyph_bounds(0), Some(rect(72.0, 84.0, 5.0, 20.0)));
+        assert_eq!(page.glyph_bounds(1), Some(rect(77.0, 84.0, 10.0, 20.0)));
     }
 
     #[test]
     fn a_page_costs_what_it_holds() {
         let page = PageText::new(page(&["the cat sat", "on the mat"]));
-        let parts = std::mem::size_of::<PageText>()
-            + page.text.capacity()
-            + page.chars.capacity() * std::mem::size_of::<CharInfo>()
-            + page.bounds.capacity() * std::mem::size_of::<Rect>();
-        assert_eq!(page.memory_bytes(), parts);
+        assert_eq!(page.memory_bytes(), parts(&page));
+        assert!(matches!(page.spans, Spans::Compact(_)));
+        // 21 glyphs at four bytes each, whatever the bookkeeping costs.
+        assert_eq!(
+            page.spans.memory_bytes(),
+            21 * std::mem::size_of::<[i16; 2]>()
+        );
 
         // Searching it folds both forms and keeps them: the page costs more
         // from then on, which is what a budget has to see. The two folded
@@ -1200,11 +1381,56 @@ mod tests {
     }
 
     #[test]
+    fn a_page_whose_spans_do_not_fit_keeps_exact_points() {
+        let page = PageText::new(vec![glyph("a", 5000.0, 100.0, 10.0)]);
+        assert!(matches!(page.spans, Spans::Wide(_)));
+        assert_eq!(page.glyph_bounds(0), Some(rect(5000.0, 92.0, 5.0, 10.0)));
+        assert_eq!(page.memory_bytes(), parts(&page));
+        assert_eq!(page.spans.memory_bytes(), std::mem::size_of::<[f32; 2]>());
+    }
+
+    #[test]
+    fn a_span_wider_than_i16_is_not_clamped() {
+        // 3000 pt wide, straddling the origin: its right edge fits, its
+        // width does not.
+        let wide = glyph_along("a", -1500.0, 100.0, 10.0, 300.0, (1.0, 0.0));
+        let page = PageText::new(vec![wide]);
+        assert!(matches!(page.spans, Spans::Wide(_)));
+        assert_eq!(
+            page.glyph_bounds(0),
+            Some(rect(-1500.0, 92.0, 3000.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn the_least_compact_span_is_still_compact() {
+        let page = PageText::new(vec![glyph("a", -2048.0, 100.0, 10.0)]);
+        assert!(matches!(page.spans, Spans::Compact(_)));
+        assert_eq!(page.glyph_bounds(0), Some(rect(-2048.0, 92.0, 5.0, 10.0)));
+    }
+
+    #[test]
+    fn compact_spans_round_to_a_sixteenth_of_a_point() {
+        let page = PageText::new(vec![glyph("a", 72.03, 100.0, 10.0)]);
+        let r = page.glyph_bounds(0).unwrap();
+        assert!((r.x - 72.03).abs() <= 1.0 / 32.0, "{r:?}");
+        // The right edge moves by x's and width's roundings together.
+        assert!((r.x + r.width - 77.03).abs() <= 1.0 / 16.0, "{r:?}");
+    }
+
+    #[test]
     fn lines_are_numbered() {
         let page = PageText::new(page(&["ab", "cd"]));
         let lines: Vec<usize> = (0..page.char_count()).map(|c| page.line_of(c)).collect();
         // The newline belongs to the line it ends.
         assert_eq!(lines, [0, 0, 0, 1, 1]);
+    }
+
+    #[test]
+    fn line_range_excludes_the_newline() {
+        let page = PageText::new(page(&["ab", "cd"]));
+        assert_eq!(page.line_range_at(75.0, 97.0), Some(0..2));
+        assert_eq!(page.line_range_at(75.0, 111.0), Some(3..5));
     }
 
     #[test]

@@ -85,7 +85,7 @@ fn piece(page: &PageText, range: Range<usize>) -> String {
 
 /// The median step between the tops of the page's consecutive lines.
 fn usual_step(page: &PageText) -> Option<f32> {
-    let tops: Vec<f32> = page.lines().into_iter().flatten().map(|r| r.y).collect();
+    let tops: Vec<f32> = page.lines().iter().flatten().map(|r| r.y).collect();
     let mut steps: Vec<f32> = tops
         .windows(2)
         .map(|w| w[1] - w[0])
