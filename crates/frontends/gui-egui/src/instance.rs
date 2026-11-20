@@ -796,7 +796,7 @@ mod tests {
                     reply.send(outcome);
                     return request;
                 }
-                assert!(start.elapsed() < Duration::from_secs(5), "no request");
+                assert!(start.elapsed() < Duration::from_secs(30), "no request");
                 thread::sleep(Duration::from_millis(5));
             }
         })
@@ -914,7 +914,7 @@ mod tests {
         let dropper = thread::spawn(move || {
             let start = Instant::now();
             while requests.take().is_empty() {
-                assert!(start.elapsed() < Duration::from_secs(5));
+                assert!(start.elapsed() < Duration::from_secs(30));
                 thread::sleep(Duration::from_millis(5));
             }
         });

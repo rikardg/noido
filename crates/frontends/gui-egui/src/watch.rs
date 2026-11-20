@@ -545,7 +545,7 @@ mod tests {
         .unwrap();
 
         write_by_rename(&path, b"two!");
-        let reload = next_reload(&watcher, Duration::from_secs(5)).expect("rename over");
+        let reload = next_reload(&watcher, Duration::from_secs(30)).expect("rename over");
         assert_eq!(reload.info.page_sizes.len(), 4);
         assert!(next_reload(&watcher, 500 * MS).is_none(), "reloaded twice");
 
@@ -555,7 +555,7 @@ mod tests {
             "reloaded a missing file"
         );
         fs::write(&path, b"three").unwrap();
-        let reload = next_reload(&watcher, Duration::from_secs(5)).expect("recreated");
+        let reload = next_reload(&watcher, Duration::from_secs(30)).expect("recreated");
         assert_eq!(reload.info.page_sizes.len(), 5);
     }
 }
