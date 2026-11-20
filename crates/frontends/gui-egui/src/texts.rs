@@ -7,11 +7,11 @@ use std::sync::Arc;
 use noido_core::PageTextState;
 use noido_text::PageText;
 
-/// How many bytes of page text are kept. A page of prose is about 150 kB, so
-/// this is some two hundred pages, or fewer with their folded forms and a
-/// selection across them: more reach than a reader has, and a bound on the
+/// How many bytes of page text are kept. A page of prose is about 20 kB
+/// unsearched and 100 kB with its folded forms, so this is some eight hundred
+/// pages, or 160 searched: more reach than a reader has, and a bound on the
 /// document rather than a working set.
-pub const TEXT_BUDGET: usize = 32 << 20;
+pub const TEXT_BUDGET: usize = 16 << 20;
 
 enum Slot {
     Unasked,
