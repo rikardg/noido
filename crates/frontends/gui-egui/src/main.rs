@@ -885,6 +885,11 @@ mod tests {
         std::os::unix::process::ExitStatusExt::from_raw(code << 8)
     }
 
+    /// A launch in these tests answers on the first poll, so the wait is
+    /// never reached: it keeps a hang from lasting forever.
+    #[cfg(target_os = "macos")]
+    const LAUNCH_WAIT: Duration = Duration::from_secs(30);
+
     #[cfg(target_os = "macos")]
     #[test]
     fn a_started_app_that_lost_a_race_hands_over_to_the_winner() {
@@ -898,7 +903,7 @@ mod tests {
                 (sends > 1).then_some(Answer::Opened { pid: Some(7) })
             },
             || Some(exit(0)),
-            Duration::from_secs(5),
+            LAUNCH_WAIT,
             Duration::ZERO,
         );
         assert_eq!(answer, Ok(Some(Answer::Opened { pid: Some(7) })));
@@ -908,12 +913,7 @@ mod tests {
     #[test]
     fn a_started_app_that_quit_with_nobody_listening_is_a_failure() {
         for code in [0, 1] {
-            let answer = await_app(
-                || None,
-                || Some(exit(code)),
-                Duration::from_secs(5),
-                Duration::ZERO,
-            );
+            let answer = await_app(|| None, || Some(exit(code)), LAUNCH_WAIT, Duration::ZERO);
             assert!(
                 matches!(&answer, Err(e) if e.contains("quit at once")),
                 "{code}: {answer:?}"
@@ -931,7 +931,7 @@ mod tests {
                 None
             },
             || Some(exit(1)),
-            Duration::from_secs(5),
+            LAUNCH_WAIT,
             Duration::ZERO,
         );
         assert!(answer.is_err());
