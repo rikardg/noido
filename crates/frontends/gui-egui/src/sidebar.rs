@@ -10,9 +10,9 @@ use eframe::egui::scroll_area::{DragScroll, ScrollSource};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Color32, Rect, ScrollArea, Sense, Stroke, vec2};
 use noido_core::{
-    Column, Eased, Highlight, Hits, Keep, Keymap, Layout, MAX_RENDER_SIDE, OutlineRow, OutlineTree,
-    Pace, PageNumber, PageNumbers, PageTextState, Pins, RenderTracker, SIDEBAR_MIN_WIDTH,
-    SidebarState, SidebarTab, max_width, render_scale, reveal_row,
+    Action, Column, Eased, Highlight, Hits, Keep, Keymap, Layout, MAX_RENDER_SIDE, OutlineRow,
+    OutlineTree, Pace, PageNumber, PageNumbers, PageTextState, Pins, RenderTracker,
+    SIDEBAR_MIN_WIDTH, SidebarState, SidebarTab, ViewMode, max_width, render_scale, reveal_row,
 };
 use noido_engine::LinkTarget;
 use noido_render::{RenderRequest, Renderer};
@@ -119,6 +119,12 @@ pub struct Input<'a> {
     pub locations: &'a noido_engine::LocationMap,
     /// How the reader turns pages, for the right-click menu's check.
     pub transforms: &'a noido_render::Transforms,
+    /// How the pages are laid out, for the right-click menu's check.
+    pub view_mode: ViewMode,
+    /// The rest of the view's checks, for the same menu.
+    pub odd_left: bool,
+    pub gapless: bool,
+    pub scale_to_fit: bool,
     /// The bindings, for the right-click menu's shortcut labels.
     pub keymap: &'a Keymap,
     /// The page the pagelet shows, if it is open.
@@ -156,6 +162,11 @@ pub struct Output {
     /// A link was asked for from a card's right-click menu: the page it
     /// points at, and whether it is the Markdown form.
     pub copy_link: Option<(usize, bool)>,
+    /// A view mode was chosen from a card's right-click menu.
+    pub view_mode: Option<ViewMode>,
+    /// A view entry was chosen from a card's right-click menu: an action
+    /// for the app to carry out.
+    pub action: Option<Action>,
 }
 
 /// A visible outline row, for the tests.
@@ -935,6 +946,8 @@ impl SidebarView {
         let mut pagelet = None;
         let mut rotate = None;
         let mut copy_link = None;
+        let mut view_mode = None;
+        let mut action = None;
         let now = ui.input(|i| i.time);
         let mut fading = false;
         self.drawn.clear();
@@ -955,13 +968,25 @@ impl SidebarView {
             if thumb.clicked() {
                 clicked = Some(page);
             }
-            let current = input.transforms.get(page).rotation;
-            match crate::rotation_menu::on(&thumb, current, input.keymap) {
+            let state = crate::rotation_menu::State {
+                rotation: input.transforms.get(page).rotation,
+                mode: input.view_mode,
+                odd_left: input.odd_left,
+                gapless: input.gapless,
+                scale_to_fit: input.scale_to_fit,
+            };
+            match crate::rotation_menu::on(&thumb, state, input.keymap) {
                 Some(Some(crate::rotation_menu::Choice::Rotation(rotation))) => {
                     rotate = Some((page, rotation));
                 }
                 Some(Some(crate::rotation_menu::Choice::CopyLink { markdown })) => {
                     copy_link = Some((page, markdown));
+                }
+                Some(Some(crate::rotation_menu::Choice::ViewMode(mode))) => {
+                    view_mode = Some(mode);
+                }
+                Some(Some(crate::rotation_menu::Choice::Action(chosen))) => {
+                    action = Some(chosen);
                 }
                 _ => {}
             }
@@ -1091,6 +1116,8 @@ impl SidebarView {
             pagelet,
             rotate,
             copy_link,
+            view_mode,
+            action,
             ..Output::default()
         }
     }
@@ -1181,6 +1208,8 @@ impl SidebarView {
             pagelet: shown.inner.pagelet,
             rotate: shown.inner.rotate,
             copy_link: shown.inner.copy_link,
+            view_mode: shown.inner.view_mode,
+            action: shown.inner.action,
             ..Output::default()
         }
     }
