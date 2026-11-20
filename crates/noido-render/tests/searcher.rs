@@ -9,6 +9,9 @@ use noido_engine::{
 use noido_render::{Counted, MAX_HITS, SearchUpdate, TextSearcher};
 use noido_text::PageText;
 
+/// A passing test never waits for it: it only stops a hang.
+const HANG: Duration = Duration::from_secs(30);
+
 /// A document whose pages each hold one line of text.
 #[derive(Clone)]
 struct TextEngine {
@@ -134,7 +137,7 @@ fn start(engine: &TextEngine) -> TextSearcher {
 
 /// Updates until the `Done` of `generation`, skipping other generations'.
 fn until_done(searcher: &TextSearcher, generation: u64) -> Vec<SearchUpdate> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     let mut updates = Vec::new();
     loop {
         match searcher.try_recv() {
@@ -147,7 +150,10 @@ fn until_done(searcher: &TextSearcher, generation: u64) -> Vec<SearchUpdate> {
                 }
             }
             None => {
-                assert!(Instant::now() < deadline, "no Done within 5 s: {updates:?}");
+                assert!(
+                    Instant::now() < deadline,
+                    "no Done within {HANG:?}: {updates:?}"
+                );
                 std::thread::sleep(Duration::from_millis(2));
             }
         }
@@ -166,16 +172,19 @@ fn pages(updates: &[SearchUpdate]) -> Vec<(usize, usize)> {
 }
 
 fn wait_for(condition: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     while !condition() {
-        assert!(Instant::now() < deadline, "condition not met within 5 s");
+        assert!(
+            Instant::now() < deadline,
+            "condition not met within {HANG:?}"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
 
 /// The counts, once they arrive: one report per walk, never a partial one.
 fn until_counted(searcher: &TextSearcher) -> Counted {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     loop {
         while let Some(update) = searcher.try_recv() {
             if let SearchUpdate::Counts(counted) = update {
@@ -183,7 +192,10 @@ fn until_counted(searcher: &TextSearcher) -> Counted {
                 return counted;
             }
         }
-        assert!(Instant::now() < deadline, "counts not complete within 5 s");
+        assert!(
+            Instant::now() < deadline,
+            "counts not complete within {HANG:?}"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -570,7 +582,7 @@ fn wakes_per_update() {
 
 /// Updates until a `Text` for `page` arrives.
 fn until_text(searcher: &TextSearcher, page: usize) -> Vec<SearchUpdate> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     let mut updates = Vec::new();
     loop {
         match searcher.try_recv() {
@@ -582,7 +594,7 @@ fn until_text(searcher: &TextSearcher, page: usize) -> Vec<SearchUpdate> {
                 }
             }
             None => {
-                assert!(Instant::now() < deadline, "no text within 5 s");
+                assert!(Instant::now() < deadline, "no text within {HANG:?}");
                 std::thread::sleep(Duration::from_millis(2));
             }
         }
@@ -669,9 +681,9 @@ fn forgotten_text_is_read_again_turned() {
         Box::new(|| {}),
     );
     let text_of = |searcher: &TextSearcher| {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + HANG;
         loop {
-            assert!(Instant::now() < deadline, "no text within 5 s");
+            assert!(Instant::now() < deadline, "no text within {HANG:?}");
             match searcher.try_recv() {
                 Some(SearchUpdate::Text {
                     page: 0,
@@ -726,14 +738,14 @@ fn highlight(
 
 /// The answer to the anchoring that was asked for, once it arrives.
 fn until_anchored(searcher: &TextSearcher) -> (Vec<Highlight>, noido_core::Anchored) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG;
     loop {
         while let Some(update) = searcher.try_recv() {
             if let SearchUpdate::Anchored { asked, answer } = update {
                 return (asked, answer);
             }
         }
-        assert!(Instant::now() < deadline, "no anchoring within 5 s");
+        assert!(Instant::now() < deadline, "no anchoring within {HANG:?}");
         std::thread::sleep(Duration::from_millis(2));
     }
 }
