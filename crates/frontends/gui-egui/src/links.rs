@@ -270,10 +270,18 @@ mod tests {
         links
     }
 
-    /// Takes in replies until one gives an answer, or a second has passed.
-    fn answer(links: &mut Links) -> Option<Named> {
+    /// A passing test never waits for it: it only stops a hang.
+    const HANG: Duration = Duration::from_secs(30);
+
+    /// How long a name that should not be answered gets to answer
+    /// anyway: a reply would come at once, so this only catches a wrong
+    /// one, and an expired limit is how the test waits.
+    const QUIET: Duration = Duration::from_secs(1);
+
+    /// Takes in replies until one gives an answer, or `limit` has passed.
+    fn answer(links: &mut Links, limit: Duration) -> Option<Named> {
         let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(1) {
+        while start.elapsed() < limit {
             if let Some(named) = links.receive(0.0, &Transforms::default()) {
                 return Some(named);
             }
@@ -294,14 +302,17 @@ mod tests {
     fn a_named_place_is_found() {
         let mut links = links();
         links.resolve("a".into());
-        assert_eq!(answer(&mut links), found(1));
+        assert_eq!(answer(&mut links, HANG), found(1));
     }
 
     #[test]
     fn an_unknown_name_says_so() {
         let mut links = links();
         links.resolve("nope".into());
-        assert_eq!(answer(&mut links), Some(Named::Unknown("nope".into())));
+        assert_eq!(
+            answer(&mut links, HANG),
+            Some(Named::Unknown("nope".into()))
+        );
     }
 
     #[test]
@@ -309,8 +320,8 @@ mod tests {
         let mut links = links();
         links.resolve("a".into());
         links.resolve("b".into());
-        assert_eq!(answer(&mut links), found(0));
-        assert_eq!(answer(&mut links), None);
+        assert_eq!(answer(&mut links, HANG), found(0));
+        assert_eq!(answer(&mut links, QUIET), None);
     }
 
     #[test]
@@ -318,6 +329,6 @@ mod tests {
         let mut links = links();
         links.resolve("a".into());
         links.cancel_named();
-        assert_eq!(answer(&mut links), None);
+        assert_eq!(answer(&mut links, QUIET), None);
     }
 }
