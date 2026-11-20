@@ -7455,10 +7455,32 @@ pub(crate) mod tests {
 
     fn show_info(h: &mut Harness) {
         h.press(egui::Key::I, Modifiers::COMMAND);
-        // The page takes its new size as the properties arrive; wait for its
-        // last font row rather than a fixed number of frames.
-        h.until(|h| h.text_rect("Regular, Italic").is_some());
         assert!(h.app.info_page.is_some(), "document info not shown");
+        // The page takes its new size as the properties arrive, and the
+        // dialog then grows to it over a few frames. Settle on the
+        // dialog's rect holding still with the properties drawn: a row
+        // at the page's end would never settle in a window too short to
+        // show it. Every call site's fixture is titled "Info Title"; its
+        // row proves the reply landed. `until` gives up silently, so the
+        // condition is asserted, not assumed.
+        let last = std::cell::Cell::new(None);
+        let settled = |h: &Harness| {
+            let now = h
+                .ctx
+                .memory(|m| m.area_rect(egui::Id::unique("document-info")));
+            let same = now.is_some() && now == last.get() && h.text_rect("Info Title").is_some();
+            last.set(now);
+            same
+        };
+        h.until(settled);
+        // A give-up means one of two things, and the failing assert says
+        // which: the reply never landed, or the dialog never stopped
+        // growing.
+        assert!(
+            h.text_rect("Info Title").is_some(),
+            "the properties never arrived"
+        );
+        assert!(settled(h), "the info dialog never settled");
     }
 
     #[test]
