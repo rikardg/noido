@@ -7,7 +7,6 @@ use std::ops::Range;
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
-use crate::page::union;
 use crate::{PageText, Rect};
 
 /// Characters of context before and after a hit, about.
@@ -242,26 +241,10 @@ impl PageText {
 
     fn hit(&self, chars: &[char], range: Range<usize>) -> TextHit {
         TextHit {
-            rects: self.hit_rects(range.clone()),
+            rects: self.rects(range.clone()),
             context: context(chars, range.clone()),
             range,
         }
-    }
-
-    /// One rectangle per line `range` touches: the union of its glyphs there.
-    fn hit_rects(&self, range: Range<usize>) -> Vec<Rect> {
-        let mut rects: Vec<(usize, Rect)> = Vec::new();
-        for c in range {
-            let Some(bounds) = self.glyph_bounds(c) else {
-                continue;
-            };
-            let line = self.line_of(c);
-            match rects.last_mut() {
-                Some((l, rect)) if *l == line => *rect = union(*rect, bounds),
-                _ => rects.push((line, bounds)),
-            }
-        }
-        rects.into_iter().map(|(_, rect)| rect).collect()
     }
 }
 
@@ -459,6 +442,17 @@ mod tests {
     fn hit_on_one_line_has_one_rect() {
         let hits = find(&["the black cat"], "black");
         assert_eq!(hits[0].rects.len(), 1);
+    }
+
+    #[test]
+    fn hit_rects_are_the_selection_rects() {
+        use noido_engine::Rotation;
+        let glyphs = page(&["the black", "cat sat"]);
+        for rotation in Rotation::ALL {
+            let page = PageText::new(crate::testing::turned(glyphs.clone(), rotation));
+            let hit = &page.find(&Query::new("black cat").unwrap())[0];
+            assert_eq!(hit.rects, page.rects(hit.range.clone()), "{rotation:?}");
+        }
     }
 
     fn bold(hit: &TextHit) -> String {
