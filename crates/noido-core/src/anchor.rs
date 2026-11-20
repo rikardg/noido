@@ -346,6 +346,13 @@ pub fn requote(h: &mut Highlight, window: &Joined) {
     });
 }
 
+// The characters [`anchor`]'s walk has joined, counted only in tests:
+// the linearity test below reads it. A release build has none of it.
+#[cfg(test)]
+thread_local! {
+    static WALKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Anchors `highlights` against `pages`, all in memory: checks each where
 /// it was, then, with `relocate`, walks the pages for those that need
 /// searching; without it they are left as they are.
@@ -377,6 +384,12 @@ pub fn anchor(
         let mut walk = Walk::new(pending);
         for page in 0..n {
             let w = walk.window(page, n);
+            #[cfg(test)]
+            {
+                WALKED.with(|c| {
+                    c.set(c.get() + w.clone().map(|i| pages[i].char_count()).sum::<usize>())
+                });
+            }
             walk.page(page, &Joined::new(*w.start(), &pages[w]));
         }
         let counts: Vec<usize> = pages.iter().map(|p| p.char_count()).collect();
@@ -396,8 +409,6 @@ pub fn anchor(
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
-
     use noido_text::testing::page;
     use noido_text::{Joined, PageText, Span};
 
@@ -930,13 +941,19 @@ mod tests {
         let mut pages: Vec<PageText> = (0..300).map(|_| text(&[line; 5])).collect();
         pages[150] = text(&["a a a x a a a"]);
         let h = quoted((3, 0), (3, 1), "a", "a a x ", " a a");
-        let start = Instant::now();
+        WALKED.with(|c| c.set(0));
         let out = anchor(&[h], &refs(&pages), false, true);
-        let took = start.elapsed();
         assert_eq!(span_of(&out.items[0]), ((150, 8), (150, 9)));
-        // A debug build, run beside hundreds of other tests on a shared
-        // machine: about 35 ms here, 180 ms on the slowest CI runner. A
-        // second still fails a walk that has gone quadratic.
-        assert!(took < Duration::from_secs(1), "took {took:?}");
+        // Each page joins a window of at most three pages, so a walk
+        // that stays linear reads at most three times the document's
+        // text, whatever its pages hold; six allows for the edges. A
+        // window that grows with the document reads it once per page, a
+        // few hundred times more.
+        let walked = WALKED.with(|c| c.get());
+        let total = pages.iter().map(|p| p.char_count()).sum::<usize>();
+        assert!(
+            walked < 6 * total,
+            "walked {walked} characters over a document of {total}"
+        );
     }
 }
