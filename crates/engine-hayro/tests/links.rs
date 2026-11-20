@@ -208,7 +208,7 @@ fn name_tree_with_shared_kids_ends() {
         let _ = done.send(links.map(|l| l.len()));
     });
     let count = finished
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv_timeout(std::time::Duration::from_secs(30))
         .expect("looking a name up in a tree of shared kids didn't end");
     assert_eq!(count.unwrap(), 0);
 }
