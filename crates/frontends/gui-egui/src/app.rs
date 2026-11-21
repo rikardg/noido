@@ -299,6 +299,9 @@ pub struct NoidoApp {
     requests: Option<crate::shell::Requests>,
     /// The recently opened files, newest first, as the menu offers them.
     recent: Vec<PathBuf>,
+    /// The desktop's own recent list, where this window notes what it opens
+    /// and what it forgets; none for a window without one.
+    desktop_recents: Option<crate::desktop_recents::Recents>,
     /// A window size asked for by fitting the window to the page, and the
     /// corrections left, until the window has it.
     shrink: Option<Shrink>,
@@ -435,6 +438,7 @@ impl NoidoApp {
             screen_edge: None,
             page_key_repeated: false,
             recent: Vec::new(),
+            desktop_recents: None,
             shrink: None,
         }
     }
@@ -934,6 +938,13 @@ impl NoidoApp {
     /// The recently opened files the menu offers, newest first.
     pub fn set_recent(&mut self, paths: Vec<PathBuf>) {
         self.recent = paths;
+    }
+
+    /// Gives the window the desktop's recent list, so that "Clear recent"
+    /// also removes noido's entries from it. The opens themselves are noted
+    /// at launch, in `with_recent`.
+    pub fn set_desktop_recents(&mut self, recents: crate::desktop_recents::Recents) {
+        self.desktop_recents = Some(recents);
     }
 
     /// Puts `path` at the front of the menu's recent files, in the store
@@ -1805,6 +1816,11 @@ impl NoidoApp {
                         && let Err(e) = persistence.store.clear_recent()
                     {
                         eprintln!("noido: cannot clear the recent files: {e}");
+                    }
+                    if let Some(recents) = &self.desktop_recents
+                        && let Err(e) = recents.clear()
+                    {
+                        eprintln!("noido: cannot clear the desktop's recent files: {e}");
                     }
                     self.recent.clear();
                 }
@@ -6755,6 +6771,29 @@ pub(crate) mod tests {
         h.app.apply(&ctx, None, Action::ClearRecent);
         assert!(store.load_recent().is_empty());
         assert!(h.app.recent.is_empty());
+    }
+
+    #[test]
+    fn without_a_shell_clearing_the_recent_files_clears_the_desktop_list() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let a = dir.path().join("a.pdf");
+        fs::write(&a, b"pdf").unwrap();
+        store.note_recent(&a).unwrap();
+        let list = dir.path().join("recently-used.xbel");
+        let recents = crate::desktop_recents::Recents::at(&list);
+        recents.note(&a).unwrap();
+        let before = fs::read_to_string(&list).unwrap();
+        assert!(before.contains("name=\"noido\""));
+        let mut h = persisting_harness(&store, &a);
+        h.app.set_desktop_recents(recents);
+        let ctx = h.ctx.clone();
+
+        h.app.apply(&ctx, None, Action::ClearRecent);
+
+        let after = fs::read_to_string(&list).unwrap();
+        assert!(!after.contains("name=\"noido\""), "{after}");
+        assert!(!after.contains("a.pdf"), "{after}");
     }
 
     #[test]
