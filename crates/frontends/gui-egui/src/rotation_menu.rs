@@ -1,14 +1,15 @@
-//! The right-click menu on a page: the ways to link it, how the pages are
-//! laid out, and a submenu of the four absolute angles that turn it,
-//! clockwise from the page as the PDF shows it.
+//! The right-click menu on a page: the select tool, the ways to link it,
+//! how the pages are laid out, and a submenu of the four absolute angles
+//! that turn it, clockwise from the page as the PDF shows it.
 
 use eframe::egui::{self, Color32, RichText};
 use noido_core::{
-    Action, Check, Keymap, Platform, Rotation, ViewMode, shortcut_label, view_entries,
+    Action, Check, Keymap, Platform, Rotation, ViewMode, select_tool_entry, shortcut_label,
+    view_entries,
 };
 
-/// What the page menu shows: the page's turn and how the pages are laid
-/// out.
+/// What the page menu shows: the page's turn, how the pages are laid
+/// out, and whether the select tool is on.
 #[derive(Clone, Copy, Debug)]
 pub struct State {
     pub rotation: Rotation,
@@ -16,6 +17,10 @@ pub struct State {
     pub odd_left: bool,
     pub gapless: bool,
     pub scale_to_fit: bool,
+    /// The select tool's state, for the page in the main view. The menus on
+    /// a thumbnail or a pin card are about that card, not the tool: they
+    /// pass `None` and leave the entry out.
+    pub select_tool: Option<bool>,
 }
 
 impl State {
@@ -27,7 +32,8 @@ impl State {
             Some(Check::OddLeft) => self.odd_left,
             Some(Check::Gapless) => self.gapless,
             Some(Check::ScaleToFit) => self.scale_to_fit,
-            Some(Check::Sidebar | Check::SelectTool | Check::Fullscreen) | None => false,
+            Some(Check::SelectTool) => self.select_tool == Some(true),
+            Some(Check::Sidebar | Check::Fullscreen) | None => false,
         }
     }
 }
@@ -146,6 +152,19 @@ fn page_menu(ui: &mut egui::Ui, state: State, keymap: &Keymap) -> Option<Choice>
         })
     };
     let mut chosen = None;
+    // The select tool is a mode, not a one-shot action: it sits on its own
+    // at the top, where a right-click meant to start selecting finds it.
+    if state.select_tool.is_some() {
+        let entry = select_tool_entry();
+        let label = RichText::new(entry.label).color(text);
+        let button = egui::Button::new((mark(state.checked(entry.check)), label))
+            .shortcut_text(shortcut(entry.action));
+        if ui.add(button).clicked() {
+            chosen = Some(Choice::Action(entry.action));
+            ui.close();
+        }
+        ui.separator();
+    }
     for (markdown, label, action) in [
         (false, "Copy link to page", Action::CopyLink),
         (true, "Copy Markdown link to page", Action::CopyMarkdownLink),
