@@ -4,14 +4,30 @@
 
 use std::collections::HashMap;
 
-use noido_blocks::{Block, BlockKind, Style, Text, Tree};
+use std::ops::Range;
+
+use noido_blocks::{Block, BlockKind, Segment, Style, Styled, Text, Tree};
+
+use crate::house::{LEADING, LINES, MEASURE};
+use crate::images::{ImageId, fit};
 
 /// How a paragraph is set.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Role {
-    Body { indent: bool },
+    Body {
+        indent: bool,
+    },
     Heading(u8),
     Code,
+    /// An image on a line of its own, `width` by `height` points; the
+    /// text is its object character. `heading`: it is a heading's only
+    /// content, and keeps the heading's rules.
+    Figure {
+        image: ImageId,
+        width: f32,
+        height: f32,
+        heading: Option<u8>,
+    },
 }
 
 /// One paragraph to set.
@@ -28,15 +44,80 @@ pub(crate) struct Para {
     pub note: Option<String>,
 }
 
+/// An image drawn as a block of its own.
+struct Figure {
+    /// Its object character, in bytes of the text.
+    at: Range<usize>,
+    image: ImageId,
+    /// Drawn size in points.
+    size: (f32, f32),
+    /// The paragraph holds nothing else.
+    alone: bool,
+}
+
+/// The part of `text` in `range` (bytes of its string, on the edge of
+/// a segment): its styles clipped to it, its segments kept, so that the
+/// source map is the original's.
+fn clip(text: &Text, range: Range<usize>) -> Text {
+    let styles = text
+        .styles
+        .iter()
+        .filter_map(|s| {
+            let start = s.drawn.start.max(range.start);
+            let end = s.drawn.end.min(range.end);
+            (start < end).then(|| Styled {
+                style: s.style.clone(),
+                drawn: start - range.start..end - range.start,
+                span: s.span.clone(),
+            })
+        })
+        .collect();
+    let mut segments: Vec<Segment> = Vec::new();
+    for (i, segment) in text.segments.iter().enumerate() {
+        let end = text
+            .segments
+            .get(i + 1)
+            .map_or(text.string.len(), |n| n.drawn);
+        if end <= range.start || segment.drawn >= range.end {
+            continue;
+        }
+        segments.push(Segment {
+            drawn: segment.drawn.saturating_sub(range.start),
+            source: segment.source.clone(),
+        });
+    }
+    Text {
+        string: text.string[range].to_string(),
+        styles,
+        segments,
+    }
+}
+
 /// Footnote label to its number: the order of its first reference.
 /// Notes never referenced follow, in definition order.
 pub(crate) struct Notes(pub HashMap<String, usize>);
 
-pub(crate) fn paragraphs(tree: &Tree) -> (Vec<Para>, Notes) {
+/// Maps an image's `src` as written and its `width` and `height`
+/// attributes to its id and natural size in points; `None` when it
+/// cannot be drawn.
+pub(crate) type Resolve<'a> =
+    dyn FnMut(&str, Option<u32>, Option<u32>) -> Option<(ImageId, (f32, f32))> + 'a;
+
+/// A resolver for a source without images (markdown).
+pub(crate) fn no_images(
+    _src: &str,
+    _width: Option<u32>,
+    _height: Option<u32>,
+) -> Option<(ImageId, (f32, f32))> {
+    None
+}
+
+pub(crate) fn paragraphs(tree: &Tree, resolve: &mut Resolve) -> (Vec<Para>, Notes) {
     let notes = number_notes(&tree.blocks);
     let mut out = Out {
         paras: Vec::new(),
         notes: &notes,
+        resolve,
         indent: false,
     };
     out.blocks(&tree.blocks);
@@ -46,6 +127,7 @@ pub(crate) fn paragraphs(tree: &Tree) -> (Vec<Para>, Notes) {
 struct Out<'a> {
     paras: Vec<Para>,
     notes: &'a Notes,
+    resolve: &'a mut Resolve<'a>,
     /// Whether the next body paragraph is indented: not the first, nor
     /// the first after a heading.
     indent: bool,
@@ -59,16 +141,111 @@ impl Out<'_> {
     }
 
     fn body(&mut self, text: &Text) {
-        self.paras.push(Para {
-            role: Role::Body {
-                indent: self.indent,
-            },
-            text: text.clone(),
-            prefix: None,
-            new_page: false,
-            note: None,
-        });
-        self.indent = true;
+        self.text_blocks(Role::Body { indent: false }, text, false);
+    }
+
+    /// A paragraph or a heading: as it is, or split around the images
+    /// that are figures.
+    fn text_blocks(&mut self, role: Role, text: &Text, new_page: bool) {
+        let heading = match role {
+            Role::Heading(level) => Some(level),
+            _ => None,
+        };
+        let figures = self.figures(text);
+        if figures.is_empty() {
+            self.paras.push(Para {
+                role: match role {
+                    Role::Body { .. } => Role::Body {
+                        indent: self.indent,
+                    },
+                    other => other,
+                },
+                text: text.clone(),
+                prefix: None,
+                new_page,
+                note: None,
+            });
+            self.indent = heading.is_none();
+            return;
+        }
+        let mut pieces = Vec::new();
+        let mut at = 0;
+        for figure in &figures {
+            pieces.push((at..figure.at.start, None));
+            pieces.push((figure.at.clone(), Some(figure)));
+            at = figure.at.end;
+        }
+        pieces.push((at..text.string.len(), None));
+
+        let first = self.paras.len();
+        let mut ends_in_text = false;
+        for (range, figure) in pieces {
+            let alone = figures.len() == 1 && figure.is_some_and(|f| f.alone);
+            let role = match figure {
+                Some(f) => Role::Figure {
+                    image: f.image,
+                    width: f.size.0,
+                    height: f.size.1,
+                    heading: heading.filter(|_| alone),
+                },
+                None if text.string[range.clone()].trim().is_empty() => continue,
+                None if self.paras.len() > first => match role.clone() {
+                    Role::Body { .. } => Role::Body { indent: false },
+                    other => other,
+                },
+                None => match role.clone() {
+                    Role::Body { .. } => Role::Body {
+                        indent: self.indent,
+                    },
+                    other => other,
+                },
+            };
+            ends_in_text = figure.is_none();
+            self.paras.push(Para {
+                role,
+                text: clip(text, range),
+                prefix: None,
+                new_page: new_page && self.paras.len() == first,
+                note: None,
+            });
+        }
+        self.indent = ends_in_text && heading.is_none();
+    }
+
+    /// The images of `text` that are figures, in order: the only drawn
+    /// content of the paragraph, or taller than two lines.
+    fn figures(&mut self, text: &Text) -> Vec<Figure> {
+        let mut found: Vec<(Range<usize>, ImageId, (f32, f32))> = Vec::new();
+        for styled in &text.styles {
+            let Style::Image {
+                src, width, height, ..
+            } = &styled.style
+            else {
+                continue;
+            };
+            if text.string.get(styled.drawn.clone()) != Some("\u{fffc}") {
+                continue;
+            }
+            if let Some((image, size)) = (self.resolve)(src, *width, *height) {
+                found.push((styled.drawn.clone(), image, size));
+            }
+        }
+        found.sort_by_key(|f| f.0.start);
+        let alone = found.len() == 1 && {
+            let (range, ..) = &found[0];
+            text.string[..range.start].trim().is_empty()
+                && text.string[range.end..].trim().is_empty()
+        };
+        found
+            .into_iter()
+            .filter(|(_, _, natural)| alone || natural.1 > 2.0 * LEADING)
+            .map(|(at, image, natural)| Figure {
+                at,
+                image,
+                size: fit(natural, (MEASURE, LINES as f32 * LEADING), false),
+                alone,
+            })
+            .collect()
     }
 
     /// The blocks of a container, the first paragraph carrying `prefix`.
@@ -83,14 +260,7 @@ impl Out<'_> {
     fn block(&mut self, block: &Block) {
         match &block.kind {
             BlockKind::Heading { level, text } => {
-                self.paras.push(Para {
-                    role: Role::Heading(*level),
-                    text: text.clone(),
-                    prefix: None,
-                    new_page: *level == 1,
-                    note: None,
-                });
-                self.indent = false;
+                self.text_blocks(Role::Heading(*level), text, *level == 1);
             }
             BlockKind::Paragraph(text) => self.body(text),
             BlockKind::Code { text, .. } => {
@@ -283,7 +453,7 @@ mod tests {
     use noido_blocks::markdown::parse;
 
     fn paras(md: &str) -> Vec<Para> {
-        paragraphs(&parse(md)).0
+        paragraphs(&parse(md), &mut no_images).0
     }
 
     #[test]
@@ -323,7 +493,7 @@ mod tests {
     #[test]
     fn notes_referenced_in_a_table_are_numbered_by_reference() {
         let md = "A.\n\n| a[^x] |\n|---|\n| b |\n\n[^y]: Y.\n\n[^x]: X.\n";
-        let (_, notes) = paragraphs(&parse(md));
+        let (_, notes) = paragraphs(&parse(md), &mut no_images);
         assert_eq!((notes.0["x"], notes.0["y"]), (1, 2));
     }
 
@@ -380,7 +550,7 @@ mod tests {
 
     #[test]
     fn a_footnote_stays_where_it_is_defined() {
-        let (p, notes) = paragraphs(&parse("A[^x].\n\n[^x]: Note.\n\nB.\n"));
+        let (p, notes) = paragraphs(&parse("A[^x].\n\n[^x]: Note.\n\nB.\n"), &mut no_images);
         assert_eq!(p.len(), 3);
         assert_eq!(p[1].text.string, "Note.");
         assert_eq!(p[1].prefix.as_deref(), Some("1 "));
@@ -390,7 +560,7 @@ mod tests {
     #[test]
     fn notes_are_numbered_by_first_reference_then_unreferenced() {
         let md = "A[^b] and [^a].\n\n[^a]: One.\n\n[^b]: Two.\n\n[^c]: Three.\n";
-        let (_, notes) = paragraphs(&parse(md));
+        let (_, notes) = paragraphs(&parse(md), &mut no_images);
         assert_eq!((notes.0["b"], notes.0["a"], notes.0["c"]), (1, 2, 3));
     }
 
@@ -463,5 +633,73 @@ mod tests {
     fn nested_front_matter_is_ignored() {
         let md = "---\ntags:\n  - a\ntitle: T\n---\n\nText.\n";
         assert_eq!(front_matter(&parse(md), md).title.as_deref(), Some("T"));
+    }
+
+    /// Paragraphs of an XHTML body whose images all resolve, `side`
+    /// points each way (the id is the image's number in the body).
+    fn xhtml_paras(body: &str, side: f32) -> Vec<Para> {
+        let xhtml = noido_blocks::xhtml::parse(
+            format!(
+                "<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>t</title></head>\
+                 <body>{body}</body></html>"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let mut next = 0;
+        let mut resolve = |_: &str, _: Option<u32>, _: Option<u32>| {
+            next += 1;
+            Some((ImageId::test(next), (side, side)))
+        };
+        paragraphs(&xhtml.tree, &mut resolve).0
+    }
+
+    #[test]
+    fn a_large_image_splits_its_paragraph_and_keeps_the_text_map() {
+        let p = xhtml_paras("<p>Before <img src=\"a.png\" alt=\"a\"/> after.</p>", 100.0);
+        assert_eq!(p.len(), 3, "{p:#?}");
+        assert_eq!(p[0].text.string, "Before ");
+        assert!(matches!(p[1].role, Role::Figure { heading: None, .. }));
+        assert_eq!(p[1].text.string, "\u{fffc}");
+        assert_eq!(p[2].text.string, " after.");
+        assert_eq!(p[2].role, Role::Body { indent: false });
+        // Source characters are the original's: "Before " is 0..7, and
+        // " after." follows the image, which has no characters.
+        assert_eq!(p[0].text.segments[0].source, 0..7);
+        assert_eq!(p[2].text.segments[0].source, 7..14);
+    }
+
+    #[test]
+    fn a_small_image_in_text_stays_in_its_paragraph() {
+        let p = xhtml_paras("<p>Before <img src=\"a.png\" alt=\"a\"/> after.</p>", 10.0);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].text.styles.len(), 1);
+    }
+
+    #[test]
+    fn an_image_alone_is_a_figure_even_when_small() {
+        let p = xhtml_paras(
+            "<p><a href=\"#x\"><img src=\"a.png\" alt=\"a\"/></a></p>",
+            10.0,
+        );
+        assert_eq!(p.len(), 1);
+        assert!(matches!(p[0].role, Role::Figure { .. }));
+        // The link that wraps it goes with it.
+        let link = |s: &Styled| matches!(s.style, Style::Link { .. });
+        assert!(p[0].text.styles.iter().any(link));
+    }
+
+    #[test]
+    fn a_heading_holding_an_image_is_a_figure_that_keeps_its_rules() {
+        let p = xhtml_paras("<h1><img src=\"a.png\" alt=\"Title\"/></h1>", 10.0);
+        assert_eq!(p.len(), 1);
+        assert!(matches!(
+            p[0].role,
+            Role::Figure {
+                heading: Some(1),
+                ..
+            }
+        ));
+        assert!(p[0].new_page);
     }
 }

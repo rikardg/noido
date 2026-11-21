@@ -6,6 +6,7 @@ mod draw;
 mod engine;
 mod fonts;
 mod house;
+mod images;
 mod kp;
 mod lines;
 mod links;
