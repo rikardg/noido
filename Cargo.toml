@@ -4,6 +4,7 @@ members = [
     "crates/noido-engine",
     "crates/engine-hayro",
     "crates/engine-comic",
+    "crates/noido-image",
     "crates/noido-core",
     "crates/noido-macos",
     "crates/noido-render",
@@ -28,6 +29,7 @@ publish = false
 noido-engine = { path = "crates/noido-engine" }
 engine-hayro = { path = "crates/engine-hayro" }
 engine-comic = { path = "crates/engine-comic" }
+noido-image = { path = "crates/noido-image" }
 noido-render = { path = "crates/noido-render" }
 noido-core = { path = "crates/noido-core" }
 noido-settings = { path = "crates/noido-settings" }
@@ -52,6 +54,7 @@ objc2-uniform-type-identifiers = { version = "0.3", default-features = false }
 hayro = "0.9"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
+fast_image_resize = "6.1"
 eframe = { version = "0.37", features = ["persistence"] }
 # The one eframe 0.37 uses: on macOS noido builds the event loop itself.
 winit = { version = "0.30", default-features = false }
