@@ -1,0 +1,25 @@
+name: minijinja-cli
+description: >-
+    Install the minijinja-cli version the justfile pins, verified against
+    the checksum its release publishes.
+# The version comes from `just --evaluate minijinja`, so the pin lives in
+# one place. Both callers check the repo out and install `just` first.
+runs:
+    using: composite
+    steps:
+        # The published tarball and its checksum, rather than cargo binstall:
+        # binstall's fallback would want a Rust toolchain the publish job
+        # does not have.
+        - shell: bash
+          run: |
+              set -eu
+              version=$(just --evaluate minijinja)
+              target=x86_64-unknown-linux-gnu
+              url="https://github.com/mitsuhiko/minijinja/releases/download/$version/minijinja-cli-$target.tar.xz"
+              curl -fsSL -o "/tmp/minijinja-cli-$target.tar.xz" "$url"
+              curl -fsSL -o "/tmp/minijinja-cli-$target.tar.xz.sha256" "$url.sha256"
+              (cd /tmp && sha256sum -c "minijinja-cli-$target.tar.xz.sha256")
+              tar -xJf "/tmp/minijinja-cli-$target.tar.xz" -C /tmp
+              mkdir -p "$RUNNER_TEMP/bin"
+              mv "/tmp/minijinja-cli-$target/minijinja-cli" "$RUNNER_TEMP/bin/"
+              echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"

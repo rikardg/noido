@@ -55,3 +55,11 @@ jobs:
             - run: just lint
             - run: just test
             - run: just build
+            # The release notes are part of what ships: the body the tap's
+            # updater greps, and the recipe that renders it, have a test.
+            # It needs minijinja-cli, and this action builds for the Linux
+            # runner only.
+            - uses: ./.github/actions/minijinja-cli
+              if: runner.os == 'Linux'
+            - run: just notes-check
+              if: runner.os == 'Linux'
