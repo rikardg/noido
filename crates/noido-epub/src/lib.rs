@@ -9,7 +9,6 @@ use std::fmt;
 use std::io::{Cursor, Read};
 
 use noido_blocks::xhtml::{self, Xhtml};
-use noido_blocks::{Block, BlockKind, Style, Text};
 use percent_encoding::percent_decode_str;
 use roxmltree::{Document, Node, ParsingOptions};
 use zip::ZipArchive;
@@ -214,7 +213,7 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
                     match xhtml::parse(&data) {
                         Ok(x) => {
                             let marked = x.cover || guide_cover.as_deref() == Some(&item.path);
-                            if first && !x.has_text && (marked || x.svg_image || has_image(&x)) {
+                            if first && !x.has_text && (marked || x.first_image.is_some()) {
                                 PartKind::Cover
                             } else {
                                 PartKind::Text(x)
@@ -363,29 +362,4 @@ fn in_dir(dir: &str, href: &str) -> String {
         }
     }
     out.join("/")
-}
-
-fn has_image(x: &Xhtml) -> bool {
-    x.tree.blocks.iter().any(block_has_image)
-}
-
-fn block_has_image(block: &Block) -> bool {
-    match &block.kind {
-        BlockKind::Heading { text, .. } | BlockKind::Paragraph(text) => text_has_image(text),
-        BlockKind::Quote(blocks) | BlockKind::Footnote { blocks, .. } => {
-            blocks.iter().any(block_has_image)
-        }
-        BlockKind::List { items, .. } => items.iter().any(|i| i.blocks.iter().any(block_has_image)),
-        BlockKind::Table { head, rows, .. } => head
-            .iter()
-            .chain(rows.iter().flatten())
-            .any(|c| text_has_image(&c.text)),
-        _ => false,
-    }
-}
-
-fn text_has_image(text: &Text) -> bool {
-    text.styles
-        .iter()
-        .any(|s| matches!(s.style, Style::Image { .. }))
 }
