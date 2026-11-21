@@ -5,6 +5,10 @@
 sha := `git rev-parse --short=8 HEAD 2>/dev/null || true`
 export NOIDO_GIT_SHA := env_var_or_default("NOIDO_GIT_SHA", sha)
 
+# The developer tools `just tools` installs, at the versions the checks were
+# written against. Bump one here; the recipe takes it from there.
+nextest := "0.9.148"
+
 # list recipes
 default:
     @just --list
@@ -32,6 +36,26 @@ fmt-check:
 
 # fmt, lint, test: what has to pass before a commit
 check: fmt-check lint test
+
+# install the pinned developer tools
+tools:
+    #!/usr/bin/env sh
+    set -eu
+    # `just` itself is the bootstrap (`cargo binstall just`), so it is not in
+    # the list. Binstall skips a crate it already installed at that version,
+    # so a second run is quick and a changed pin installs.
+    if ! command -v cargo-binstall >/dev/null 2>&1; then
+        echo "no cargo-binstall: cargo install cargo-binstall" >&2
+        exit 1
+    fi
+    cargo binstall --no-confirm --locked \
+        cargo-nextest@{{nextest}}
+    # A record can outlive the binary it names, and binstall then skips the
+    # crate as installed; asking the tool proves it is there.
+    cargo nextest --version
+    # What binstall owns, so a tool from brew or `cargo install` is visible
+    # beside it.
+    cargo binstall --list
 
 # release build
 build:

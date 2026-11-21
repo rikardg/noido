@@ -11,6 +11,9 @@ Features:
 
 ## Developing
 
-- Prerequisites: a recent Rust toolchain.
+- Prerequisites: a recent Rust toolchain, and the command runner
+  [just](https://github.com/casey/just): `cargo binstall just`.
+- `just tools` installs the pinned developer tools (currently `cargo-nextest`)
+  with [cargo-binstall](https://github.com/cargo-bins/cargo-binstall).
 - Execute build commands from the command runner [just](https://github.com/casey/just), or look up
   the relevant commands in the [`justfile`](./justfile).
