@@ -4407,9 +4407,11 @@ pub(crate) mod tests {
             self.frames(1, vec![]);
         }
 
-        /// Runs frames until `done`, for at most a second.
+        /// Runs frames until `done`, for at most 30 seconds: the deadline
+        /// only guards against a hang.
         fn until(&mut self, done: impl Fn(&Harness) -> bool) {
-            for _ in 0..200 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while std::time::Instant::now() < deadline {
                 if done(self) {
                     return;
                 }
@@ -12614,6 +12616,15 @@ pub(crate) mod tests {
         let engine = TextEngine::cats();
         let mut h = searching(&engine);
         h.frames(5, vec![]);
+        // Let the pages on screen arrive first: a read asked for before the
+        // reload can be served after it and look like a new read.
+        let arrived = |h: &Harness| {
+            let mut visible = pages_shown(h);
+            !visible.is_empty()
+                && visible.all(|p| matches!(h.app.texts.get(p), PageTextState::Known(_)))
+        };
+        h.until(arrived);
+        assert!(arrived(&h), "the pages on screen never got their text");
         let old = engine.calls();
         let new = TextEngine::cats();
         h.reload(Arc::new(new.clone()), recompiled_key());
