@@ -84,3 +84,10 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# The dev profile keeps line tables for backtraces and drops the rest of the
+# debug info: a full debuginfo build is 3.9 G of `target/debug/deps` here and
+# 143 s from clean, and a backtrace only ever reads the lines. `line-tables-only`
+# is `debug = 1`.
+[profile.dev]
+debug = "line-tables-only"
