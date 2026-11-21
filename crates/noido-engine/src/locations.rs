@@ -140,7 +140,8 @@ impl LocationMap {
     /// The page `at` is on and the line holding it, as for
     /// [`Self::page_char`]. None for the identity, which has no lines.
     pub fn line(&self, at: Location) -> Option<(usize, Run)> {
-        self.find(at).map(|(line, _)| (line.page, line.run))
+        let (line, _) = self.find(at)?;
+        Some((line.page, line.run))
     }
 
     /// The page and the last line of `part`; None when no line is of it
@@ -186,6 +187,22 @@ impl LocationMap {
     /// a gap between lines (characters that aren't drawn) is the next
     /// line's start; the end of a part's last line is that line's end.
     fn find(&self, at: Location) -> Option<(&Line, usize)> {
+        // Lines of no characters (figures) stacked at `at` own that exact
+        // place: the first of them, or when text starts there too (an
+        // id on the paragraph after the figures), the last, just above
+        // the text.
+        let from = self.lines.partition_point(|l| l.run.start < at);
+        let to = self.lines.partition_point(|l| l.run.start <= at);
+        let stack = &self.lines[from..to];
+        let figures = stack.iter().take_while(|l| l.run.chars == 0).count();
+        if figures > 0 {
+            let own = if figures < stack.len() {
+                figures - 1
+            } else {
+                0
+            };
+            return Some((&stack[own], 0));
+        }
         let after = self.lines.partition_point(|l| l.run.start <= at);
         if let Some(line) = after.checked_sub(1).map(|i| &self.lines[i])
             && line.run.start.part == at.part
@@ -389,5 +406,62 @@ mod tests {
     fn a_gap_before_the_first_run_is_its_start() {
         let map = LocationMap::from_placed(vec![vec![(2, run(0, 10, 2, 36.0))]]);
         assert_eq!(map.location(0, 0), Some(at(0, 10)));
+    }
+
+    #[test]
+    fn a_place_at_a_figure_is_the_figure() {
+        // Page 0: text 0..10, a figure at 10 (no characters), the next
+        // text at 10 (nothing between) or at 11 (a newline between).
+        for next in [10, 11] {
+            let map = LocationMap::from_lines(vec![
+                vec![
+                    run(0, 0, 10, 36.0),
+                    run(0, 10, 0, 46.0),
+                    run(0, next, 5, 90.0),
+                ],
+                vec![run(0, next + 5, 5, 36.0)],
+            ]);
+            let figure = run(0, 10, 0, 46.0);
+            assert_eq!(map.line(at(0, 10)), Some((0, figure)), "next {next}");
+            assert_eq!(map.page_char(at(0, 10)), Some((0, 10)), "next {next}");
+            assert_eq!(map.page_start(0), Some(at(0, 0)));
+        }
+    }
+
+    #[test]
+    fn a_figure_on_a_page_of_its_own_is_found_there() {
+        for next in [10, 11] {
+            let map = LocationMap::from_lines(vec![
+                vec![run(0, 0, 10, 36.0)],
+                vec![run(0, 10, 0, 36.0)],
+                vec![run(0, next, 5, 36.0)],
+            ]);
+            assert_eq!(map.page_start(1), Some(at(0, 10)));
+            assert_eq!(map.page_char(at(0, 10)), Some((1, 0)), "next {next}");
+            assert_eq!(map.line(at(0, 10)), Some((1, run(0, 10, 0, 36.0))));
+            if next > 10 {
+                assert_eq!(map.page_char(at(0, next)), Some((2, 0)));
+            }
+        }
+    }
+
+    #[test]
+    fn stacked_figures_with_text_at_them_resolve_to_the_last() {
+        let map = LocationMap::from_lines(vec![vec![
+            run(0, 5, 0, 36.0),
+            run(0, 5, 0, 60.0),
+            run(0, 5, 3, 90.0),
+        ]]);
+        assert_eq!(map.line(at(0, 5)), Some((0, run(0, 5, 0, 60.0))));
+    }
+
+    #[test]
+    fn stacked_figures_resolve_to_the_first() {
+        let map = LocationMap::from_lines(vec![vec![
+            run(0, 5, 0, 36.0),
+            run(0, 5, 0, 60.0),
+            run(0, 6, 3, 90.0),
+        ]]);
+        assert_eq!(map.line(at(0, 5)), Some((0, run(0, 5, 0, 36.0))));
     }
 }

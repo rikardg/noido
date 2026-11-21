@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use noido_engine::{Destination, Format, Link, LinkTarget, Location, OutlineEntry};
+use noido_engine::{Destination, Format, Link, LinkTarget, Location, OutlineEntry, PdfBytes};
 use noido_text::{PageText, on_page};
 use noido_typeset::{Book, typeset_epub};
 
@@ -14,7 +14,8 @@ fn book(name: &str) -> Book {
         .join("../../fixtures")
         .join(name);
     let bytes = std::fs::read(path).unwrap();
-    typeset_epub(&noido_epub::open(&bytes, 8 << 20).unwrap())
+    let epub = noido_epub::open(&bytes, 8 << 20).unwrap();
+    typeset_epub(&epub, PdfBytes::from(bytes))
 }
 
 fn page_text(book: &Book, page: usize) -> String {
@@ -158,7 +159,8 @@ fn a_link_to_a_missing_id_lands_on_the_start_of_its_part() {
         w.write_all(data.as_bytes()).unwrap();
     }
     let bytes = w.finish().unwrap().into_inner();
-    let book = typeset_epub(&noido_epub::open(&bytes, 8 << 20).unwrap());
+    let epub = noido_epub::open(&bytes, 8 << 20).unwrap();
+    let book = typeset_epub(&epub, PdfBytes::from(bytes));
     let links = book.links(0);
     assert_eq!(links.len(), 1, "{links:?}");
     lands(internal(&links[0]), line_of(&book, "Second"));
@@ -248,4 +250,300 @@ fn superscripts_and_subscripts_draw() {
     assert_eq!((two.text.as_str(), one.text.as_str()), ("2", "1"));
     assert!(two.origin.y > line, "{} {line}", two.origin.y);
     assert!(one.origin.y < line, "{} {line}", one.origin.y);
+}
+
+// Images: `images.epub`, see fixtures/make_fixtures.py.
+
+const LEFT: f32 = (PAGE.0 - 270.0) / 2.0;
+const TOP: f32 = 56.0;
+
+/// Every glyph with its page.
+fn all_glyphs(book: &Book) -> Vec<(usize, noido_engine::Glyph)> {
+    (0..book.page_count())
+        .flat_map(|p| book.glyphs(p).into_iter().map(move |g| (p, g)))
+        .collect()
+}
+
+/// A glyph's box: left, top, width, height.
+fn rect(g: &noido_engine::Glyph) -> (f32, f32, f32, f32) {
+    let c = &g.quad.corners;
+    (c[0].x, c[3].y, c[1].x - c[0].x, c[0].y - c[3].y)
+}
+
+fn near(a: f32, b: f32) {
+    assert!((a - b).abs() < 0.01, "{a} is not {b}");
+}
+
+/// The glyphs with this text whose height is `height`.
+fn figures(book: &Book, text: &str, height: f32) -> Vec<(usize, noido_engine::Glyph)> {
+    all_glyphs(book)
+        .into_iter()
+        .filter(|(_, g)| g.text == text && (rect(g).3 - height).abs() < 0.01)
+        .collect()
+}
+
+fn above(a: (usize, f32), b: (usize, f32)) -> bool {
+    a.0 < b.0 || (a.0 == b.0 && a.1 < b.1)
+}
+
+/// The text set as text (body size), in reading order: figures are not
+/// in it. The fixture's alt texts are the file names, so every image
+/// that is not drawn reads "[image]".
+fn body_text(book: &Book) -> String {
+    all_glyphs(book)
+        .iter()
+        .filter(|(_, g)| (g.size - 11.0).abs() < 0.01)
+        .map(|(_, g)| g.text.as_str())
+        .collect()
+}
+
+#[test]
+fn a_lone_image_is_a_centred_figure() {
+    let book = book("images.epub");
+    let found = figures(&book, "[image]", 434.0);
+    assert_eq!(found.len(), 1);
+    let (x, _, w, _) = rect(&found[0].1);
+    near(w, 43.4);
+    near(x, LEFT + (270.0 - 43.4) / 2.0);
+}
+
+#[test]
+fn a_figure_that_does_not_fit_starts_the_next_page() {
+    let book = book("images.epub");
+    let (page, g) = figures(&book, "[image]", 434.0).remove(0);
+    assert!(page > line_of(&book, "Before the figure.").0);
+    near(rect(&g).1, TOP);
+}
+
+#[test]
+fn a_heading_image_is_a_figure_that_starts_a_page() {
+    let book = book("images.epub");
+    let first = &book.glyphs(0)[0];
+    assert_eq!(first.text, "Title Art");
+    let (_, top, w, _) = rect(first);
+    near(w, 270.0);
+    near(top, TOP);
+}
+
+#[test]
+fn a_large_image_in_text_splits_its_paragraph() {
+    let book = book("images.epub");
+    let (page, g) = all_glyphs(&book)
+        .into_iter()
+        .find(|(_, g)| g.text == "chart")
+        .unwrap();
+    near(rect(&g).2, 270.0);
+    let at = (page, rect(&g).1);
+    assert!(above(line_of(&book, "Chart:"), at));
+    assert!(above(at, line_of(&book, "and its caption.")));
+}
+
+#[test]
+fn side_by_side_images_stack() {
+    let book = book("images.epub");
+    let pair = figures(&book, "[image]", 30.0);
+    assert_eq!(pair.len(), 2);
+    let tops: Vec<(usize, f32)> = pair.iter().map(|(p, g)| (*p, rect(g).1)).collect();
+    assert!(above(tops[0], tops[1]), "{tops:?}");
+}
+
+#[test]
+fn unreadable_images_keep_their_stand_in() {
+    let book = book("images.epub");
+    // The dot in the text, and broken, huge and missing.
+    assert_eq!(body_text(&book).matches("[image]").count(), 4);
+}
+
+#[test]
+fn a_cut_image_is_a_figure_as_its_header_reads() {
+    let book = book("images.epub");
+    let cut = figures(&book, "[image]", 7.5);
+    assert_eq!(cut.len(), 1);
+    near(rect(&cut[0].1).2, 7.5);
+}
+
+#[test]
+fn a_small_image_in_text_keeps_its_stand_in() {
+    let book = book("images.epub");
+    assert!(body_text(&book).contains("A [image] bullet in text."));
+}
+
+#[test]
+fn locations_do_not_move() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/images.epub");
+    let bytes = std::fs::read(path).unwrap();
+    let epub = noido_epub::open(&bytes, 8 << 20).unwrap();
+    let x = match &epub.parts[0].kind {
+        noido_epub::PartKind::Text(x) => x,
+        _ => panic!("part 0 is not text"),
+    };
+    // The text ends with "The end.", then whitespace nothing draws.
+    let end = x.ids.iter().find(|(id, _)| id == "end").unwrap().1 + "The end.".len();
+    let book = typeset_epub(&epub, PdfBytes::from(bytes));
+    let (_, run) = book.locations().last_line_of(0).unwrap();
+    assert_eq!(run.start.char + run.chars, end);
+    // The link from the small figure goes to "The end." and the svg
+    // figure just above it, which has the same place (it has no characters).
+    let links: Vec<Link> = (0..book.page_count()).flat_map(|p| book.links(p)).collect();
+    assert_eq!(links.len(), 1, "{links:?}");
+    let (page, svg) = figures(&book, "[image]", 15.0).pop().unwrap();
+    lands(internal(&links[0]), (page, rect(&svg).1));
+}
+
+#[test]
+fn a_linked_figure_is_a_link_over_the_image() {
+    let book = book("images.epub");
+    // The linked small.png and the svg's one are 15 pt; one has a link.
+    let linked = figures(&book, "[image]", 15.0)
+        .into_iter()
+        .filter(|(page, g)| {
+            let (x, y, w, h) = rect(g);
+            let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+            book.links(*page).iter().any(|l| {
+                l.areas
+                    .iter()
+                    .any(|a| a.x <= cx && cx <= a.x + a.width && a.y <= cy && cy <= a.y + a.height)
+            })
+        })
+        .count();
+    assert_eq!(linked, 1);
+}
+
+/// A PNG whose header reads as `w` by `h` (it is not drawable; layout
+/// reads only the header).
+fn png_header(w: u32, h: u32) -> Vec<u8> {
+    fn crc(data: &[u8]) -> u32 {
+        let mut c = !0u32;
+        for &b in data {
+            c ^= u32::from(b);
+            for _ in 0..8 {
+                c = if c & 1 == 1 {
+                    (c >> 1) ^ 0xEDB8_8320
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    }
+    let mut ihdr = b"IHDR".to_vec();
+    ihdr.extend(w.to_be_bytes());
+    ihdr.extend(h.to_be_bytes());
+    ihdr.extend([8, 2, 0, 0, 0]);
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    out.extend(13u32.to_be_bytes());
+    out.extend(&ihdr);
+    out.extend(crc(&ihdr).to_be_bytes());
+    // The reader goes on to the first image data: an empty chunk will do.
+    out.extend(0u32.to_be_bytes());
+    out.extend(b"IDAT");
+    out.extend(crc(b"IDAT").to_be_bytes());
+    out
+}
+
+/// A book of XHTML bodies (`p0.xhtml`, `p1.xhtml`, ...) and one 100 by
+/// 100 image, `i.png`.
+fn book_of(bodies: &[&str]) -> Book {
+    book_of_image(bodies, (100, 100))
+}
+
+/// As [`book_of`], with `i.png` reading as `size` pixels.
+fn book_of_image(bodies: &[&str], size: (u32, u32)) -> Book {
+    use std::io::Write;
+    let container = r#"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="p.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#;
+    let items: String = (0..bodies.len())
+        .map(|i| {
+            format!(r#"<item id="p{i}" href="p{i}.xhtml" media-type="application/xhtml+xml"/>"#)
+        })
+        .collect();
+    let spine: String = (0..bodies.len())
+        .map(|i| format!(r#"<itemref idref="p{i}"/>"#))
+        .collect();
+    let opf = format!(
+        r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata/><manifest>{items}<item id="i" href="i.png" media-type="image/png"/></manifest><spine>{spine}</spine></package>"#
+    );
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default();
+    let mut add = |name: &str, data: &[u8]| {
+        w.start_file(name, opts).unwrap();
+        w.write_all(data).unwrap();
+    };
+    add("META-INF/container.xml", container.as_bytes());
+    add("p.opf", opf.as_bytes());
+    add("i.png", &png_header(size.0, size.1));
+    for (i, body) in bodies.iter().enumerate() {
+        let xhtml =
+            format!("<html xmlns=\"http://www.w3.org/1999/xhtml\"><body>{body}</body></html>");
+        add(&format!("p{i}.xhtml"), xhtml.as_bytes());
+    }
+    let bytes = w.finish().unwrap().into_inner();
+    let epub = noido_epub::open(&bytes, 8 << 20).unwrap();
+    typeset_epub(&epub, PdfBytes::from(bytes))
+}
+
+#[test]
+fn an_id_on_a_heading_image_lands_on_the_figure() {
+    let book = book_of(&[
+        r##"<p><a href="#x">go</a></p><h1 id="x"><img src="i.png" alt="Art"/></h1><p>Text.</p>"##,
+    ]);
+    let links = book.links(0);
+    assert_eq!(links.len(), 1);
+    // The figure is first on page 1, 75 pt tall.
+    lands(internal(&links[0]), (1, TOP));
+}
+
+#[test]
+fn a_part_holding_only_a_figure_has_a_place() {
+    let book = book_of(&[
+        r#"<p><a href="p1.xhtml">go</a></p>"#,
+        r#"<p><img src="i.png" alt="Art"/></p>"#,
+    ]);
+    let links = book.links(0);
+    assert_eq!(links.len(), 1);
+    lands(internal(&links[0]), (1, TOP));
+    assert_eq!(
+        book.locations().page_start(1),
+        Some(Location { part: 1, char: 0 })
+    );
+}
+
+#[test]
+fn a_list_item_that_is_a_figure_keeps_its_marker() {
+    let book = book_of(&[
+        "<p>x</p>",
+        r#"<ul><li><img src="i.png" alt="Art"/></li></ul>"#,
+    ]);
+    let glyphs = all_glyphs(&book);
+    let figure = &glyphs.iter().find(|(_, g)| g.text == "Art").unwrap().1;
+    let (x, top, w, _) = rect(figure);
+    near(w, 75.0);
+    near(x, LEFT + (270.0 - 75.0) / 2.0);
+    let bullet = &glyphs.iter().find(|(_, g)| g.text == "\u{2022}").unwrap().1;
+    near(rect(bullet).0, LEFT);
+    assert!(bullet.origin.y > top, "{} {top}", bullet.origin.y);
+}
+
+#[test]
+fn an_id_on_a_heading_image_lands_on_the_figure_with_newlines_between_blocks() {
+    let book = book_of(&[
+        "<p><a href=\"#x\">go</a></p>\n<h1 id=\"x\"><img src=\"i.png\" alt=\"Art\"/></h1>\n<p>Text.</p>\n",
+    ]);
+    let links = book.links(0);
+    assert_eq!(links.len(), 1);
+    lands(internal(&links[0]), (1, TOP));
+}
+
+#[test]
+fn a_full_page_figure_is_its_pages_place() {
+    let book = book_of_image(
+        &["<p><img src=\"i.png\" alt=\"Map\"/></p>\n<p>Text after.</p>\n"],
+        (100, 2000),
+    );
+    let map = book.locations();
+    let (page, _) = map.line(Location { part: 0, char: 0 }).unwrap();
+    // The figure fills its page; the text is on the next.
+    assert!(page_text(&book, page + 1).contains("Text after."), "{page}");
+    let start = map.page_start(page).unwrap();
+    assert_eq!(map.page_char(start).map(|(p, _)| p), Some(page));
+    assert_eq!(map.line(start).map(|(p, _)| p), Some(page));
 }

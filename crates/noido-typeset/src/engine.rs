@@ -88,7 +88,7 @@ impl PdfEngine for TypesetEngine {
                 noido_epub::EpubError::TooLarge(n) => EngineError::Open(too_large(n)),
                 other => EngineError::Open(other.to_string()),
             })?;
-            typeset_epub(&epub)
+            typeset_epub(&epub, bytes)
         } else {
             let source = std::str::from_utf8(&bytes)
                 .map_err(|_| EngineError::Open("not a readable document".into()))?;

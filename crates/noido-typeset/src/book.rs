@@ -6,17 +6,18 @@ use std::ops::Range;
 use hypher::Lang;
 use noido_blocks::markdown::parse;
 use noido_blocks::{Text, Tree};
-use noido_engine::{Glyph, Location, LocationMap, Point, Quad, Run};
+use noido_engine::{Glyph, Location, LocationMap, PdfBytes, Point, Quad, Run};
 use noido_epub::{Epub, PartKind};
 use noido_text::{PageText, on_page};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::draw::{Outlines, PageInk};
 use crate::house::{LEADING, LEFT, LINES, PAPER, TOP};
+use crate::images::{Images, natural};
 use crate::lines::{SetGlyph, SetLine, Shaper};
 use crate::links::{Marks, epub_marks, marks};
 use crate::pages::{Flow, Placed, paginate};
-use crate::paragraphs::{Notes, Para, Role, front_matter, paragraphs};
+use crate::paragraphs::{Notes, Para, Role, front_matter, no_images, paragraphs};
 use crate::runs::runs;
 
 /// Where a glyph's box reaches above and below its baseline, in ems: the
@@ -34,6 +35,9 @@ pub struct Book {
     pub(crate) ink: Vec<PageInk>,
     /// Glyph outlines, drawn once and kept.
     pub(crate) outlines: Outlines,
+    /// The images the pages show, to draw from.
+    #[expect(dead_code, reason = "drawn from in the next step")]
+    pub(crate) images: Images,
 }
 
 /// What a page is made of while it is built.
@@ -45,6 +49,9 @@ struct Page {
     sources: Vec<Vec<Option<usize>>>,
     /// Per glyph, the top and bottom of its line.
     spans: Vec<(f32, f32)>,
+    /// Per glyph, the source character an image stands at (an image has
+    /// no characters of its own); `None` for other glyphs.
+    points: Vec<Option<usize>>,
     /// Lines placed so far: the next line's run.
     lines: u32,
     ink: PageInk,
@@ -52,8 +59,9 @@ struct Page {
 
 /// What one part holds for setting.
 pub(crate) enum Content<'a> {
-    /// A part's blocks.
-    Blocks(&'a Tree),
+    /// A part's blocks; for an EPUB's part, its path in the archive, which
+    /// its images are found from.
+    Blocks(&'a Tree, Option<&'a str>),
     /// Paragraphs drawn without source (a title page, a notice).
     Drawn(Vec<Para>),
 }
@@ -78,7 +86,8 @@ pub fn typeset(source: &str) -> Book {
     let tree = parse(source);
     let front = front_matter(&tree, source);
     let lang = language(front.lang.as_deref());
-    let set = set_parts(&[Content::Blocks(&tree)], lang);
+    let mut images = Images::none();
+    let set = set_parts(&[Content::Blocks(&tree, None)], lang, &mut images);
     let part = &set.parts[0];
     let marks = marks(
         &part.paras,
@@ -93,18 +102,19 @@ pub fn typeset(source: &str) -> Book {
         marks,
         ink: set.ink,
         outlines: Outlines::default(),
+        images,
     }
 }
 
 /// An EPUB typeset: each spine item a part, the cover a title page, an
 /// unreadable item a notice; links and outline resolved through ids and
 /// the table of contents.
-pub fn typeset_epub(epub: &Epub) -> Book {
+pub fn typeset_epub(epub: &Epub, bytes: PdfBytes) -> Book {
     let contents: Vec<Content> = epub
         .parts
         .iter()
         .map(|part| match &part.kind {
-            PartKind::Text(x) => Content::Blocks(&x.tree),
+            PartKind::Text(x) => Content::Blocks(&x.tree, Some(&part.path)),
             PartKind::Cover { .. } => Content::Drawn(title_page(epub)),
             PartKind::Image | PartKind::Unreadable => Content::Drawn(vec![drawn(
                 Role::Body { indent: false },
@@ -112,7 +122,8 @@ pub fn typeset_epub(epub: &Epub) -> Book {
             )]),
         })
         .collect();
-    let set = set_parts(&contents, epub_language(epub));
+    let mut images = Images::of_epub(bytes);
+    let set = set_parts(&contents, epub_language(epub), &mut images);
     let marks = epub_marks(epub, &set.parts, &set.map, set.pages.len());
     Book {
         pages: set.pages,
@@ -120,6 +131,7 @@ pub fn typeset_epub(epub: &Epub) -> Book {
         marks,
         ink: set.ink,
         outlines: Outlines::default(),
+        images,
     }
 }
 
@@ -165,7 +177,7 @@ fn epub_language(epub: &Epub) -> Lang {
 
 /// Sets each part alone, each starting on a new page, its runs in its
 /// own part number; joins them into one book.
-pub(crate) fn set_parts(parts: &[Content], lang: Lang) -> SetBook {
+pub(crate) fn set_parts(parts: &[Content], lang: Lang, images: &mut Images) -> SetBook {
     let mut shaper = Shaper::new();
     let mut glyph_pages: Vec<Vec<Glyph>> = Vec::new();
     let mut map_pages: Vec<Vec<(usize, Run)>> = Vec::new();
@@ -173,8 +185,16 @@ pub(crate) fn set_parts(parts: &[Content], lang: Lang) -> SetBook {
     let mut out = Vec::with_capacity(parts.len());
     for (number, content) in parts.iter().enumerate() {
         let (paras, notes, drawn) = match content {
-            Content::Blocks(tree) => {
-                let (paras, notes) = paragraphs(tree);
+            Content::Blocks(tree, Some(path)) => {
+                let (paras, notes) = paragraphs(tree, &mut |src, width, height| {
+                    let src = src.split('#').next().unwrap_or_default();
+                    let (id, px) = images.size(&noido_epub::resolve(path, src))?;
+                    Some((id, natural(px, width, height)?))
+                });
+                (paras, notes, false)
+            }
+            Content::Blocks(tree, None) => {
+                let (paras, notes) = paragraphs(tree, &mut no_images);
                 (paras, notes, false)
             }
             Content::Drawn(paras) => (paras.clone(), Notes(HashMap::new()), true),
@@ -214,6 +234,10 @@ pub(crate) fn set_parts(parts: &[Content], lang: Lang) -> SetBook {
                     glyph_chars(text, g)
                 });
                 page.spans.push((at.y, at.y + line.height));
+                page.points.push(match (&g.image, &g.drawn) {
+                    (Some(_), Some(range)) if !drawn => Some(text.source_of(range.start)),
+                    _ => None,
+                });
             }
         }
 
@@ -289,6 +313,18 @@ fn page_runs(page: &Page, part: usize) -> Vec<(usize, Run)> {
         }
         let source = text.glyph_of(c).map(|g| shown[g]).and_then(|g| {
             span = page.spans[g];
+            if let Some(char) = page.points[g].filter(|_| next[g] == 0) {
+                // An image: a run of no characters at its place.
+                out.push((
+                    c,
+                    Run {
+                        start: Location { part, char },
+                        chars: 0,
+                        top: span.0,
+                        bottom: span.1,
+                    },
+                ));
+            }
             let source = page.sources[g].get(next[g]).copied().flatten();
             next[g] += 1;
             source
@@ -351,6 +387,15 @@ fn flow(para: &Para, lines: &[SetLine]) -> Flow {
             heading: false,
             new_page: para.new_page,
         },
+        Role::Figure {
+            height, heading, ..
+        } => Flow {
+            lines: vec![height],
+            before: LEADING / 2.0,
+            after: LEADING / 2.0,
+            heading: heading.is_some(),
+            new_page: para.new_page,
+        },
         Role::Heading(level) => Flow {
             lines: lines.iter().map(|l| l.height).collect(),
             before: match level {
@@ -385,6 +430,25 @@ fn glyphs_of(line: &SetLine, top: f32, run: u32) -> Vec<Glyph> {
                 }
             }
             let (x0, x1) = (LEFT + g.x, LEFT + end);
+            if let Some((_, height)) = g.image {
+                // The image's rectangle.
+                let bottom = top + height;
+                return Glyph {
+                    text: g.text.clone(),
+                    origin: Point { x: x0, y: bottom },
+                    size: g.size,
+                    quad: Quad {
+                        corners: [
+                            Point { x: x0, y: bottom },
+                            Point { x: x1, y: bottom },
+                            Point { x: x1, y: top },
+                            Point { x: x0, y: top },
+                        ],
+                    },
+                    invisible: false,
+                    run,
+                };
+            }
             let y = baseline - g.rise;
             let (above, below) = (y - ASCENT * g.size, y + DESCENT * g.size);
             Glyph {
@@ -476,7 +540,6 @@ fn one_to_one(text: &Text, i: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paragraphs::paragraphs;
     use noido_text::copy_text;
 
     fn glyph_at(text: &str, x: f32) -> Glyph {
@@ -508,6 +571,7 @@ mod tests {
             ],
             sources: vec![vec![Some(0)], vec![Some(1)], vec![Some(2)]],
             spans: vec![(100.0, 110.0); 3],
+            points: vec![None; 3],
             lines: 0,
             ink: PageInk::default(),
         };
@@ -534,8 +598,9 @@ mod tests {
     fn each_part_starts_a_page_and_counts_its_own_characters() {
         let (one, two) = (parse("One.\n"), parse("Two.\n"));
         let book = set_parts(
-            &[Content::Blocks(&one), Content::Blocks(&two)],
+            &[Content::Blocks(&one, None), Content::Blocks(&two, None)],
             Lang::English,
+            &mut Images::none(),
         );
         assert_eq!(book.pages.len(), 2);
         let map = &book.map;
@@ -559,8 +624,9 @@ mod tests {
             note: None,
         };
         let book = set_parts(
-            &[Content::Blocks(&one), Content::Drawn(vec![drawn])],
+            &[Content::Blocks(&one, None), Content::Drawn(vec![drawn])],
             Lang::English,
+            &mut Images::none(),
         );
         assert_eq!(book.pages.len(), 2);
         let map = &book.map;
@@ -588,9 +654,10 @@ mod tests {
 
     #[test]
     fn an_added_hyphen_copies_away() {
-        let (paras, notes) = paragraphs(&parse(
-            "An internationalization of representation, extraordinarily.\n",
-        ));
+        let (paras, notes) = paragraphs(
+            &parse("An internationalization of representation, extraordinarily.\n"),
+            &mut no_images,
+        );
         let lines = Shaper::new().set_at(&paras[0], &notes, Lang::English, 120.0);
         let hyphenated = lines
             .iter()

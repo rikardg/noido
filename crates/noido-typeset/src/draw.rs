@@ -56,7 +56,8 @@ impl PageInk {
     /// `Book::glyphs` have them.
     pub(crate) fn add_line(&mut self, line: &SetLine, top: f32) {
         let baseline = top + line.ascent;
-        for g in &line.glyphs {
+        // An image is not a glyph; it is drawn from its own rectangle.
+        for g in line.glyphs.iter().filter(|g| g.image.is_none()) {
             self.glyphs.push(Ink {
                 face: g.face,
                 id: g.id,
