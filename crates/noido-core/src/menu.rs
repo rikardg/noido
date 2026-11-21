@@ -145,6 +145,16 @@ pub fn view_entries() -> Vec<MenuEntry> {
     ]
 }
 
+/// The select tool's entry: the application menu and the page menu both
+/// offer it, so it is described once.
+pub fn select_tool_entry() -> MenuEntry {
+    MenuEntry {
+        action: Action::ToggleSelectTool,
+        label: "Select text",
+        check: Some(Check::SelectTool),
+    }
+}
+
 /// The menu's sections, in order; frontends separate them.
 pub fn menu() -> Vec<Vec<MenuEntry>> {
     let entry = |action, label| MenuEntry {
@@ -176,11 +186,7 @@ pub fn menu() -> Vec<Vec<MenuEntry>> {
             #[cfg(not(target_os = "macos"))]
             check(Action::ToggleFullScreen, "Full screen", Check::Fullscreen),
         ],
-        vec![check(
-            Action::ToggleSelectTool,
-            "Select text",
-            Check::SelectTool,
-        )],
+        vec![select_tool_entry()],
         vec![entry(Action::Undo, "Undo"), entry(Action::Redo, "Redo")],
         vec![
             entry(Action::Back, "Back"),

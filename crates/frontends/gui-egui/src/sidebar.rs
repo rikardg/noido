@@ -974,6 +974,7 @@ impl SidebarView {
                 odd_left: input.odd_left,
                 gapless: input.gapless,
                 scale_to_fit: input.scale_to_fit,
+                select_tool: None,
             };
             match crate::rotation_menu::on(&thumb, state, input.keymap) {
                 Some(Some(crate::rotation_menu::Choice::Rotation(rotation))) => {

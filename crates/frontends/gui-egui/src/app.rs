@@ -1961,8 +1961,8 @@ impl NoidoApp {
             vec2(layout.content_width(), layout.content_height()),
             Sense::CLICK,
         );
-        // A right-click on a page (not the desk or a gap) opens the turn
-        // menu for that page; the page is kept while the menu is open.
+        // A right-click on a page (not the desk or a gap) opens its menu;
+        // the page is kept while the menu is open.
         if response.secondary_clicked() {
             self.menu_page = response.interact_pointer_pos().and_then(|pos| {
                 let (x, y) = (pos.x - content.min.x, pos.y - content.min.y);
@@ -1981,6 +1981,7 @@ impl NoidoApp {
                 odd_left: self.view.odd_left(),
                 gapless: self.view.gapless(),
                 scale_to_fit: self.transforms.scale_to_fit(),
+                select_tool: Some(self.select.tool),
             };
             match crate::rotation_menu::on(&response, state, &self.keymap) {
                 None => self.menu_page = None,
@@ -14622,7 +14623,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn s_menu_and_button_toggle_the_tool() {
+    fn s_and_the_application_menu_toggle_the_tool() {
         let mut h = Harness::new();
         h.press(egui::Key::S, Modifiers::NONE);
         assert!(h.app.select.tool);
@@ -14634,10 +14635,18 @@ pub(crate) mod tests {
         let ctx = h.ctx.clone();
         h.app.apply(&ctx, None, entry.action);
         assert!(!h.app.select.tool);
+    }
+
+    #[test]
+    fn the_title_bar_has_no_select_tool_button() {
+        let mut h = Harness::new();
         h.frames(2, vec![]);
-        h.click(h.app.bar.select.center());
-        h.frames(1, vec![]);
-        assert!(h.app.select.tool);
+        let gap = h.ctx.global_style().spacing.item_spacing.x;
+        let between = h.app.bar.search.min.x - h.app.bar.sidebar.max.x;
+        assert!(
+            between <= gap + 1.0,
+            "the search field starts {between} after the sidebar button, not its {gap} gap: room for another button"
+        );
     }
 
     #[test]
@@ -18221,6 +18230,42 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_page_menu_offers_the_select_tool_first() {
+        let mut h = Harness::new();
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        let select = h.text_rect("Select text").expect("no Select text entry");
+        let link = h
+            .text_rect("Copy link to page")
+            .expect("no Copy link entry");
+        assert!(select.max.y <= link.min.y, "{select:?} below {link:?}");
+        assert!(!checked(&h, "Select text"));
+        let shortcut = h.text_rect("S").expect("no shortcut on the row");
+        assert!(
+            (shortcut.center().y - select.center().y).abs() < select.height() / 2.0,
+            "{shortcut:?} is not on the Select text row"
+        );
+    }
+
+    #[test]
+    fn choosing_select_text_from_the_page_menu_toggles_the_tool() {
+        let mut h = Harness::new();
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        h.click_text("Select text");
+        h.frames(2, vec![]);
+        assert!(h.app.select.tool);
+        assert!(
+            h.text_rect("Select text").is_none(),
+            "the menu stayed open: {:?}",
+            h.texts()
+        );
+        h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+        assert!(checked(&h, "Select text"));
+        h.click_text("Select text");
+        h.frames(2, vec![]);
+        assert!(!h.app.select.tool);
+    }
+
+    #[test]
     fn the_page_menu_puts_the_links_above_rotation() {
         let mut h = Harness::new();
         h.right_click(screen_pos(&h, 0, 306.0, 400.0));
@@ -18583,13 +18628,16 @@ pub(crate) mod tests {
 
     #[test]
     fn the_turn_entry_names_the_pages_current_angle() {
-        let mut h = Harness::new();
         for (rotation, label) in [
             (Rotation::R0, "Rotate page"),
             (Rotation::R90, "Rotate page (90°)"),
             (Rotation::R180, "Rotate page (180°)"),
             (Rotation::R270, "Rotate page (270°)"),
         ] {
+            // A fresh harness each time: a menu left open would swallow the
+            // next right-click, and closing it by clicking a page point can
+            // land on the menu itself, whose place moves with the angle.
+            let mut h = Harness::new();
             h.app.set_rotation(0, rotation);
             h.frames(2, vec![]);
             h.right_click(screen_pos(&h, 0, 306.0, 400.0));
@@ -18598,8 +18646,6 @@ pub(crate) mod tests {
                 "{rotation:?}: no {label:?} in {:?}",
                 h.texts()
             );
-            h.click(screen_pos(&h, 0, 500.0, 700.0));
-            h.frames(2, vec![]);
         }
     }
 
@@ -18633,7 +18679,16 @@ pub(crate) mod tests {
         h.right_click(screen_pos(&h, 0, 306.0, 400.0));
         open_rotation(&mut h);
         assert!(offers_angles(&h));
-        h.click(screen_pos(&h, 0, 500.0, 700.0));
+        // On the page, in the window, left of the menu: a point below the
+        // window proves only that a click off the window closes it.
+        let entry = h.text_rect("Rotate page").expect("no turn entry");
+        let outside = screen_pos(&h, 0, 100.0, 300.0);
+        assert!(
+            h.app.last_scroll.unwrap().inner.contains(outside),
+            "{outside:?} is not in the window"
+        );
+        assert!(outside.x < entry.left(), "{outside:?} is inside the menu");
+        h.click(outside);
         h.frames(2, vec![]);
         assert!(!offers_angles(&h), "{:?}", h.texts());
         assert!(turn_entry(&h).is_none(), "{:?}", h.texts());
@@ -18732,6 +18787,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn right_click_on_a_thumbnail_leaves_the_select_tool_out() {
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        h.right_click(drawn_card(&h, 2).center());
+        assert!(
+            h.text_rect("Select text").is_none(),
+            "the card's menu is about that page: {:?}",
+            h.texts()
+        );
+    }
+
+    #[test]
     fn right_click_on_a_thumbnail_copies_that_pages_link() {
         let mut h = Harness::build_with(Arc::new(BlankEngine), |app| {
             app.with_name("Some Book.pdf".into())
@@ -18757,6 +18823,18 @@ pub(crate) mod tests {
         h.frames(2, vec![]);
         assert_eq!(h.app.transforms.get(4).rotation, Rotation::R90);
         assert_eq!(h.centre().page, before.page);
+    }
+
+    #[test]
+    fn right_click_on_a_pin_leaves_the_select_tool_out() {
+        let mut h = pinned_on(&[4]);
+        h.frames(2, vec![]);
+        h.right_click(drawn_card(&h, 4).center());
+        assert!(
+            h.text_rect("Select text").is_none(),
+            "the card's menu is about that page: {:?}",
+            h.texts()
+        );
     }
 
     #[test]
