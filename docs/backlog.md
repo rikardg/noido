@@ -9,11 +9,6 @@ when it is fixed.
 
 ## Known issues
 
-- **`ctrl_i_shows_document_info` is flaky.** It failed once under a full
-  `cargo test --workspace` (2026-10-27) and passed five times alone. It
-  probably times out: `Harness::until` gives up silently after about 1 s,
-  and the properties load on a background thread. `until` could panic
-  when the time runs out, or the test could wait longer.
 - **Try the desktop integration by hand (user).** Run `noido --install`
   from the binary you want launched, then in Nautilus: "Open With" on a
   PDF lists noido and opens it; several selected PDFs open one window
@@ -46,10 +41,6 @@ when it is fixed.
   `pdflatex`) with noido open: it should follow each compile, keep the
   place, and survive a failing build.
 
-- **Render-thread panic leaves the window blank.** If the engine panics on a
-  page, the render thread dies silently and every page stays a white
-  placeholder. Wrap `render_tile` in `catch_unwind` and report it as
-  `EngineError::Render`. (`crates/noido-render/src/lib.rs`, `run`)
 - **Zero-page PDF opens a blank window.** hayro also reports 0 pages for some
   malformed page trees. Treat it as an error ("no pages") before the window
   opens. (`crates/frontends/gui-egui/src/main.rs`)
@@ -65,17 +56,10 @@ when it is fixed.
   `min(MAX_RENDER_SIDE, ctx.input(|i| i.max_texture_side))` so another backend
   cannot exceed its limit. (`crates/frontends/gui-egui/src/app.rs`)
 
-
-- **Viewport size lags the window by one frame.** On resize the content is
-  laid out for the old width for one frame (brief horizontal scrollbar or
-  off-centre pages). Take the size from `ui.available_rect_before_wrap()`
-  before showing the scroll area. (`crates/frontends/gui-egui/src/app.rs`)
 - **Minimizing can lose the position.** Some platforms report a 0×0 viewport
   while minimized; `View::set_viewport_size(0, 0)` refits to 0.1 and anchors
   at (0, 0). Ignore non-positive sizes after the first real one.
   (`crates/noido-core/src/view.rs`)
-- **Alt+W / Alt+F trigger the plain-key bindings.** `KeyPress` only carries
-  `command` and `shift`; carry `alt` or skip presses with Alt.
 - **Kinetic scroll velocity survives a zoom.** A coasting touch drag keeps
   going in the new content coordinates after a zoom. Low impact.
 
@@ -93,32 +77,12 @@ when it is fixed.
   `docs/` that prune never removes; no fsync before the rename.
 - Window files without a state file (noido killed within 2 s of opening a new
   document) are never pruned.
-- Windows puts state in `%LOCALAPPDATA%\noido\data`, not
-  `%LOCALAPPDATA%\noido` as the spec says; macOS folder is `noido`, not a
-  bundle id.
 - Two instances on one document can both write its window file (eframe's
   write isn't atomic); a broken file falls back to the default window.
 - Path-fallback ties within the same second are picked arbitrarily.
 
-## Thumbnails (review minors, 2026-10-25)
-
-- `thumbnail_order` with budget 0 still returns the focus page (no caller
-  passes 0).
-- Thumbnails cost about as much CPU as full renders (hayro parses and decodes
-  images at full cost regardless of output size) and compete with them right
-  after a jump; on few-core machines "not delaying full renders" is best
-  effort. Thread priority is a non-goal for now.
-- `jump_shows_thumbnail_before_full_render` unblocks the gated render thread
-  only by dropping the gate at the end; worth a comment.
-
 ## Title bar and sidebar (review minors, 2026-10-25)
 
-- On the first frame with a restored sidebar wider than the window allows,
-  the search field is sized from the unclamped width (clamp at restore, or
-  draw the sidebar before the bar).
-- A NaN sidebar width in a hand-edited state file is never saved over
-  (NaN ≠ NaN, so the debounce restarts every frame) and wakes noido every
-  2 s; sanitise on load.
 - The comment on calling `frame::resize_edges` first is misleading: order
   doesn't keep presses from widgets underneath; the page view's 8 pt margin
   does.
@@ -132,9 +96,6 @@ when it is fixed.
   loading state, parsing) waits 1 s, gets no answer and opens a second
   window: the first only serves after `Renderer::start`. Serve right after
   `claim`.
-- Two launches at the same moment can both become first: the second's
-  `try_overwrite` unlinks the first's live socket. Retry `connect` once on
-  `AddrInUse` before overwriting, or lock around the claim.
 - A write between reading the file and `Watcher::start` is missed until
   the next change. Arm the debounce once at start (`open_new` skips an
   unchanged hash anyway).
@@ -146,12 +107,6 @@ when it is fixed.
 - `prune` trusts the window name in a state file: a hand-edited
   `window = "../../x"` makes it delete `docs/../../x.window.ron`. Accept only
   64 hex characters, as `files_with` does.
-- The socket file stays after a normal quit (the serving thread owns the
-  listener); harmless, the next launch replaces it.
-- Tests: no reload to fewer pages in paged or dual mode comparing the
-  centre; the activation path isn't checked while minimised on Windows or
-  macOS (eframe may not run `ui()` then).
-
 ## Sidebar thumbnails (review minors, 2026-10-25)
 
 - A fling of the page view keeps gliding after a thumbnail click (egui keeps
@@ -167,30 +122,9 @@ when it is fixed.
 - `reload_swaps_sidebar_renderer` is weak: only pages 0–2 are visible, so
   "sharp pages below 5" holds anyway, and it doesn't check the place is
   kept. Scroll the sidebar to pages 6–9 first.
-- The wheel over the title bar no longer flips pages in paged mode (only
-  over the page view does); fine unless someone misses it.
-
 ## Deferred features
 
-- **Automated interactive testing** of the egui frontend: drive key presses,
-  wheel/pinch zoom, scrolling and resizing headlessly and check the result
-  (scroll offset, zoom, rendered output). Candidate: `egui_kittest`, which runs
-  the app without a desktop session. A minimal headless harness already
-  exists (`Harness` in `crates/frontends/gui-egui/src/app.rs` tests: real app,
-  fake engine, key events and window sizes via `RawInput`); extend it or move
-  to `egui_kittest`. Do not fake input on the real desktop —
-  on GNOME that triggers a remote-desktop permission prompt.
-
 - Vim key layer (zathura-style), with key sequences and counts.
-- Softer-looking thumbnails: at 120 px they look blocky/blurry when
-  stretched; 240 px was tried and judged not worth it. Ideas: a smoother
-  upscale (e.g. bicubic or a blur pass, in a shader or on the CPU before
-  upload), mipmapped sampling, or a fade from thumbnail to full render.
-- **Title bar on macOS, checked on a Mac:** the traffic-light inset (76
-  points), centring the traffic lights in our taller bar (an empty
-  `NSToolbar`, via `objc2`), translucency (`window-vibrancy`), and reading
-  the system's double-click preference (zoom or minimise). The code builds
-  for macOS but nobody has seen it run.
 - **Our window frame on Windows, checked on Windows:** snapping, resize
   edges, the window buttons, Alt+F4.
 - **GNOME's button layout:** GNOME can put the window buttons on the left
@@ -202,10 +136,6 @@ when it is fixed.
   with a fixed noido colour as the fallback: on Linux the desktop portal's
   `org.freedesktop.appearance` `accent-color` (GNOME 47+, KDE; e.g. via
   `ashpd`); macOS and Windows have their own APIs.
-- **Reload notices and a status area.** Show "Reloaded" briefly after a
-  reload, and "Reload failed — showing the previous version" in a warning
-  colour when the new file doesn't open. noido has no status bar yet;
-  decide where status like this lives.
 - **Proper window activation on Wayland.** winit's focus call does
   nothing on Wayland, and it can't activate an existing window with a
   token from another process. A second launch should pass its
@@ -293,23 +223,11 @@ when it is fixed.
 
 ## Text layer (review minors, 2026-10-25)
 
-- **The UI can't tell the text thread died.** If opening fails or hayro
-  panics on a page, no `Done` arrives, so a "Searching…" line would wait
-  forever. Send a failure update, or `Done` on open failure; part 2 should
-  not wait on `Done` alone. (`crates/noido-render/src/text.rs`)
-- **Exactly 5 000 hits reads as cut short** ("5000+") when the cap is reached
-  at a page end and no later page has hits. The remaining pages are
-  unsearched, so this is defensible; worth a comment.
 - **Context lines show raw text:** "spe- cifically" across a line-end
   hyphen, double spaces from OCR layers. Collapse whitespace and join
   hyphenated breaks in `context()`, keeping the bold range right.
 - **An unjoined mark lands after an inserted space** ("a ¨b" rather than
   "a¨ b"). Cosmetic. (`crates/noido-text/src/page.rs`)
-- **Memory per text character is about 70 bytes** (Dennett peaks at 83 MB
-  RSS including the 30 MB file), above the spec's 10–20 MB estimate for
-  600 pages. `u32` indices in `CharInfo` and the folded forms' maps would
-  halve it.
-
 ## Search UI (review minors, 2026-10-25)
 
 - **A reload during the typing delay never jumps:** the re-run uses the
@@ -318,40 +236,25 @@ when it is fixed.
 - **Enter, Mod+G or F3 during the typing delay step through the old query's
   hits,** then the new query jumps. Start the pending search at once on a
   step.
-- **The sidebar clears its thumbnail renders every frame while results
-  show** (`closed()` each frame sends `set_keep(0..0)`). Harmless, wasteful.
 - **The first letter typed shows thumbnails for 0.2 s** before the results
   replace them. A brief flicker; show the results list as soon as there is
   text.
 - **Hits on multi-column pages** are ordered by text but compared by their
   top for "next from the view"; the two can disagree.
-- **`Hits::first_at_or_after` / `last_before`** are unused since next and
-  previous compare content positions (`first_where` / `last_where`); drop
-  them or use them.
 - **Paged fit modes render the neighbouring hits' pages at the current
   spread's scale.** With mixed page sizes the page is rendered again at its
   own fit scale after the step, and the page left behind again at the new
   one's: two extra renders per step. The prefetch window does the same.
 - **The prefetched hit targets shift while a search is still running**
   (until a hit below the view arrives); a little wasted render work.
-- **Result card headers can overlap at the narrowest sidebar** (160 pt):
-  "Page 1234" and "120/120 hits" in small type nearly fill the 136 pt; elide
-  the page text when both don't fit.
 - **`results_are_cards_of_one_height` is weak:** `> 4 × body` holds mostly
   by the padding; assert the height from the font metrics, and add a test
   that a match near the end of a long context is inside the shown rows.
 
 ## Arrow keys (review minors, 2026-10-26)
 
-- **Alt+arrow (and Ctrl+arrow on macOS) scroll as plain arrows:** `KeyPress`
-  carries only Mod and Shift. Drop presses with other modifiers, or add a
-  flag.
 - **Holding an arrow in fit-page paged mode flips ~30 spreads a second**, as
   fast as key repeat; check that renders and prefetch don't churn.
-- **Test gaps:** no harness test of an arrow flip in paged mode; no view
-  test that ←/→ do nothing on a tall paged page that fits the width;
-  `arrows_move_the_cursor_while_searching` only means something for ↓.
-
 ## Odd pages left (review minors, 2026-10-26)
 
 - **An empty document with page 1 alone has one empty spread**
@@ -376,8 +279,6 @@ when it is fixed.
   a marker key (`X-Noido-Installed=true`) could tell them apart.
 - Symlinks: a dangling `noido.desktop` link counts as "not installed";
   writing follows a link into its target (dotfiles managers).
-- An existing file that isn't UTF-8 or can't be read is planned as "Write"
-  rather than "Replace".
 - Control characters (newline, tab) in the binary's path aren't escaped,
   making an invalid file; escape or refuse them.
 - The file is written in place, not via a temp file and rename.
@@ -402,14 +303,8 @@ when it is fixed.
   version file is quietly downgraded on the next change.
 - Ctrl+Q does nothing while the settings page is open (`handle_input`
   returns early); Quit could be let through.
-- With the page open, clicks on the title bar (move, close) hit the modal
-  backdrop and close the page first. Acceptable; check by hand.
-- `reload` builds with `View::new`, not the settings; only matters when the
-  document had no pages before the reload.
 - `view_keys_do_nothing_while_open` doesn't hover the pages before the
   wheel event, so it doesn't prove egui's ScrollArea is blocked by the modal.
-- Spec "Code shape" says `View::new(page_sizes, &Defaults)`; the code kept
-  `View::new` and added `View::with_defaults`. Update the spec.
 - Sidebar row: "Set from current view" copies a sidebar that search opened
   by itself (`sidebar_opened_by_search`), saving `sidebar = true` though
   the reader never chose it. Could use `open && !opened_by_search`.
@@ -494,10 +389,6 @@ when it is fixed.
   entries; "Euler Extension" / Regular would match them.
 - **Lowercase TeX names** (`cmr10`, from old dvips bitmap output) stay raw;
   compare ignoring ASCII case.
-- **Computer Modern says "Roman"** where other fonts' "Roman" reads
-  "Regular" (`Times-Roman`). Deliberate, CM's own word; say so in the spec
-  if it stays.
-
 ## Document info jump fix (review minors, 2026-10-26)
 
 - **A vertical jump is still possible**: the modal centres on last frame's
@@ -514,13 +405,8 @@ when it is fixed.
 
 ## Document info scroll bar (review minors, 2026-10-26)
 
-- The edge test passes a bar that sticks out past the page (the
-  difference goes negative); also assert `bar.right() <= modal.right()`.
 - A hovered floating bar is 10 px wide but the margin is 6, so it covers
   about 4 px of text; widen the right margin to the bar width, or accept.
-- The `right` helper in `info::show` takes `&mut dyn FnMut`; a small
-  generic fn would read better.
-
 ## Screen edge flash (review minors, 2026-10-26)
 
 - `reload()` doesn't clear `screen_edge`, unlike the link flash: a reload
@@ -538,18 +424,12 @@ when it is fixed.
 - An edge in a gap between rows is a page point past the page's bottom;
   the gap doesn't scale with zoom, so a zoom during the fade can move the
   line out of the gap.
-- `page_keys_leave_the_old_edge` asserts the unused `x: -12.0` from the
-  margin; compare only page and y.
 - Tests: no GUI test for PageUp, a dual spread (two segments), an edge in
   a gap, a no-op press at the end, or a flip clearing a showing flash;
   `edge_lines` matches any line of the flash width.
-- Harness `press()` sends no release, so egui keeps the key down for the
-  rest of the test; a `tap()` helper would behave like a real tap.
 - Opening settings or info (by mouse) while a page key repeats: the
   repeats aren't seen behind the modal, so the edge flashes on release.
   Record the flag before the modal's early return, or clear the edge.
-- Repeats count even when noido didn't act on them (a text field or menu
-  took the key); harmless, matches the spec.
 - No test for PageUp held then PageDown tapped (no flash), or a hold at
   the document's end followed by a tap (flashes).
 
@@ -560,10 +440,6 @@ when it is fixed.
   is visible rather than centred. Placing the view directly with
   `scrolled_to` would make it independent and bring back the centred
   check.
-- The page-keys spec and plan (2026-10-25) and the screen edge flash spec
-  still say 90% / `SCREEN_OVERLAP = 0.1`; they are dated records, superseded
-  by `2026-10-26-page-step-98-design.md`.
-
 ## Paper colour (review minors, 2026-10-27)
 
 - **No focus ring on the swatches.** The chosen square always has its
