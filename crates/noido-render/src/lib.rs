@@ -304,7 +304,7 @@ pub(crate) fn render_whole(
 }
 
 /// The pixels a page of `size` is rendered at, on `scale` pixels per point.
-fn render_pixels(size: Size, scale: f32) -> (u32, u32) {
+pub(crate) fn render_pixels(size: Size, scale: f32) -> (u32, u32) {
     let pixels = |points: f32| ((points * scale).round() as u32).max(1);
     (pixels(size.width), pixels(size.height))
 }

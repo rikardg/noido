@@ -1,10 +1,13 @@
 //! The document as the reader turned it: sizes, renders, glyphs, links and
 //! destinations all come out turned.
 
+use std::sync::{Arc, Mutex};
+
 use engine_hayro::HayroEngine;
 use noido_core::{PageTransform, PageTransforms, Rotation};
 use noido_engine::{
-    Destination, Document, LinkTarget, OutlineEntry, PdfBytes, PdfEngine, Point, Size,
+    Destination, Document, EngineError, LinkTarget, OutlineEntry, PdfBytes, PdfEngine, PixelRect,
+    Point, Rgba8Image, Size,
 };
 use noido_render::{Transformed, Transforms, open_transformed};
 
@@ -364,6 +367,168 @@ fn scaled_tile_matches_the_page_at_the_product_scale() {
             }
         }
     }
+}
+
+/// A tile's part of a rotated, scaled page is worked out on the app's
+/// pixel grid: the page's shown size times the zoom, rounded, which is
+/// the grid `render_page` is given. A different rounding in the wrapper
+/// slips every tile not touching the far edge one pixel, and leaves a
+/// seam at the page's right or bottom edge.
+#[test]
+fn scaled_edge_tiles_ask_for_the_apps_grid() {
+    /// Answers every tile with white and keeps what it was asked for.
+    struct Recorder(Arc<Mutex<Vec<(f32, PixelRect)>>>);
+
+    impl Document for Recorder {
+        fn page_count(&self) -> usize {
+            1
+        }
+
+        fn page_size(&self, _: usize) -> Result<Size, EngineError> {
+            Ok(size(612.0, 792.0))
+        }
+
+        fn render_tile(
+            &self,
+            _: usize,
+            scale: f32,
+            rect: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            self.0.lock().unwrap().push((scale, rect));
+            let pixels = vec![255; rect.width as usize * rect.height as usize * 4];
+            Ok(Rgba8Image::from_premultiplied(rect.width, rect.height, pixels).unwrap())
+        }
+    }
+
+    // 612/792 is the fit factor of a landscape page among portrait ones:
+    // not a power of two, so the two ways of multiplying can round apart,
+    // and this zoom is one where they do.
+    let (factor, zoom) = (612.0 / 792.0, 2.875);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let transforms = Transforms::new(PageTransforms::from_records([(
+        0,
+        PageTransform {
+            rotation: Rotation::R90,
+            scale: factor,
+        },
+    )]));
+    let doc = Transformed::new(Box::new(Recorder(calls.clone())), transforms);
+    let shown = doc.page_size(0).unwrap();
+    let pixels = size((shown.width * zoom).round(), (shown.height * zoom).round());
+    let (w, h) = (pixels.width as u32, pixels.height as u32);
+    // The page's far corner, and the tile beside it: the one whose part
+    // the clamp does not rescue.
+    let corner = PixelRect {
+        x: w - 120,
+        y: h - 80,
+        width: 120,
+        height: 80,
+    };
+    doc.render_tile(0, zoom, corner).unwrap();
+    doc.render_tile(
+        0,
+        zoom,
+        PixelRect {
+            x: w - 240,
+            ..corner
+        },
+    )
+    .unwrap();
+
+    let calls = calls.lock().unwrap();
+    let at = |y| {
+        (
+            zoom * factor,
+            PixelRect {
+                x: h - 80,
+                y,
+                width: 80,
+                height: 120,
+            },
+        )
+    };
+    assert_eq!(calls[0], at(0));
+    assert_eq!(calls[1], at(120));
+}
+
+/// A tile works its part out from one read of the shared transforms: a
+/// rotation or a refit that lands while the tile is under way does not
+/// mix one page's grid with another's turn.
+#[test]
+fn a_tile_keeps_one_transform_snapshot() {
+    /// Undoes its first `page_size` call with a different transform, as a
+    /// rotation or a refit on the window's thread would.
+    struct Flipper {
+        calls: Arc<Mutex<Vec<(f32, PixelRect)>>>,
+        transforms: Transforms,
+        shown: Size,
+        flip: Mutex<Option<PageTransform>>,
+    }
+
+    impl Document for Flipper {
+        fn page_count(&self) -> usize {
+            1
+        }
+
+        fn page_size(&self, _: usize) -> Result<Size, EngineError> {
+            if let Some(to) = self.flip.lock().unwrap().take() {
+                self.transforms.set(0, to);
+            }
+            Ok(self.shown)
+        }
+
+        fn render_tile(
+            &self,
+            _: usize,
+            scale: f32,
+            rect: PixelRect,
+        ) -> Result<Rgba8Image, EngineError> {
+            self.calls.lock().unwrap().push((scale, rect));
+            let pixels = vec![255; rect.width as usize * rect.height as usize * 4];
+            Ok(Rgba8Image::from_premultiplied(rect.width, rect.height, pixels).unwrap())
+        }
+    }
+
+    let (factor, zoom) = (612.0 / 792.0, 2.875);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let transforms = Transforms::new(PageTransforms::from_records([(
+        0,
+        PageTransform {
+            rotation: Rotation::R90,
+            scale: factor,
+        },
+    )]));
+    let doc = Transformed::new(
+        Box::new(Flipper {
+            calls: calls.clone(),
+            transforms: transforms.clone(),
+            shown: size(612.0, 792.0),
+            flip: Mutex::new(Some(PageTransform {
+                rotation: Rotation::R0,
+                scale: 0.5,
+            })),
+        }),
+        transforms,
+    );
+    doc.render_tile(
+        0,
+        zoom,
+        PixelRect {
+            x: 10,
+            y: 20,
+            width: 120,
+            height: 80,
+        },
+    )
+    .unwrap();
+    let calls = calls.lock().unwrap();
+    let part = PixelRect {
+        x: 20,
+        y: 1630,
+        width: 80,
+        height: 120,
+    };
+    assert_eq!(calls[0], (zoom * factor, part));
 }
 
 #[test]

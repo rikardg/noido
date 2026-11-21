@@ -162,16 +162,20 @@ impl Document for Transformed {
         let rotation = transform.rotation;
         // The shown page at `scale` is the turned page at `scale` times
         // the page's own scale.
-        let scale = scale * transform.scale;
+        let product = scale * transform.scale;
         if rotation == noido_core::Rotation::R0 {
-            return self.inner.render_tile(page, scale, rect);
+            return self.inner.render_tile(page, product, rect);
         }
         // The tile's place on the unturned page, in whole pixels of the
-        // page at `scale`.
-        let turned = rotation.size(self.inner.page_size(page)?);
+        // page as shown: the grid the app renders pages on, so a tile
+        // meets the page's edge where the app's own page does. Sized by
+        // the transform read above, so a change under way cannot mix one
+        // page's grid with another's turn.
+        let shown = transform.size(self.inner.page_size(page)?);
+        let (width, height) = crate::render_pixels(shown, scale);
         let pixels = Size {
-            width: (turned.width * scale).round(),
-            height: (turned.height * scale).round(),
+            width: width as f32,
+            height: height as f32,
         };
         let part = rotation.inverse().rect(
             Rect {
@@ -190,7 +194,7 @@ impl Document for Transformed {
         };
         Ok(self
             .inner
-            .render_tile(page, scale, unturned)?
+            .render_tile(page, product, unturned)?
             .turned(rotation))
     }
 
