@@ -26,8 +26,9 @@ pub struct Xhtml {
     /// in `svg` and `math` is counted but not drawn, so it does not
     /// count here.
     pub has_text: bool,
-    /// An `<svg>` in the body holds an `<image>`.
-    pub svg_image: bool,
+    /// The first `<img src>`, or svg `<image>` `href` / `xlink:href`, in
+    /// the body, as written.
+    pub first_image: Option<String>,
 }
 
 /// A chapter file's bytes; `Err(())` when it isn't UTF-8 (a leading
@@ -47,10 +48,10 @@ pub fn parse(bytes: &[u8]) -> Result<Xhtml, ()> {
         ids: Vec::new(),
         seen: HashSet::new(),
         has_text: false,
-        svg_image: false,
     };
     let mut blocks = Vec::new();
     let mut cover = false;
+    let mut first_image = None;
     if let Some(body) = doc
         .descendants()
         .find(|n| n.is_element() && n.tag_name().name() == "body")
@@ -59,6 +60,7 @@ pub fn parse(bytes: &[u8]) -> Result<Xhtml, ()> {
             || body
                 .children()
                 .any(|c| c.is_element() && c.tag_name().name() == "section" && is_cover(c));
+        first_image = body.descendants().find_map(image_src).map(str::to_string);
         reader.note_id(body);
         reader.container(body, &mut blocks);
     }
@@ -68,8 +70,39 @@ pub fn parse(bytes: &[u8]) -> Result<Xhtml, ()> {
         chars: reader.pos,
         cover,
         has_text: reader.has_text,
-        svg_image: reader.svg_image,
+        first_image,
     })
+}
+
+const XLINK_NS: &str = "http://www.w3.org/1999/xlink";
+
+/// The source of an `img` with a `src`, or of an svg `image` with an
+/// `href` (plain or `xlink:`).
+fn image_src<'a>(node: Node<'a, '_>) -> Option<&'a str> {
+    if !node.is_element() {
+        return None;
+    }
+    match node.tag_name().name() {
+        "img" => node.attribute("src"),
+        "image" if node.ancestors().any(|a| a.tag_name().name() == "svg") => node
+            .attribute((XLINK_NS, "href"))
+            .or_else(|| node.attribute("href")),
+        _ => None,
+    }
+}
+
+/// The source of the first `image` under the `svg` `node`.
+fn svg_image<'a>(node: Node<'a, '_>) -> Option<&'a str> {
+    node.descendants().find_map(image_src)
+}
+
+/// A size attribute: ASCII digits only (around whitespace), above 0.
+fn plain_number(value: Option<&str>) -> Option<u32> {
+    let v = value?.trim();
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    v.parse().ok().filter(|&n| n > 0)
 }
 
 const EPUB_NS: &str = "http://www.idpf.org/2007/ops";
@@ -267,7 +300,6 @@ struct Reader {
     /// The ids in `ids`, for the repeat check.
     seen: HashSet<String>,
     has_text: bool,
-    svg_image: bool,
 }
 
 impl Reader {
@@ -288,6 +320,12 @@ impl Reader {
                 continue;
             }
             let name = child.tag_name().name();
+            if name == "svg" && svg_image(child).is_some() {
+                self.flush(run, out);
+                self.draw_svg(child, run);
+                self.flush(run, out);
+                continue;
+            }
             if skipped(name) {
                 self.count_child(child);
                 continue;
@@ -477,7 +515,10 @@ impl Reader {
             if child.is_text() {
                 self.add_text(run, child.text().unwrap_or_default());
             } else if child.is_element() {
-                if skipped(child.tag_name().name()) {
+                let name = child.tag_name().name();
+                if name == "svg" && svg_image(child).is_some() {
+                    self.draw_svg(child, run);
+                } else if skipped(name) {
                     self.count_child(child);
                 } else {
                     self.inline_element(child, run);
@@ -520,20 +561,16 @@ impl Reader {
                 return;
             }
             "img" => {
-                run.touch(at);
-                if let Some(space) = run.pending.take() {
-                    run.text.push(" ", space);
-                }
-                let start = run.text.string.len();
-                run.text.push("\u{fffc}", at..at);
-                run.text.styles.push(Styled {
-                    style: Style::Image {
+                Self::draw_image(
+                    run,
+                    at,
+                    Style::Image {
                         src: node.attribute("src").unwrap_or_default().to_string(),
                         alt: node.attribute("alt").unwrap_or_default().to_string(),
+                        width: plain_number(node.attribute("width")),
+                        height: plain_number(node.attribute("height")),
                     },
-                    drawn: start..run.text.string.len(),
-                    span: at..at,
-                });
+                );
                 self.inline(node, run);
                 return;
             }
@@ -570,6 +607,38 @@ impl Reader {
         }
     }
 
+    /// An image drawn as one object character at part character `at`,
+    /// which has no source characters of its own.
+    fn draw_image(run: &mut Run, at: usize, style: Style) {
+        run.touch(at);
+        if let Some(space) = run.pending.take() {
+            run.text.push(" ", space);
+        }
+        let start = run.text.string.len();
+        run.text.push("\u{fffc}", at..at);
+        run.text.styles.push(Styled {
+            style,
+            drawn: start..run.text.string.len(),
+            span: at..at,
+        });
+    }
+
+    /// An `svg` holding an image: the image is drawn here, the svg's
+    /// text counted and not drawn.
+    fn draw_svg(&mut self, node: Node, run: &mut Run) {
+        let at = self.pos;
+        if let Some(src) = svg_image(node) {
+            let style = Style::Image {
+                src: src.to_string(),
+                alt: String::new(),
+                width: None,
+                height: None,
+            };
+            Self::draw_image(run, at, style);
+        }
+        self.count_child(node);
+    }
+
     /// Counts the text under `node`'s children without drawing it.
     fn count(&mut self, node: Node) {
         for child in node.children() {
@@ -587,8 +656,6 @@ impl Reader {
             self.has_text |= drawn && text.chars().any(|c| !c.is_whitespace());
             self.pos += text.nfc().count();
         } else if node.is_element() && !uncounted(node.tag_name().name()) {
-            self.svg_image |= node.tag_name().name() == "image"
-                && node.ancestors().any(|a| a.tag_name().name() == "svg");
             self.note_id(node);
             self.count(node);
         }
@@ -845,7 +912,9 @@ mod tests {
             [(
                 Style::Image {
                     src: "i/f1.png".into(),
-                    alt: "f1".into()
+                    alt: "f1".into(),
+                    width: None,
+                    height: None,
                 },
                 "\u{fffc}",
                 1..1
@@ -906,15 +975,66 @@ mod tests {
     }
 
     #[test]
-    fn an_svg_image_is_noted() {
-        let svg = |inner: &str| {
-            read(&format!(
-                "<svg xmlns=\"http://www.w3.org/2000/svg\">{inner}</svg>"
-            ))
+    fn img_size_attributes_are_plain_numbers() {
+        let size = |attrs: &str| {
+            let x = read(&format!("<p><img src=\"a.png\" {attrs}/></p>"));
+            match &text(&x.tree.blocks[0]).styles[0].style {
+                Style::Image { width, height, .. } => (*width, *height),
+                other => panic!("{other:?}"),
+            }
         };
-        assert!(svg("<image/>").svg_image);
-        assert!(!svg("<rect/>").svg_image);
-        assert!(!read("<p>x</p>").svg_image);
+        assert_eq!(size("width=\"100\" height=\"50%\""), (Some(100), None));
+        assert_eq!(size("width=\"0\" height=\" 7 \""), (None, Some(7)));
+        assert_eq!(size("width=\"100px\""), (None, None));
+        assert_eq!(size(""), (None, None));
+    }
+
+    const SVG: &str = "xmlns=\"http://www.w3.org/2000/svg\" \
+                       xmlns:xlink=\"http://www.w3.org/1999/xlink\"";
+
+    #[test]
+    fn an_svg_image_is_an_image() {
+        let x = read(&format!(
+            "<div><svg {SVG}><title>t</title><image xlink:href=\"../i/c.jpg\"/></svg></div>\
+             <p>after</p>"
+        ));
+        assert_eq!(x.tree.blocks.len(), 2);
+        let t = text(&x.tree.blocks[0]);
+        assert_eq!(t.string, "\u{fffc}");
+        assert!(matches!(
+            &t.styles[0].style,
+            Style::Image { src, alt, .. } if src == "../i/c.jpg" && alt.is_empty()
+        ));
+        assert_eq!(x.tree.blocks[1].span.start, 1);
+        assert_eq!(x.chars, 6);
+    }
+
+    #[test]
+    fn an_svg_image_inside_a_paragraph_stays_in_it() {
+        let x = read(&format!(
+            "<p>a<svg {SVG}><image href=\"c.jpg\"/></svg>b</p>"
+        ));
+        assert_eq!(x.tree.blocks.len(), 1);
+        assert_eq!(text(&x.tree.blocks[0]).string, "a\u{fffc}b");
+    }
+
+    #[test]
+    fn an_svg_without_an_image_draws_nothing() {
+        let x = read(&format!("<div><svg {SVG}><rect/></svg></div>"));
+        assert!(x.tree.blocks.is_empty());
+    }
+
+    #[test]
+    fn the_first_image_is_noted() {
+        assert_eq!(
+            read("<p><img src=\"a.png\"/></p>").first_image.as_deref(),
+            Some("a.png")
+        );
+        let svg = read(&format!("<svg {SVG}><image xlink:href=\"c.jpg\"/></svg>"));
+        assert_eq!(svg.first_image.as_deref(), Some("c.jpg"));
+        let rect = read(&format!("<svg {SVG}><rect/></svg>"));
+        assert_eq!(rect.first_image, None);
+        assert_eq!(read("<p>x</p>").first_image, None);
     }
 
     #[test]

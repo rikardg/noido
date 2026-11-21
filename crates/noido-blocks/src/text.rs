@@ -50,6 +50,10 @@ pub enum Style {
     Image {
         src: String,
         alt: String,
+        /// From a plain-number `width` attribute; `None` otherwise.
+        width: Option<u32>,
+        /// From a plain-number `height` attribute; `None` otherwise.
+        height: Option<u32>,
     },
     /// A task list item's box, drawn as one object character (U+FFFC)
     /// standing for `[ ]` or `[x]`.

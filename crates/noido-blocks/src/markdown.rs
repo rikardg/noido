@@ -353,6 +353,8 @@ impl<'a> Builder<'a> {
                     let style = Style::Image {
                         src: std::mem::take(src),
                         alt: std::mem::take(alt),
+                        width: None,
+                        height: None,
                     };
                     leaf.image = None;
                     let span = chars.range(range);
@@ -539,7 +541,9 @@ mod tests {
             img.style,
             Style::Image {
                 src: "i.png".into(),
-                alt: "alt e".into()
+                alt: "alt e".into(),
+                width: None,
+                height: None
             }
         );
         assert_eq!(&t.string[img.drawn.clone()], "\u{FFFC}");
@@ -571,7 +575,9 @@ mod tests {
             vec![Styled {
                 style: Style::Image {
                     src: "e".into(),
-                    alt: "a b d".into()
+                    alt: "a b d".into(),
+                    width: None,
+                    height: None
                 },
                 drawn: 0..3,
                 span: 0..17

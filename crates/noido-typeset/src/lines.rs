@@ -230,7 +230,7 @@ impl Shape {
         let mut stand_ins: Vec<(Range<usize>, String, RepKind)> = Vec::new();
         for styled in &para.text.styles {
             let (text, kind) = match &styled.style {
-                Style::Image { src, alt } if alt.is_empty() || is_file_stem(alt, src) => {
+                Style::Image { src, alt, .. } if alt.is_empty() || is_file_stem(alt, src) => {
                     ("[image]".to_string(), RepKind::Image)
                 }
                 Style::Image { alt, .. } => (alt.clone(), RepKind::Image),
@@ -1050,6 +1050,8 @@ mod tests {
             style: Style::Image {
                 src: src.to_string(),
                 alt: alt.to_string(),
+                width: None,
+                height: None,
             },
             drawn: 0..1,
             span: 0..1,
