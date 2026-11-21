@@ -105,8 +105,8 @@ pub fn typeset_epub(epub: &Epub) -> Book {
         .iter()
         .map(|part| match &part.kind {
             PartKind::Text(x) => Content::Blocks(&x.tree),
-            PartKind::Cover => Content::Drawn(title_page(epub)),
-            PartKind::Unreadable => Content::Drawn(vec![drawn(
+            PartKind::Cover { .. } => Content::Drawn(title_page(epub)),
+            PartKind::Image | PartKind::Unreadable => Content::Drawn(vec![drawn(
                 Role::Body { indent: false },
                 "This chapter could not be read.",
             )]),

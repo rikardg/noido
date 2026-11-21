@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 noido-blocks.workspace = true
+noido-image.workspace = true
 zip.workspace = true
 # zip's deflate-flate2 picks no backend of its own; this one builds alone.
 flate2.workspace = true

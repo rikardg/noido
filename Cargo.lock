@@ -2882,6 +2882,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "noido-blocks",
+ "noido-image",
  "percent-encoding",
  "roxmltree 0.21.2",
  "zip",

@@ -1,6 +1,6 @@
 use std::io::{Cursor, Write};
 
-use noido_epub::{EpubError, PartKind, TocEntry, is_epub, open};
+use noido_epub::{EpubError, PartKind, TocEntry, image_data, image_size, is_epub, open};
 use zip::write::SimpleFileOptions;
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -14,7 +14,8 @@ fn fixture(name: &str) -> Vec<u8> {
 fn kind(k: &PartKind) -> &'static str {
     match k {
         PartKind::Text(_) => "Text",
-        PartKind::Cover => "Cover",
+        PartKind::Cover { .. } => "Cover",
+        PartKind::Image => "Image",
         PartKind::Unreadable => "Unreadable",
     }
 }
@@ -149,7 +150,7 @@ fn only_the_first_spine_item_can_be_a_cover() {
     ]);
     let book = open(&bytes, 8 << 20).ok().unwrap();
     let kinds: Vec<&str> = book.parts.iter().map(|p| kind(&p.kind)).collect();
-    assert_eq!(kinds, ["Cover", "Unreadable", "Text", "Text"]);
+    assert_eq!(kinds, ["Cover", "Image", "Text", "Text"]);
 }
 
 #[test]
@@ -417,4 +418,74 @@ fn a_package_and_container_with_a_doctype_open() {
         ("a.xhtml", A),
     ]);
     assert_eq!(open(&bytes, 8 << 20).ok().unwrap().parts.len(), 1);
+}
+
+fn cover_of(book: &noido_epub::Epub) -> Option<String> {
+    match &book.parts[0].kind {
+        PartKind::Cover { image } => image.clone(),
+        _ => panic!("not a cover"),
+    }
+}
+
+#[test]
+fn the_cover_names_its_image() {
+    let book = open(&fixture("book.epub"), 8 << 20).ok().unwrap();
+    assert_eq!(cover_of(&book).as_deref(), Some("OEBPS/cover.png"));
+}
+
+/// A marked cover whose file holds no image; `manifest_extra` and
+/// `metadata` may still name one.
+fn marked_cover(manifest_extra: &str, metadata: &str) -> Option<String> {
+    let opf = format!(
+        r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata>{metadata}</metadata><manifest>
+        <item id="c" href="t/c.xhtml" media-type="application/xhtml+xml"/>{manifest_extra}
+        </manifest><spine><itemref idref="c"/></spine>
+        <guide><reference type="cover" href="t/c.xhtml"/></guide></package>"#
+    );
+    let c = r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><div/></body></html>"#;
+    let bytes = zip_of(&[
+        ("META-INF/container.xml", CONTAINER),
+        ("p.opf", &opf),
+        ("t/c.xhtml", c),
+    ]);
+    cover_of(&open(&bytes, 8 << 20).ok().unwrap())
+}
+
+#[test]
+fn a_cover_with_no_image_names_none() {
+    assert_eq!(marked_cover("", ""), None);
+}
+
+#[test]
+fn a_cover_with_no_image_falls_back_to_the_manifest() {
+    let property =
+        r#"<item id="i" href="art/c.png" media-type="image/png" properties="cover-image"/>"#;
+    assert_eq!(marked_cover(property, "").as_deref(), Some("art/c.png"));
+    let plain = r#"<item id="i" href="art/m.png" media-type="image/png"/>"#;
+    let meta = r#"<meta name="cover" content="i"/>"#;
+    assert_eq!(marked_cover(plain, meta).as_deref(), Some("art/m.png"));
+}
+
+#[test]
+fn an_image_in_the_spine_is_an_image_part() {
+    let book = open(&fixture("images.epub"), 8 << 20).ok().unwrap();
+    assert_eq!(kind(&book.parts[1].kind), "Image");
+    assert_eq!(book.parts[1].path, "OEBPS/img/plate.png");
+}
+
+#[test]
+fn image_size_reads_only_the_header() {
+    let bytes = fixture("images.epub");
+    assert_eq!(image_size(&bytes, "OEBPS/img/wide.png"), Some((800, 100)));
+    assert_eq!(image_size(&bytes, "OEBPS/img/huge.png"), None);
+    assert_eq!(image_size(&bytes, "OEBPS/img/broken.png"), None);
+    assert_eq!(image_size(&bytes, "OEBPS/img/missing.png"), None);
+}
+
+#[test]
+fn image_data_reads_the_entry() {
+    let bytes = fixture("images.epub");
+    let data = image_data(&bytes, "OEBPS/img/small.png").unwrap();
+    assert!(data.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(image_data(&bytes, "OEBPS/img/missing.png"), None);
 }
