@@ -112,6 +112,14 @@ fn view_mode_row(ui: &mut egui::Ui, current: ViewMode) -> Option<ViewMode> {
     chosen
 }
 
+/// The turn entry's label: the page's current angle, when it has one.
+fn turn_label(rotation: Rotation) -> String {
+    match rotation {
+        Rotation::R0 => "Rotate page".to_owned(),
+        turned => format!("Rotate page ({}°)", turned.degrees()),
+    }
+}
+
 /// The menu's entries, in `ui`; gives what was chosen.
 fn page_menu(ui: &mut egui::Ui, state: State, keymap: &Keymap) -> Option<Choice> {
     let text = ui.visuals().widgets.inactive.fg_stroke.color;
@@ -171,22 +179,28 @@ fn page_menu(ui: &mut egui::Ui, state: State, keymap: &Keymap) -> Option<Choice>
     ui.separator();
     // The angles live in a submenu: turning is rarer than linking, and
     // four rows of degrees would keep the links apart.
-    let angles = ui.menu_button((mark(false), RichText::new("Rotation").color(text)), |ui| {
-        let mut chosen = None;
-        for rotation in Rotation::ALL {
-            // The checks stand at the submenu's left, the degrees at
-            // its right.
-            let label = RichText::new(format!("{}°", rotation.degrees())).color(text);
-            let button = egui::Button::new(mark(rotation == state.rotation)).right_text(label);
-            if ui.add(button).clicked() {
-                if rotation != state.rotation {
-                    chosen = Some(rotation);
+    let angles = ui.menu_button(
+        (
+            mark(false),
+            RichText::new(turn_label(state.rotation)).color(text),
+        ),
+        |ui| {
+            let mut chosen = None;
+            for rotation in Rotation::ALL {
+                // The checks stand at the submenu's left, the degrees at
+                // its right.
+                let label = RichText::new(format!("{}°", rotation.degrees())).color(text);
+                let button = egui::Button::new(mark(rotation == state.rotation)).right_text(label);
+                if ui.add(button).clicked() {
+                    if rotation != state.rotation {
+                        chosen = Some(rotation);
+                    }
+                    ui.close();
                 }
-                ui.close();
             }
-        }
-        chosen
-    });
+            chosen
+        },
+    );
     if let Some(Some(rotation)) = angles.inner {
         chosen = Some(Choice::Rotation(rotation));
     }
