@@ -6,6 +6,7 @@ mod app_bundle;
 mod desktop;
 mod desktop_recents;
 mod document;
+mod failure;
 mod frame;
 mod icon;
 mod icons;
@@ -131,17 +132,44 @@ fn main() -> ExitCode {
         #[cfg(not(target_os = "macos"))]
         _ if args.uninstall => desktop::uninstall(args.yes),
         #[cfg(target_os = "macos")]
-        Some(_) => opening(&args).and_then(|opening| {
-            hint_if_stale();
-            run(Some(opening), args.foreground)
-        }),
+        Some(_) => launch(&args),
         #[cfg(target_os = "macos")]
         None if args.foreground => run(None, true),
         #[cfg(not(target_os = "macos"))]
-        Some(_) => opening(&args).and_then(run),
+        Some(_) => launch(&args),
         None => unreachable!("clap requires a file without --install or --uninstall"),
     };
     exit_code(result)
+}
+
+/// Opens what the launch names. A document it can't open is shown in a
+/// window as well as returned: from the desktop, stderr is nobody's to read.
+fn launch(args: &Args) -> Result<(), String> {
+    show_failure(open_launch(args), failure::report)
+}
+
+/// Opens the document `args` names, and goes to the page it asked for.
+#[cfg(target_os = "macos")]
+fn open_launch(args: &Args) -> Result<(), String> {
+    let opening = opening(args)?;
+    hint_if_stale();
+    run(Some(opening), args.foreground)
+}
+
+/// Opens the document `args` names, in a process of its own.
+#[cfg(not(target_os = "macos"))]
+fn open_launch(args: &Args) -> Result<(), String> {
+    opening(args).and_then(run)
+}
+
+/// `result`, with a launch's failure handed to `show` as well: a window
+/// of noido's own, `exit_code`'s line on stderr, and the failure's exit
+/// status.
+fn show_failure(result: Result<(), String>, show: impl FnOnce(&str)) -> Result<(), String> {
+    if let Err(message) = &result {
+        show(message);
+    }
+    result
 }
 
 /// How noido exits after `result`, which it reports.
@@ -194,7 +222,7 @@ fn opening(args: &Args) -> Result<Opening, String> {
 }
 
 /// Sets up `ctx` as every noido window wants it: the system theme, keys.
-fn configure(ctx: &egui::Context) {
+pub(crate) fn configure(ctx: &egui::Context) {
     let theme = theme::Theme::from_system();
     theme.install(ctx);
     // Mod +/-/0 zoom the document, not egui's interface.
@@ -532,9 +560,11 @@ fn run(opening: Opening) -> Result<(), String> {
     let ctx = egui::Context::default();
     configure(&ctx);
     let theme_live = theme::Live::start(&ctx);
-    interrupt::close_on_interrupt(ctx.clone());
     let root = egui::ViewportId::ROOT;
     let opened = document::open(path, target, &ctx, root, &shared)?;
+    // Only once there is a window to close: a launch that failed shows its
+    // own window, and Ctrl-C has one handler per process.
+    interrupt::close_on_interrupt(ctx.clone());
     let activation = listener.map(|listener| listener.serve(document::shared_waker(&ctx, root)));
     let name = &opened.name;
     let options = eframe::NativeOptions {
@@ -776,6 +806,22 @@ mod tests {
         assert!(Args::try_parse_from(["noido", "--install", "a.pdf"]).is_err());
         assert!(Args::try_parse_from(["noido", "--uninstall", "a.pdf"]).is_err());
         assert!(Args::try_parse_from(["noido", "--install", "--uninstall"]).is_err());
+    }
+
+    #[test]
+    fn a_launch_that_could_not_open_its_document_is_shown_too() {
+        let mut shown = Vec::new();
+        let result = show_failure(Err("a.pdf: no such file".to_owned()), |message| {
+            shown.push(message.to_owned());
+        });
+        assert_eq!(result, Err("a.pdf: no such file".to_owned()));
+        assert_eq!(shown, ["a.pdf: no such file"]);
+    }
+
+    #[test]
+    fn a_launch_that_worked_shows_nothing() {
+        let result = show_failure(Ok(()), |message| panic!("showed {message}"));
+        assert_eq!(result, Ok(()));
     }
 
     #[test]

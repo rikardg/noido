@@ -13,7 +13,6 @@ const INTERRUPTED: i32 = 130;
 
 /// Installs the handler that closes the window. Failing to install it is
 /// reported, not fatal.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn close_on_interrupt(ctx: egui::Context) {
     install(move || ctx.send_viewport_cmd(ViewportCommand::Close));
 }
