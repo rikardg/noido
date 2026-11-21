@@ -4,6 +4,7 @@
 mod app;
 mod app_bundle;
 mod desktop;
+mod desktop_recents;
 mod document;
 mod frame;
 mod icon;
@@ -556,10 +557,17 @@ fn run(opening: Opening) -> Result<(), String> {
             .map(|(store, slot)| store.window_file(slot)),
         ..Default::default()
     };
+    // Where the desktop keeps its own recent list, on Linux; elsewhere noido
+    // has no list to note into.
+    #[cfg(target_os = "linux")]
+    let recents = desktop_recents::Recents::for_desktop();
+    #[cfg(not(target_os = "linux"))]
+    let recents: Option<desktop_recents::Recents> = None;
     let app = with_recent(
         opened.app.with_theme(theme_live),
         shared.store.as_ref(),
         path,
+        recents.as_ref(),
     );
     let app = match activation {
         Some(activation) => app.with_activation(activation),
@@ -575,9 +583,21 @@ fn run(opening: Opening) -> Result<(), String> {
 }
 
 /// `app` with the menu's recent files: `path` noted as opened now, and
-/// the ones opened before, from `store`.
+/// the ones opened before, from `store`; and, when there is a desktop list,
+/// `path` noted there too.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
-fn with_recent(mut app: app::NoidoApp, store: Option<&Store>, path: &Path) -> app::NoidoApp {
+fn with_recent(
+    mut app: app::NoidoApp,
+    store: Option<&Store>,
+    path: &Path,
+    recents: Option<&desktop_recents::Recents>,
+) -> app::NoidoApp {
+    if let Some(recents) = recents {
+        if let Err(e) = recents.note(path) {
+            eprintln!("noido: cannot save the desktop's recent files: {e}");
+        }
+        app.set_desktop_recents(recents.clone());
+    }
     let Some(store) = store else {
         return app;
     };
@@ -649,7 +669,7 @@ mod tests {
             std::fs::write(path, b"pdf").unwrap();
         }
         store.note_recent(&a).unwrap();
-        let app = with_recent(app::tests::blank_app(), Some(&store), &b);
+        let app = with_recent(app::tests::blank_app(), Some(&store), &b, None);
         let canonical = |path: &Path| std::fs::canonicalize(path).unwrap();
         assert_eq!(
             app::tests::recent_of(&app),
@@ -658,8 +678,24 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_notes_the_desktop_list() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::at(dir.path());
+        let file = dir.path().join("a.pdf");
+        std::fs::write(&file, b"pdf").unwrap();
+        let list = dir.path().join("recently-used.xbel");
+        let recents = desktop_recents::Recents::at(&list);
+
+        with_recent(app::tests::blank_app(), Some(&store), &file, Some(&recents));
+
+        let text = std::fs::read_to_string(&list).unwrap();
+        assert!(text.contains("name=\"noido\""), "{text}");
+        assert!(text.contains("a.pdf"), "{text}");
+    }
+
+    #[test]
     fn a_launch_with_no_store_offers_no_recent_files() {
-        let app = with_recent(app::tests::blank_app(), None, Path::new("/x.pdf"));
+        let app = with_recent(app::tests::blank_app(), None, Path::new("/x.pdf"), None);
         assert!(app::tests::recent_of(&app).is_empty());
     }
 
