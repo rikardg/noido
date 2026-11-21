@@ -249,7 +249,7 @@ fn locate(epub: &Epub, map: &LocationMap, href: &str) -> Option<Destination> {
         .iter()
         .position(|p| !p.path.is_empty() && p.path == path)?;
     let char = match (&epub.parts[part].kind, id) {
-        (_, "") | (PartKind::Cover | PartKind::Unreadable, _) => 0,
+        (_, "") | (PartKind::Cover { .. } | PartKind::Image | PartKind::Unreadable, _) => 0,
         (PartKind::Text(x), id) => x.ids.iter().find(|(i, _)| i == id).map_or(0, |(_, c)| *c),
     };
     let (page, run) = map

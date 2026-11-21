@@ -861,11 +861,78 @@ def epub_book() -> bytes:
         [
             ("OEBPS/content.opf", opf),
             ("OEBPS/cover.xhtml", cover),
-            ("OEBPS/cover.png", comic_png(1, 1, (200, 0, 0))),
+            ("OEBPS/cover.png", comic_png(30, 40, (200, 0, 0))),
             ("OEBPS/nav.xhtml", epub_xhtml(nav)),
             ("OEBPS/text/ch1.xhtml", epub_xhtml(ch1)),
             ("OEBPS/text/ch 2.xhtml", epub_xhtml(ch2)),
         ],
+        "OEBPS/content.opf",
+    )
+
+
+def epub_images() -> bytes:
+    """Pictures of every kind: sizes, alpha, broken, cut, huge, missing."""
+    cut = bytearray(comic_png(10, 10, (0, 255, 0)))
+    # IHDR is 8 signature + 25 bytes; IDAT's data starts at 41.
+    cut[45] ^= 0xFF
+    huge = b"\x89PNG\r\n\x1a\n" + comic_png_chunk(
+        b"IHDR", struct.pack(">IIBBBBB", 60000, 60000, 8, 2, 0, 0, 0)
+    )
+    images = [
+        ("wide", comic_png(800, 100, (0, 0, 200))),
+        ("tall", comic_png(100, 1000, (0, 150, 0))),
+        ("small", comic_png(20, 20, (0, 120, 200))),
+        ("dot", comic_png(8, 8, (0, 0, 0))),
+        ("alpha", comic_png_rgba(2, 2, (200, 100, 50, 128))),
+        ("plate", comic_png(60, 60, (120, 60, 0))),
+        ("broken", b"\x89PNG\r\n\x1a\njunk, not a PNG at all"),
+        ("cut", bytes(cut)),
+        ("huge", huge),
+    ]
+
+    def img(name: str) -> str:
+        return f'<img src="../img/{name}.png"'
+
+    body = (
+        f'<h1>{img("wide")} alt="Title Art"/></h1>'
+        "<p>Before the figure.</p>"
+        f'<p>{img("tall")} alt=""/></p>'
+        f'<p><a href="#end">{img("small")} alt="small"/></a></p>'
+        f'<p>A {img("dot")} alt="dot"/> bullet in text.</p>'
+        f'<p>Chart: {img("wide")} alt="chart"/> and its caption.</p>'
+        f'<p>{img("small")} width="40"/>{img("small")} width="40"/></p>'
+        f'<p>{img("alpha")} alt="alpha" width="200"/></p>'
+        f'<p>{img("broken")} alt="broken"/></p>'
+        f'<p>{img("cut")} alt="cut"/></p>'
+        f'<p>{img("huge")} alt="huge"/></p>'
+        f'<p>{img("missing")} alt="missing"/></p>'
+        '<div><svg xmlns="http://www.w3.org/2000/svg" '
+        'xmlns:xlink="http://www.w3.org/1999/xlink">'
+        '<image xlink:href="../img/small.png"/></svg></div>'
+        '<p id="end">The end.</p>'
+    )
+    manifest = (
+        '<item id="a" href="text/a.xhtml" media-type="application/xhtml+xml"/>'
+        + "".join(
+            f'<item id="{name}" href="img/{name}.png" media-type="image/png"/>'
+            for name, _ in images
+        )
+    )
+    opf = (
+        '<?xml version="1.0"?>'
+        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">'
+        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        '<dc:identifier id="id">urn:uuid:2</dc:identifier>'
+        "<dc:title>Pictures</dc:title><dc:language>en</dc:language>"
+        f"</metadata><manifest>{manifest}</manifest>"
+        '<spine><itemref idref="a"/><itemref idref="plate"/></spine></package>'
+    )
+    return epub_zip(
+        [
+            ("OEBPS/content.opf", opf),
+            ("OEBPS/text/a.xhtml", epub_xhtml(body)),
+        ]
+        + [(f"OEBPS/img/{name}.png", data) for name, data in images],
         "OEBPS/content.opf",
     )
 
@@ -1035,6 +1102,7 @@ if __name__ == "__main__":
     (here / "comic-huge.cbz").write_bytes(comic_huge())
     (here / "comic-bad-info.cbz").write_bytes(comic_bad_info())
     (here / "book.epub").write_bytes(epub_book())
+    (here / "images.epub").write_bytes(epub_images())
     (here / "book2.epub").write_bytes(epub_book2())
     (here / "drm.epub").write_bytes(epub_encrypted("c.xhtml", False))
     (here / "obfuscated.epub").write_bytes(epub_encrypted("fonts/f.otf", True))

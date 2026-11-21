@@ -3,12 +3,14 @@
 //!
 //! A part is a spine item and its number is its place in the spine
 //! (`linear="no"` is ignored), so every itemref yields exactly one part.
-//! Images and fonts are never read.
+//! Fonts are never read; an image is read on request, by `image_size`
+//! and `image_data`.
 
 use std::fmt;
 use std::io::{Cursor, Read};
 
 use noido_blocks::xhtml::{self, Xhtml};
+use noido_image::{MAX_ENTRY_BYTES, MAX_PIXELS};
 use percent_encoding::percent_decode_str;
 use roxmltree::{Document, Node, ParsingOptions};
 use zip::ZipArchive;
@@ -48,10 +50,17 @@ pub enum PartKind {
     /// `<image>`) or is marked as the cover (the
     /// package's guide, or `epub:type`). A marked cover with text stays
     /// `Text`.
-    Cover,
+    Cover {
+        /// The cover's image as a container path: the spine item itself
+        /// when it is an image, else the part's first image, else the
+        /// manifest's `cover-image`, else the item `<meta name="cover">`
+        /// names.
+        image: Option<String>,
+    },
+    /// An image straight in the spine, not first.
+    Image,
     /// Couldn't be read: missing from the manifest or the ZIP, not
-    /// UTF-8, not well-formed; an image straight in the spine, if not
-    /// first.
+    /// UTF-8, not well-formed.
     Unreadable,
 }
 
@@ -132,9 +141,8 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
                 image: item
                     .attribute("media-type")
                     .is_some_and(|t| t.starts_with("image/")),
-                nav: item
-                    .attribute("properties")
-                    .is_some_and(|p| p.split_whitespace().any(|t| t == "nav")),
+                nav: has_property(item, "nav"),
+                cover_image: has_property(item, "cover-image"),
             });
         }
     }
@@ -180,6 +188,19 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
         .and_then(|r| r.attribute("href"))
         .map(|href| in_dir(dir, href));
 
+    // The manifest's own word for the cover's image, for a cover file
+    // that holds none.
+    let manifest_cover = manifest
+        .iter()
+        .find(|i| i.cover_image)
+        .or_else(|| {
+            descendants(root, "meta")
+                .find(|m| m.attribute("name") == Some("cover"))
+                .and_then(|m| m.attribute("content"))
+                .and_then(|id| manifest.iter().find(|i| i.id == id))
+        })
+        .map(|i| i.path.clone());
+
     let mut parts = Vec::with_capacity(spine.len());
     let mut read = 0usize;
     for (place, item) in spine.iter().enumerate() {
@@ -193,9 +214,11 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
         };
         let kind = if item.image {
             if first {
-                PartKind::Cover
+                PartKind::Cover {
+                    image: Some(item.path.clone()),
+                }
             } else {
-                PartKind::Unreadable
+                PartKind::Image
             }
         } else {
             // A lying header can't inflate past what is left of the limit.
@@ -214,7 +237,12 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
                         Ok(x) => {
                             let marked = x.cover || guide_cover.as_deref() == Some(&item.path);
                             if first && !x.has_text && (marked || x.first_image.is_some()) {
-                                PartKind::Cover
+                                let image = x
+                                    .first_image
+                                    .as_deref()
+                                    .map(|src| resolve(&item.path, src))
+                                    .or_else(|| manifest_cover.clone());
+                                PartKind::Cover { image }
                             } else {
                                 PartKind::Text(x)
                             }
@@ -259,6 +287,40 @@ struct Item<'a> {
     path: String,
     image: bool,
     nav: bool,
+    cover_image: bool,
+}
+
+fn has_property(item: Node, property: &str) -> bool {
+    item.attribute("properties")
+        .is_some_and(|p| p.split_whitespace().any(|t| t == property))
+}
+
+/// The entry at the container path `path`, if it is declared no larger
+/// than [`MAX_ENTRY_BYTES`].
+fn open_entry<'a, 'b>(
+    zip: &'a mut ZipArchive<Cursor<&'b [u8]>>,
+    path: &str,
+) -> Option<zip::read::ZipFile<'a, Cursor<&'b [u8]>>> {
+    let entry = zip.by_name(path).ok()?;
+    (entry.size() <= MAX_ENTRY_BYTES).then_some(entry)
+}
+
+/// An image's size, read from its header alone. `None` when the entry
+/// is missing, declared over [`MAX_ENTRY_BYTES`], has no readable
+/// header, a side of 0, or more than [`MAX_PIXELS`] pixels.
+pub fn image_size(bytes: &[u8], path: &str) -> Option<(u32, u32)> {
+    let mut zip = ZipArchive::new(Cursor::new(bytes)).ok()?;
+    let mut entry = open_entry(&mut zip, path)?;
+    let (_, size) = noido_image::read_header(&mut entry);
+    let (w, h) = size?;
+    (w > 0 && h > 0 && u64::from(w) * u64::from(h) <= MAX_PIXELS).then_some((w, h))
+}
+
+/// An image's whole entry, read no further than [`MAX_ENTRY_BYTES`].
+pub fn image_data(bytes: &[u8], path: &str) -> Option<Vec<u8>> {
+    let mut zip = ZipArchive::new(Cursor::new(bytes)).ok()?;
+    let mut entry = open_entry(&mut zip, path)?;
+    read_capped(&mut entry, MAX_ENTRY_BYTES)
 }
 
 fn read_capped(reader: &mut impl Read, cap: u64) -> Option<Vec<u8>> {
