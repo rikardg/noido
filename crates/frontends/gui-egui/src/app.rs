@@ -18127,9 +18127,22 @@ pub(crate) mod tests {
         ANGLES.iter().all(|a| texts.iter().any(|t| t == a))
     }
 
-    /// Opens the Rotation submenu of the page's right-click menu.
+    /// The label of the page menu's turn entry, if it is open.
+    fn turn_label(h: &Harness) -> Option<String> {
+        h.texts()
+            .into_iter()
+            .find(|text| text == "Rotate page" || text.starts_with("Rotate page ("))
+    }
+
+    /// The page menu's entry that opens the angles, whatever angle it names.
+    fn turn_entry(h: &Harness) -> Option<Rect> {
+        turn_label(h).and_then(|text| h.text_rect(&text))
+    }
+
+    /// Opens the Rotate page submenu of the page's right-click menu.
     fn open_rotation(h: &mut Harness) {
-        h.click_text("Rotation");
+        let entry = turn_entry(h).expect("no Rotate page entry");
+        h.click(entry.center());
         h.frames(2, vec![]);
     }
 
@@ -18178,7 +18191,7 @@ pub(crate) mod tests {
         let markdown = h
             .text_rect("Copy Markdown link to page")
             .expect("no Copy Markdown link entry");
-        let rotation = h.text_rect("Rotation").expect("no Rotation entry");
+        let rotation = turn_entry(&h).expect("no Rotate page entry");
         assert!(link.max.y <= markdown.min.y, "{link:?} over {markdown:?}");
         assert!(
             markdown.max.y <= rotation.min.y,
@@ -18212,7 +18225,7 @@ pub(crate) mod tests {
             assert!(last.max.y <= entry.min.y, "{label} not below the last");
             last = entry;
         }
-        let rotation = h.text_rect("Rotation").expect("no Rotation entry");
+        let rotation = turn_entry(&h).expect("no Rotate page entry");
         assert!(
             last.max.y <= rotation.min.y,
             "{rotation:?} above the toggles"
@@ -18530,6 +18543,52 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_turn_entry_names_the_pages_current_angle() {
+        let mut h = Harness::new();
+        for (rotation, label) in [
+            (Rotation::R0, "Rotate page"),
+            (Rotation::R90, "Rotate page (90°)"),
+            (Rotation::R180, "Rotate page (180°)"),
+            (Rotation::R270, "Rotate page (270°)"),
+        ] {
+            h.app.set_rotation(0, rotation);
+            h.frames(2, vec![]);
+            h.right_click(screen_pos(&h, 0, 306.0, 400.0));
+            assert!(
+                h.text_rect(label).is_some(),
+                "{rotation:?}: no {label:?} in {:?}",
+                h.texts()
+            );
+            h.click(screen_pos(&h, 0, 500.0, 700.0));
+            h.frames(2, vec![]);
+        }
+    }
+
+    #[test]
+    fn the_turn_entry_follows_the_page_the_menu_was_opened_on() {
+        // The current page is turned, the page under the menu is not.
+        let mut h = Harness::new();
+        h.app.set_rotation(0, Rotation::R90);
+        h.frames(2, vec![]);
+        h.right_click(screen_pos(&h, 1, 306.0, 10.0));
+        assert_eq!(turn_label(&h).as_deref(), Some("Rotate page"));
+
+        // A thumbnail names its own page's angle, not the current page's.
+        let mut h = sidebar_on(Arc::new(BlankEngine));
+        h.app.set_rotation(2, Rotation::R90);
+        h.frames(2, vec![]);
+        h.right_click(drawn_card(&h, 2).center());
+        assert_eq!(turn_label(&h).as_deref(), Some("Rotate page (90°)"));
+
+        // So does a pin.
+        let mut h = pinned_on(&[4]);
+        h.app.set_rotation(4, Rotation::R90);
+        h.frames(2, vec![]);
+        h.right_click(drawn_card(&h, 4).center());
+        assert_eq!(turn_label(&h).as_deref(), Some("Rotate page (90°)"));
+    }
+
+    #[test]
     fn a_click_outside_closes_the_page_menu() {
         let mut h = Harness::new();
         h.right_click(screen_pos(&h, 0, 306.0, 400.0));
@@ -18538,7 +18597,7 @@ pub(crate) mod tests {
         h.click(screen_pos(&h, 0, 500.0, 700.0));
         h.frames(2, vec![]);
         assert!(!offers_angles(&h), "{:?}", h.texts());
-        assert!(h.text_rect("Rotation").is_none(), "{:?}", h.texts());
+        assert!(turn_entry(&h).is_none(), "{:?}", h.texts());
         assert_eq!(h.app.transforms.get(0).rotation, Rotation::R0);
     }
 
@@ -18556,7 +18615,7 @@ pub(crate) mod tests {
             "{:?}",
             h.texts()
         );
-        assert!(h.text_rect("Rotation").is_some(), "{:?}", h.texts());
+        assert!(turn_entry(&h).is_some(), "{:?}", h.texts());
         assert!(!offers_angles(&h), "{:?}", h.texts());
         open_rotation(&mut h);
         assert!(offers_angles(&h), "{:?}", h.texts());
