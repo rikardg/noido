@@ -1278,9 +1278,9 @@ name = "engine-comic"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "fast_image_resize",
  "image",
  "noido-engine",
+ "noido-image",
  "noido-state",
  "roxmltree 0.21.2",
  "zip",
@@ -2894,6 +2894,14 @@ source = "git+https://github.com/rikardg/noido-fonts?tag=v0.1.0#68de375afaa13c4a
 dependencies = [
  "flate2",
  "ttf-parser",
+]
+
+[[package]]
+name = "noido-image"
+version = "0.1.0"
+dependencies = [
+ "fast_image_resize",
+ "image",
 ]
 
 [[package]]

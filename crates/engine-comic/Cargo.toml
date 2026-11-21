@@ -11,8 +11,8 @@ publish.workspace = true
 [dependencies]
 noido-engine.workspace = true
 zip.workspace = true
+noido-image.workspace = true
 image.workspace = true
-fast_image_resize = "6.1"
 roxmltree.workspace = true
 
 [lints]

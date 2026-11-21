@@ -35,6 +35,7 @@ is the daily driver; macOS and Windows build but are unchecked.
 - `noido-engine`: the engine trait (pages, rendering, glyphs).
 - `engine-hayro`: the engine on hayro.
 - `engine-comic`: the engine on ZIP comic archives.
+- `noido-image`: reading, decoding and resizing images, bounded.
 - `noido-text`: lines and words from glyphs; search (folding, accents,
   de-hyphenation).
 - `noido-core`: pure, no GUI: layout (`spread_of` / `spread_pages` /

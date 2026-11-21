@@ -13,22 +13,15 @@ use noido_engine::{
     Date, Document, EngineError, Format, PdfBytes, PdfEngine, PixelRect, Properties, Rgba8Image,
     Size,
 };
+use noido_image::{MAX_ENTRY_BYTES, MAX_PIXELS};
 use zip::ZipArchive;
 
-/// A comic archive larger than this is refused: a page is decoded whole.
-const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
-/// A page's image with more pixels than this is refused, so a zip bomb or a
-/// stray poster scan cannot take the render thread down.
-const MAX_PIXELS: u64 = 32 * 1024 * 1024;
 /// A ridiculous number of entries is not a comic, and listing them all would
 /// be work an archive should not be able to ask for.
 const MAX_ENTRIES: usize = 20_000;
 /// ComicInfo.xml is a few kilobytes; a megabyte is already generous, and the
 /// read must be bounded even when the entry's declared size lies.
 const MAX_COMIC_INFO_BYTES: u64 = 1024 * 1024;
-/// How much of an entry is read looking for an image header. A real header is
-/// in the first few kilobytes; this only bounds a hostile or unusual entry.
-const MAX_HEADER_BYTES: u64 = 8 * 1024 * 1024;
 
 /// A CBZ document engine.
 #[derive(Clone, Copy, Debug, Default)]
@@ -151,19 +144,16 @@ impl ComicDocument {
         entry
             .read_to_end(&mut data)
             .map_err(|e| EngineError::Render(format!("page {}: {e}", page.number + 1)))?;
-        let decoded = image::load_from_memory(&data)
-            .map_err(|e| EngineError::Render(format!("page {}: {e}", page.number + 1)))?;
-        let mut rgba = decoded.into_rgba8();
-        let pixels = u64::from(rgba.width()) * u64::from(rgba.height());
-        if pixels > MAX_PIXELS {
-            return Err(EngineError::Render(format!(
+        noido_image::decode(&data).map_err(|e| match e {
+            noido_image::DecodeError::TooManyPixels(pixels) => EngineError::Render(format!(
                 "page {} is {} megapixels, too large",
                 page.number + 1,
                 pixels / 1_000_000
-            )));
-        }
-        premultiply(&mut rgba);
-        Ok(rgba)
+            )),
+            noido_image::DecodeError::Image(e) => {
+                EngineError::Render(format!("page {}: {e}", page.number + 1))
+            }
+        })
     }
 }
 
@@ -202,7 +192,7 @@ impl Document for ComicDocument {
         if u64::from(width) * u64::from(height) > MAX_PIXELS {
             return Err(EngineError::TooLarge { width, height });
         }
-        let full = resized(image, width, height);
+        let full = noido_image::resized(image, width, height);
         let x = rect.x.min(full.width().saturating_sub(1));
         let y = rect.y.min(full.height().saturating_sub(1));
         let width = rect.width.min(full.width() - x);
@@ -232,7 +222,7 @@ impl Document for ComicDocument {
             .min(1.0);
         let width = ((source_width as f32 * scale).round() as u32).max(1);
         let height = ((source_height as f32 * scale).round() as u32).max(1);
-        let image = resized(image, width, height);
+        let image = noido_image::resized(image, width, height);
         Rgba8Image::from_premultiplied(width, height, image.into_raw())
             .ok_or_else(|| EngineError::Render("page size".into()))
     }
@@ -249,45 +239,6 @@ fn archive(bytes: &PdfBytes) -> Result<ZipArchive<Cursor<&[u8]>>, EngineError> {
 
 fn zip_error(error: zip::result::ZipError) -> EngineError {
     EngineError::Open(format!("not a readable CBZ: {error}"))
-}
-
-fn resized(image: image::RgbaImage, width: u32, height: u32) -> image::RgbaImage {
-    if image.width() == width && image.height() == height {
-        return image;
-    }
-    let (source_width, source_height) = image.dimensions();
-    let source = fast_image_resize::images::Image::from_vec_u8(
-        source_width,
-        source_height,
-        image.into_raw(),
-        fast_image_resize::PixelType::U8x4,
-    )
-    .expect("an RGBA image is the right size");
-    let mut destination =
-        fast_image_resize::images::Image::new(width, height, fast_image_resize::PixelType::U8x4);
-    // The pixels are already premultiplied; convolving them as they are is
-    // the right thing, so the resizer must not scale them by alpha again.
-    let mut options = fast_image_resize::ResizeOptions::new().resize_alg(
-        fast_image_resize::ResizeAlg::Convolution(fast_image_resize::FilterType::CatmullRom),
-    );
-    options.mul_div_alpha = false;
-    fast_image_resize::Resizer::new()
-        .resize(&source, &mut destination, Some(&options))
-        .expect("both images are RGBA");
-    image::RgbaImage::from_raw(width, height, destination.into_vec())
-        .expect("the resizer made the right size")
-}
-
-/// `image`'s pixels in the premultiplied form [`Rgba8Image`] carries.
-fn premultiply(image: &mut image::RgbaImage) {
-    for pixel in image.pixels_mut() {
-        let alpha = u32::from(pixel[3]);
-        if alpha != 255 {
-            for channel in &mut pixel.0[..3] {
-                *channel = (u32::from(*channel) * alpha / 255) as u8;
-            }
-        }
-    }
 }
 
 /// Files a comic archive carries around its pages, not pages themselves.
@@ -334,25 +285,8 @@ fn read_capped(entry: &mut impl Read, cap: u64) -> Option<String> {
 /// the pixels. An image whose header cannot be read is `Unreadable`, not
 /// skipped; a non-image is `NotAnImage`.
 fn sniff(entry: &mut impl Read, name: &str) -> Sniffed {
-    let mut data = Vec::new();
-    for more in [4_096u64, 64 * 1024, 4 * 1024 * 1024] {
-        let before = data.len();
-        if entry.take(more).read_to_end(&mut data).is_err() {
-            break;
-        }
-        if let Some((width, height)) = dimensions(&data) {
-            return Sniffed::Image { width, height };
-        }
-        // The entry ended: reading more would tell us nothing.
-        if data.len() == before {
-            break;
-        }
-    }
-    let remaining = MAX_HEADER_BYTES.saturating_sub(data.len() as u64);
-    if remaining > 0
-        && entry.take(remaining).read_to_end(&mut data).is_ok()
-        && let Some((width, height)) = dimensions(&data)
-    {
+    let (data, size) = noido_image::read_header(entry);
+    if let Some((width, height)) = size {
         return Sniffed::Image { width, height };
     }
     if looks_like_image(&data) || looks_like_image_name(name) {
@@ -375,14 +309,6 @@ fn looks_like_image_name(name: &str) -> bool {
             .as_str(),
         "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tif" | "tiff"
     )
-}
-
-fn dimensions(data: &[u8]) -> Option<(u32, u32)> {
-    image::ImageReader::new(Cursor::new(data))
-        .with_guessed_format()
-        .ok()?
-        .into_dimensions()
-        .ok()
 }
 
 /// The text of the first `tag` in a ComicInfo document.
@@ -474,6 +400,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sniffing_a_non_image_is_not_an_image() {
+        use std::io::Cursor;
+
+        let mut reader = Cursor::new(vec![0u8; 1024]);
+        assert!(matches!(
+            sniff(&mut reader, "notes.txt"),
+            Sniffed::NotAnImage
+        ));
+    }
+
+    #[test]
     fn natural_order_counts_runs_of_digits() {
         assert_eq!(natural_cmp("page2", "page10"), Ordering::Less);
         assert_eq!(natural_cmp("page10", "page2"), Ordering::Greater);
@@ -492,18 +429,6 @@ mod tests {
         assert_eq!(read_capped(&mut over, 8), None);
         let mut under = Cursor::new(b"abcd".to_vec());
         assert_eq!(read_capped(&mut under, 8).as_deref(), Some("abcd"));
-    }
-
-    #[test]
-    fn sniffing_a_non_image_stops_at_the_header_cap() {
-        use std::io::Cursor;
-
-        let mut reader = Cursor::new(vec![0u8; (MAX_HEADER_BYTES * 2) as usize]);
-        assert!(matches!(
-            sniff(&mut reader, "notes.txt"),
-            Sniffed::NotAnImage
-        ));
-        assert_eq!(reader.position(), MAX_HEADER_BYTES);
     }
 
     #[test]
