@@ -11,8 +11,6 @@ is the daily driver; macOS and Windows build but are unchecked.
   `review-minor`. Review minors: one issue per review, titled
   `<Feature>: review minors (YYYY-MM-DD)`, a checklist in the body.
   Close an issue when it is fixed, with `Fixes #N` in the commit message.
-- `docs/backlog.md`: the old backlog, frozen. Add nothing to it. When an
-  entry is fixed or moved to an issue, remove it; it goes once it is empty.
 - `docs/superpowers/specs/`: one design per change, `YYYY-MM-DD-<topic>-design.md`.
 - `docs/superpowers/plans/`: implementation plans for the larger ones.
 - `docs/investigations/`: write-ups of things looked into, once the
