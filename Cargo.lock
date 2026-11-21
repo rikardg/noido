@@ -1877,6 +1877,7 @@ dependencies = [
  "roxmltree 0.21.2",
  "tempfile",
  "tiny-skia 0.12.0",
+ "url",
  "winit",
 ]
 

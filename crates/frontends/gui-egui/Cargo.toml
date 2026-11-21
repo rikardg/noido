@@ -32,6 +32,9 @@ interprocess.workspace = true
 blake3.workspace = true
 directories.workspace = true
 roxmltree.workspace = true
+url.workspace = true
+# The desktop's recent list is replaced through a private temporary file.
+tempfile.workspace = true
 
 [build-dependencies]
 resvg.workspace = true
@@ -48,7 +51,6 @@ winit.workspace = true
 [dev-dependencies]
 # The glyph builders the tests lay text out with.
 noido-text = { workspace = true, features = ["testing"] }
-tempfile.workspace = true
 # Decodes the macOS icon's PNGs in its tests.
 tiny-skia.workspace = true
 
