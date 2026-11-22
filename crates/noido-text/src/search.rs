@@ -242,14 +242,16 @@ impl PageText {
     fn hit(&self, chars: &[char], range: Range<usize>) -> TextHit {
         TextHit {
             rects: self.rects(range.clone()),
-            context: context(chars, range.clone()),
+            context: context(chars, range.clone(), self.marked_hyphens()),
             range,
         }
     }
 }
 
-/// The text around `range`, cut at word boundaries, on one line.
-fn context(chars: &[char], range: Range<usize>) -> Context {
+/// The text around `range`, cut at word boundaries, on one line, as
+/// [`copy_text`](crate::copy_text) reads it: whitespace runs as one space,
+/// and a line-end hyphen inside a word joined to what follows.
+fn context(chars: &[char], range: Range<usize>, marked: bool) -> Context {
     let mut start = range.start.saturating_sub(CONTEXT_BEFORE);
     if start > 0 {
         // Forward to the start of a word, but not into the hit.
@@ -270,13 +272,43 @@ fn context(chars: &[char], range: Range<usize>) -> Context {
     while end > range.end && chars[end - 1].is_whitespace() {
         end -= 1;
     }
-    Context {
-        text: chars[start..end]
-            .iter()
-            .map(|&c| if c == '\n' { ' ' } else { c })
-            .collect(),
-        bold: range.start - start..range.end - start,
+    let mut text = String::new();
+    // The hit's characters in `text`, which drops some characters before it.
+    let mut bold = 0..0;
+    let mut at = 0;
+    let mut i = start;
+    while i < end {
+        let c = chars[i];
+        // A line-end hyphen inside a word takes the break with it; one that
+        // belongs to the word keeps its hyphen and takes the break.
+        let hyphen = line_end_hyphen(chars, i, marked).filter(|(_, after)| *after < end);
+        let next = hyphen.as_ref().map_or(i + 1, |&(_, after)| after);
+        if (i..next).contains(&range.start) {
+            bold.start = at;
+        }
+        match (hyphen, c) {
+            (Some((Hyphen::Belongs, _)), _) => {
+                text.push(c);
+                at += 1;
+            }
+            (Some((Hyphen::Breaks, _)), _) => {}
+            (None, c) if c.is_whitespace() => {
+                if at > 0 && !text.ends_with(' ') {
+                    text.push(' ');
+                    at += 1;
+                }
+            }
+            (None, c) => {
+                text.push(c);
+                at += 1;
+            }
+        }
+        if i < range.end {
+            bold.end = at;
+        }
+        i = next;
     }
+    Context { text, bold }
 }
 
 #[cfg(test)]
@@ -496,6 +528,76 @@ mod tests {
         let hits = find(&["black", "cat"], "black cat");
         assert_eq!(hits[0].context.text, "black cat");
         assert_eq!(bold(&hits[0]), "black cat");
+    }
+
+    #[test]
+    fn context_joins_a_word_across_a_line_end_hyphen() {
+        let hits = find(&["the spe-", "cifically cat"], "specifically");
+        assert_eq!(bold(&hits[0]), "specifically");
+        assert_eq!(hits[0].context.text, "the specifically cat");
+    }
+
+    #[test]
+    fn context_joins_a_hyphen_before_a_trailing_space() {
+        // OCR lines end with a space after the hyphen.
+        let hits = find(&["the imple- ", "ment cat"], "implement");
+        assert_eq!(hits[0].context.text, "the implement cat");
+        assert_eq!(bold(&hits[0]), "implement");
+    }
+
+    #[test]
+    fn context_joins_a_line_end_hyphen_outside_the_hit() {
+        let hits = find(&["the phenom-", "enology cat"], "cat");
+        assert_eq!(hits[0].context.text, "the phenomenology cat");
+        assert_eq!(hits[0].context.bold, 18..21);
+    }
+
+    #[test]
+    fn context_collapses_runs_of_spaces() {
+        let hits = find(&["the  cat  sat"], "cat");
+        assert_eq!(hits[0].context.bold, 4..7);
+        assert_eq!(hits[0].context.text, "the cat sat");
+    }
+
+    #[test]
+    fn context_bold_is_exact_after_whitespace_and_hyphen_joining() {
+        let hits = find(&["a   b spe-", "cifically cat"], "cat");
+        assert_eq!(hits[0].context.text, "a b specifically cat");
+        assert_eq!(hits[0].context.bold, 17..20);
+    }
+
+    #[test]
+    fn context_bold_starts_after_a_joined_break() {
+        // The hit begins on the line after the hyphen.
+        let hits = find(&["the spe-", "cifically cat"], "cifically");
+        assert_eq!(bold(&hits[0]), "cifically");
+        assert_eq!(hits[0].context.text, "the specifically cat");
+        assert_eq!(hits[0].context.bold, 7..16);
+    }
+
+    #[test]
+    fn context_bold_ends_at_a_joined_break() {
+        // The hit ends on the hyphen; the word after it still joins.
+        let hits = find(&["the phenom-", "enology cat"], "phenom");
+        assert_eq!(bold(&hits[0]), "phenom");
+        assert_eq!(hits[0].context.text, "the phenomenology cat");
+        assert_eq!(hits[0].context.bold, 4..10);
+    }
+
+    #[test]
+    fn context_bold_covers_a_collapsed_run_inside_the_hit() {
+        let hits = find(&["the  cat  sat"], "cat sat");
+        assert_eq!(bold(&hits[0]), "cat sat");
+        assert_eq!(hits[0].context.text, "the cat sat");
+        assert_eq!(hits[0].context.bold, 4..11);
+    }
+
+    #[test]
+    fn context_keeps_a_marked_source_hyphen_at_a_line_end() {
+        let p = PageText::with_marked_hyphens(page(&["the well-", "known cat"]));
+        let hits = p.find(&Query::new("well-known").unwrap());
+        assert_eq!(bold(&hits[0]), "well-known");
+        assert_eq!(hits[0].context.text, "the well-known cat");
     }
 
     #[test]
