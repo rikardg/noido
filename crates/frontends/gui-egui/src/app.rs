@@ -328,7 +328,9 @@ struct Persistence {
 
 impl Persistence {
     /// Saves `state` once it has been unchanged for [`SAVE_DELAY`] at `now`;
-    /// otherwise returns how long until then.
+    /// otherwise returns how long until then. A save that fails reports the
+    /// delay too, so the app wakes for another try once the state has settled
+    /// again: nothing else would wake it.
     fn update(&mut self, state: DocState, now: f64) -> Option<f64> {
         if self.saved.as_ref() == Some(&state) {
             self.changed = None;
@@ -345,20 +347,33 @@ impl Persistence {
         if left > 0.0 {
             return Some(left);
         }
-        self.save(state);
-        None
+        if self.save(state) {
+            None
+        } else {
+            Some(SAVE_DELAY)
+        }
     }
 
-    fn save(&mut self, state: DocState) {
-        if let Err(e) = self.store.save(&self.slot, &state)
-            && !self.warned
-        {
-            eprintln!("noido: cannot save view state: {e}");
-            self.warned = true;
+    /// Writes `state`, and says whether it was written.
+    fn save(&mut self, state: DocState) -> bool {
+        match self.store.save(&self.slot, &state) {
+            Ok(()) => {
+                self.saved = Some(state);
+                self.changed = None;
+                true
+            }
+            Err(e) => {
+                if !self.warned {
+                    eprintln!("noido: cannot save view state: {e}");
+                    self.warned = true;
+                }
+                // Not left marked saved, so the state is written once it has
+                // settled again; with the clock started again it is not tried
+                // every frame.
+                self.changed = None;
+                false
+            }
         }
-        // Also after a failure, so it isn't retried every frame.
-        self.saved = Some(state);
-        self.changed = None;
     }
 }
 
@@ -971,7 +986,7 @@ impl NoidoApp {
         if let (Some(state), Some(persistence)) = (self.doc_state(), &mut self.persistence)
             && persistence.saved.as_ref() != Some(&state)
         {
-            persistence.save(state);
+            let _ = persistence.save(state);
         }
     }
 
@@ -6168,6 +6183,69 @@ pub(crate) mod tests {
         std::fs::remove_file(&file).unwrap();
         h.frames(180, vec![]);
         assert!(!file.exists(), "unchanged state was saved again");
+    }
+
+    #[test]
+    fn a_save_that_failed_is_tried_again() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // A file where the store's `docs` directory belongs, so the first
+        // save cannot be made.
+        let blocked = dir.path().join("docs");
+        fs::write(&blocked, "not a directory").unwrap();
+        let store = Store::at(dir.path());
+        let mut h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), None)
+        });
+        h.press(egui::Key::PageDown, Modifiers::NONE);
+        h.frames(180, vec![]);
+        let file = dir
+            .path()
+            .join("docs")
+            .join(format!("{}.toml", test_key().hex()));
+        assert!(!file.exists(), "saved where no directory can be made");
+        // With the way cleared, the save it gave up on is made on the next
+        // try, without the reader having to move again.
+        fs::remove_file(&blocked).unwrap();
+        h.frames(180, vec![]);
+        assert_eq!(
+            store.load(test_key()).1.map(|state| state.view),
+            h.app.view.state()
+        );
+    }
+
+    #[test]
+    fn a_failed_save_reports_a_wait_so_the_app_wakes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let blocked = dir.path().join("docs");
+        fs::write(&blocked, "not a directory").unwrap();
+        let mut h = Harness::build(|app| {
+            app.with_persistence(Store::at(dir.path()), test_slot(dir.path()), None)
+        });
+        h.frames(2, vec![]);
+        let state = h.app.doc_state().expect("no state to save");
+        let mut persistence = h.app.persistence.take().expect("no persistence");
+        // The clock starts, and the save is tried when the delay is up.
+        assert!(
+            persistence
+                .update(state.clone(), 0.0)
+                .is_some_and(|left| left > 0.0)
+        );
+        // It fails: a wait is reported, so the app wakes for another try
+        // rather than sleeping on it until the reader touches something.
+        assert_eq!(persistence.update(state.clone(), 100.0), Some(SAVE_DELAY));
+        assert!(persistence.warned);
+        // The clock starts again from this frame, so the next one waits the
+        // whole delay rather than trying the save at once.
+        assert_eq!(
+            persistence.update(state.clone(), 100.0 + 1.0 / 60.0),
+            Some(SAVE_DELAY)
+        );
+        // And the frame after that waits a frame less: the save is not tried
+        // on every frame.
+        let left = persistence
+            .update(state, 100.0 + 2.0 / 60.0)
+            .expect("no wait reported");
+        assert!(left > 0.0 && left < SAVE_DELAY, "left {left}");
     }
 
     #[test]
