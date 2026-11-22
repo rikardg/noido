@@ -146,6 +146,7 @@ fn drawn(role: Role, string: &str) -> Para {
         prefix: None,
         new_page: false,
         note: None,
+        images: Vec::new(),
     }
 }
 
@@ -233,8 +234,11 @@ pub(crate) fn set_parts(parts: &[Content], lang: Lang, images: &mut Images) -> S
                     glyph_chars(text, g)
                 });
                 page.spans.push((at.y, at.y + line.height));
+                // A figure is a run of no characters at its place; an image
+                // in a line has no place of its own, as its stand-in had not.
+                let figure = matches!(paras[at.flow].role, Role::Figure { .. });
                 page.points.push(match (&g.image, &g.drawn) {
-                    (Some(_), Some(range)) if !drawn => Some(text.source_of(range.start)),
+                    (Some(_), Some(range)) if !drawn && figure => Some(text.source_of(range.start)),
                     _ => None,
                 });
             }
@@ -431,7 +435,9 @@ fn glyphs_of(line: &SetLine, top: f32, run: u32) -> Vec<Glyph> {
             let (x0, x1) = (LEFT + g.x, LEFT + end);
             if let Some((_, height)) = g.image {
                 // The image's rectangle.
-                let bottom = top + height;
+                // On the baseline: a figure's ascent is its height.
+                let bottom = baseline - g.rise;
+                let top = bottom - height;
                 return Glyph {
                     text: g.text.clone(),
                     origin: Point { x: x0, y: bottom },
@@ -621,6 +627,7 @@ mod tests {
             prefix: None,
             new_page: false,
             note: None,
+            images: Vec::new(),
         };
         let book = set_parts(
             &[Content::Blocks(&one, None), Content::Drawn(vec![drawn])],
@@ -649,6 +656,22 @@ mod tests {
         };
         assert_eq!(language_of("book.epub"), Lang::Swedish);
         assert_eq!(language_of("book2.epub"), Lang::English);
+    }
+
+    #[test]
+    fn markdown_images_keep_their_stand_in() {
+        let book = typeset("![a cat](cat.png)\n");
+        let text: String = book.glyphs(0).iter().map(|g| g.text.as_str()).collect();
+        assert_eq!(text, "a cat");
+        assert!(book.ink.iter().all(|ink| ink.images.is_empty()));
+        // Set in italic: another face than the same words as plain text.
+        let face_of = |md: &str| {
+            let (paras, notes) = paragraphs(&parse(md), &mut no_images);
+            let lines = Shaper::new().set(&paras[0], &notes, Lang::English);
+            assert!(lines[0].glyphs.iter().all(|g| g.image.is_none()));
+            lines[0].glyphs[0].face
+        };
+        assert_ne!(face_of("![a cat](cat.png)\n"), face_of("a cat\n"));
     }
 
     #[test]

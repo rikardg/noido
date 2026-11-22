@@ -78,7 +78,7 @@ impl PageInk {
                 self.images.push(ImageInk {
                     id,
                     x: LEFT + g.x,
-                    y: top,
+                    y: baseline - g.rise - height,
                     width: g.advance,
                     height,
                 });
@@ -594,6 +594,34 @@ mod tests {
         near_to(pixel(&image, cx as u32, cy as u32), [0, 120, 200]);
         let outside = ((i.x - 3.0) * 2.0) as u32;
         assert!(is_white(&pixel(&image, outside, cy as u32)));
+    }
+
+    #[test]
+    fn an_inline_image_is_drawn_inside_its_quad() {
+        let book = images_book();
+        let (page, n) = image_of(&book, 6.0, 6.0);
+        let i = &book.ink[page].images[n];
+        let quad = book
+            .glyphs(page)
+            .into_iter()
+            .find(|g| {
+                g.text == "[image]"
+                    && (g.quad.corners[0].y - g.quad.corners[3].y - 6.0).abs() < 0.01
+            })
+            .unwrap()
+            .quad;
+        // The ink's rectangle is the quad: the top is the baseline less 6.
+        assert!((i.y - quad.corners[3].y).abs() < 0.01, "{} {:?}", i.y, quad);
+        assert!((i.x - quad.corners[0].x).abs() < 0.01);
+        let scale = 4.0;
+        let image = page_at(&book, page, scale);
+        let (cx, cy) = ((i.x + 3.0) * scale, (i.y + 3.0) * scale);
+        near_to(pixel(&image, cx as u32, cy as u32), [0, 0, 0]);
+        // Nothing of it above or below the quad.
+        let above = ((i.y - 0.5) * scale) as u32;
+        let below = ((i.y + 6.0 + 0.5) * scale) as u32;
+        assert!(is_white(&pixel(&image, cx as u32, above)));
+        assert!(is_white(&pixel(&image, cx as u32, below)));
     }
 
     #[test]

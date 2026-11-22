@@ -10,7 +10,7 @@ use skrifa::{FontRef, MetadataProvider};
 
 use crate::fonts::{FaceId, Family, fonts};
 use crate::house::{BODY, CODE_SCALE, HEADING, INDENT_EM, LEADING, MEASURE};
-use crate::images::ImageId;
+use crate::images::{ImageId, fit};
 use crate::kp::{self, INFINITY, Item};
 use crate::paragraphs::{Notes, Para, Role};
 
@@ -140,7 +140,22 @@ impl Shaper {
         let shape = Shape::new(para, notes);
         let layout = self.shape(&shape, para, family, size, bold);
         let metrics = Metrics::of(&layout, size);
-        let atoms = atoms_of(&layout, &shape.text);
+        let mut atoms = atoms_of(&layout, &shape.text);
+        // An image in the line: one glyph at the text's height at most.
+        for inline in &shape.inline {
+            let Some(atom) = atoms.iter_mut().find(|a| a.range.start == inline.at) else {
+                debug_assert!(
+                    false,
+                    "no atom starts at the inline image's offset {}; it would draw as nothing",
+                    inline.at
+                );
+                continue;
+            };
+            let (width, height) = fit(inline.natural, (MEASURE, metrics.ascent), false);
+            atom.advance = width;
+            atom.glyphs.clear();
+            atom.image = Some((inline.image, height, inline.text.clone()));
+        }
 
         let scripts = |wanted: Style| -> Vec<Range<usize>> {
             para.text
@@ -251,15 +266,44 @@ struct Shape {
     prefix: usize,
     reps: Vec<Replacement>,
     kinds: Vec<RepKind>,
+    /// The images drawn in the line, each shaped as one object character.
+    inline: Vec<Inline>,
+}
+
+/// An image set in the line.
+struct Inline {
+    /// Its object character, in the shaped string.
+    at: usize,
+    image: ImageId,
+    /// Natural size in points.
+    natural: (f32, f32),
+    /// What it stands for: its alt text.
+    text: String,
 }
 
 impl Shape {
     fn new(para: &Para, notes: &Notes) -> Self {
         let drawn = &para.text.string;
         let mut stand_ins: Vec<(Range<usize>, String, RepKind)> = Vec::new();
+        let mut inline_images: Vec<(usize, ImageId, (f32, f32), String)> = Vec::new();
         for styled in &para.text.styles {
             let (text, kind) = match &styled.style {
-                Style::Image { src, alt, .. } => (stand_in(src, alt), RepKind::Image),
+                Style::Image { src, alt, .. } => {
+                    let drawn = para.images.iter().find(|(r, ..)| *r == styled.drawn);
+                    match drawn {
+                        // Drawn: an object character, kept out of the stand-ins.
+                        Some((_, image, natural)) => {
+                            inline_images.push((
+                                styled.drawn.start,
+                                *image,
+                                *natural,
+                                stand_in(src, alt),
+                            ));
+                            continue;
+                        }
+                        None => (stand_in(src, alt), RepKind::Image),
+                    }
+                }
                 Style::TaskBox { checked } => (
                     (if *checked { "\u{2611}" } else { "\u{2610}" }).to_string(),
                     RepKind::Task,
@@ -296,12 +340,25 @@ impl Shape {
             at = range.end;
         }
         text.push_str(&drawn[at..]);
-        Shape {
+        let mut shape = Shape {
             text,
             prefix,
             reps,
             kinds,
-        }
+            inline: Vec::new(),
+        };
+        // The images drawn in the line are the object characters the
+        // text already has.
+        shape.inline = inline_images
+            .into_iter()
+            .map(|(start, image, natural, text)| Inline {
+                at: shape.pos(start),
+                image,
+                natural,
+                text,
+            })
+            .collect();
+        shape
     }
 
     /// The position in the shaped string of a position in the drawn text.
@@ -350,6 +407,9 @@ struct Atom {
     size: f32,
     /// Glyph id, offset from the atom's left, advance.
     glyphs: Vec<(u16, f32, f32)>,
+    /// An image set in the line: the image, its drawn height and what it
+    /// stands for. Its `advance` is its width.
+    image: Option<(ImageId, f32, String)>,
 }
 
 /// What an image that is not drawn stands for: its alt text, or
@@ -452,6 +512,7 @@ fn atoms_of(layout: &parley::Layout<()>, text: &str) -> Vec<Atom> {
                     font_index: font.index,
                     size: run.font_size(),
                     glyphs,
+                    image: None,
                 });
             }
         }
@@ -563,6 +624,20 @@ impl Ctx<'_> {
         } else {
             0.0
         };
+        if let Some((image, height, stand_in)) = &atom.image {
+            out.push(SetGlyph {
+                face: FaceId(0),
+                id: 0,
+                size: *height,
+                x,
+                advance: atom.advance,
+                rise: 0.0,
+                text: stand_in.clone(),
+                drawn,
+                image: Some((*image, *height)),
+            });
+            return;
+        }
         let glyph = |i: usize, id: u16, dx: f32, adv: f32| SetGlyph {
             face: atom.face,
             id,
@@ -1114,6 +1189,7 @@ mod tests {
             prefix: None,
             new_page: false,
             note: None,
+            images: Vec::new(),
         };
         let notes = Notes(std::collections::HashMap::new());
         Shaper::new().set(&para, &notes, Lang::English)
@@ -1140,6 +1216,7 @@ mod tests {
             prefix: None,
             new_page: false,
             note: None,
+            images: Vec::new(),
         };
         let notes = Notes(std::collections::HashMap::new());
         let lines = Shaper::new().set(&para, &notes, Lang::English);

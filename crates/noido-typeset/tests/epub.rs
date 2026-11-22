@@ -350,8 +350,8 @@ fn side_by_side_images_stack() {
 #[test]
 fn unreadable_images_keep_their_stand_in() {
     let book = book("images.epub");
-    // The dot in the text, and broken, huge and missing.
-    assert_eq!(body_text(&book).matches("[image]").count(), 4);
+    // Broken, huge and missing (the dot in the text is drawn).
+    assert_eq!(body_text(&book).matches("[image]").count(), 3);
 }
 
 #[test]
@@ -362,10 +362,39 @@ fn a_cut_image_is_a_figure_as_its_header_reads() {
     near(rect(&cut[0].1).2, 7.5);
 }
 
+/// The small inline image next to "bullet": its place in `all_glyphs`.
+fn dot_index(glyphs: &[(usize, noido_engine::Glyph)]) -> usize {
+    glyphs
+        .iter()
+        .position(|(_, g)| g.text == "[image]" && (rect(g).3 - 6.0).abs() < 0.01)
+        .expect("the dot")
+}
+
 #[test]
-fn a_small_image_in_text_keeps_its_stand_in() {
+fn an_inline_image_sits_on_the_baseline() {
     let book = book("images.epub");
-    assert!(body_text(&book).contains("A [image] bullet in text."));
+    let glyphs = all_glyphs(&book);
+    let i = dot_index(&glyphs);
+    // " ", then "b" of "bullet": the same line.
+    let (_, b) = &glyphs[i + 2];
+    assert_eq!(b.text, "b");
+    let (_, dot) = &glyphs[i];
+    let (_, _, w, h) = rect(dot);
+    near(dot.quad.corners[0].y, b.origin.y);
+    near(h, 6.0);
+    near(w, 6.0);
+    assert!(h <= b.origin.y - b.quad.corners[3].y);
+}
+
+#[test]
+fn an_inline_image_takes_its_width_in_the_line() {
+    let book = book("images.epub");
+    let glyphs = all_glyphs(&book);
+    let i = dot_index(&glyphs);
+    assert_eq!(glyphs[i + 1].1.text, " ");
+    let after = rect(&glyphs[i + 2].1).0;
+    let dot = rect(&glyphs[i].1).0;
+    assert!(after > dot + 6.0, "{after} {dot}");
 }
 
 #[test]
