@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the PDF and CBZ test fixtures. Standard library only.
+"""Generate the test fixtures in this directory. Standard library only.
 
 two-pages.pdf:
   page 0: 612x792 pt (Letter) with a black filled square at x 100-200, y 100-200
@@ -117,15 +117,33 @@ comic-duplicate.cbz: two entries named 1.png; the ZIP reader keeps one.
 comic-empty.cbz: ComicInfo and notes, no pages.
 comic-huge.cbz: an 8000x8000 IHDR with no page data.
 comic-bad-info.cbz: an unclosed ComicInfo title.
+
+not-a-pdf.txt: a plain text file with no PDF header anywhere, so opening it
+  as a PDF fails the way any other non-PDF does.
+
+encrypted.pdf: one page, RC4 40-bit (/V 1 /R 2) with the user password
+  "noido": a reader without that password can only say so.
+
+encrypted-pubkey.pdf: one page, whose /Encrypt is a public-key
+  (/Adobe.PubSec) dictionary that hayro does not support.
+
+encrypted-damaged.pdf: one page, whose /Encrypt says Standard encryption but
+  has neither an /O nor a /U entry, as a truncated file's might.
+
+truncated.pdf: the header, an unfinished catalog and the page objects after
+  it, as a stopped download leaves them: no xref, no trailer, no catalog
 """
 
+import hashlib
 import struct
 import zipfile
 import zlib
 from pathlib import Path
 
 
-def build_pdf(objects: list[bytes], info: int | None = None) -> bytes:
+def build_pdf(
+    objects: list[bytes], info: int | None = None, trailer_extra: bytes = b""
+) -> bytes:
     out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
     offsets = []
     for number, body in enumerate(objects, start=1):
@@ -137,9 +155,155 @@ def build_pdf(objects: list[bytes], info: int | None = None) -> bytes:
     for offset in offsets:
         out += b"%010d 00000 n \n" % offset
     info_entry = b" /Info %d 0 R" % info if info else b""
-    out += b"trailer\n<< /Size %d /Root 1 0 R%s >>\n" % (len(objects) + 1, info_entry)
+    out += b"trailer\n<< /Size %d /Root 1 0 R%s%s >>\n" % (
+        len(objects) + 1,
+        info_entry,
+        trailer_extra,
+    )
     out += b"startxref\n%d\n%%%%EOF\n" % xref
     return bytes(out)
+
+
+# The standard security handler's padding, as the PDF spec defines it.
+PASSWORD_PADDING = bytes(
+    [
+        0x28,
+        0xBF,
+        0x4E,
+        0x5E,
+        0x4E,
+        0x75,
+        0x8A,
+        0x41,
+        0x64,
+        0x00,
+        0x4E,
+        0x56,
+        0xFF,
+        0xFA,
+        0x01,
+        0x08,
+        0x2E,
+        0x2E,
+        0x00,
+        0xB6,
+        0xD0,
+        0x68,
+        0x3E,
+        0x80,
+        0x2F,
+        0x0C,
+        0xA9,
+        0xFE,
+        0x64,
+        0x53,
+        0x69,
+        0x7A,
+    ]
+)
+
+
+def rc4(key: bytes, data: bytes) -> bytes:
+    """`data` run through RC4, which the 40-bit handler uses throughout."""
+    state = list(range(256))
+    j = 0
+    for i in range(256):
+        j = (j + state[i] + key[i % len(key)]) % 256
+        state[i], state[j] = state[j], state[i]
+    out = bytearray()
+    i = j = 0
+    for byte in data:
+        i = (i + 1) % 256
+        j = (j + state[i]) % 256
+        state[i], state[j] = state[j], state[i]
+        out.append(byte ^ state[(state[i] + state[j]) % 256])
+    return bytes(out)
+
+
+def pad_password(password: bytes) -> bytes:
+    return (password + PASSWORD_PADDING)[:32]
+
+
+def encrypt_for_object(number: int, key: bytes, data: bytes) -> bytes:
+    """`data` as object `number` of generation 0 holds it when encrypted."""
+    object_key = hashlib.md5(
+        key + number.to_bytes(3, "little") + b"\x00\x00"
+    ).digest()[: min(len(key) + 5, 16)]
+    return rc4(object_key, data)
+
+
+def encrypted_pdf(
+    encrypt: bytes, key: bytes | None = None, trailer_extra: bytes = b""
+) -> bytes:
+    """One page, with `encrypt` as object 5 and the trailer's /Encrypt.
+
+    `key` is the file encryption key, which encrypts the page's content; a
+    document whose encryption cannot be read has nothing to encrypt.
+    """
+    content = b"0 0 0 rg 100 100 100 100 re f"
+    if key is not None:
+        content = encrypt_for_object(4, key, content)
+    return build_pdf(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]"
+            b" /Contents 4 0 R >>",
+            b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+            encrypt,
+        ],
+        trailer_extra=b" /Encrypt 5 0 R" + trailer_extra,
+    )
+
+
+def password_pdf() -> bytes:
+    """One page encrypted with RC4 40-bit, its user password "noido"."""
+    user, owner = b"noido", b"noido-owner"
+    permissions = -44
+    file_id = b"noido-encrypted-fixture"
+    # PDF spec algorithms 3, 2 and 4, security handler revision 2.
+    owner_entry = rc4(hashlib.md5(pad_password(owner)).digest()[:5], pad_password(user))
+    key = hashlib.md5(
+        pad_password(user) + owner_entry + struct.pack("<i", permissions) + file_id
+    ).digest()[:5]
+    user_entry = rc4(key, PASSWORD_PADDING)
+    encrypt = b"<< /Filter /Standard /V 1 /R 2 /O <%s> /U <%s> /P %d >>" % (
+        owner_entry.hex().encode(),
+        user_entry.hex().encode(),
+        permissions,
+    )
+    return encrypted_pdf(
+        encrypt,
+        key=key,
+        trailer_extra=b" /ID [<%s> <%s>]"
+        % (file_id.hex().encode(), file_id.hex().encode()),
+    )
+
+
+def pubkey_pdf() -> bytes:
+    return encrypted_pdf(
+        b"<< /Filter /Adobe.PubSec /SubFilter /adbe.pkcs7.s3 /V 4 /R 4"
+        b" /Length 128 >>"
+    )
+
+
+def damaged_encryption_pdf() -> bytes:
+    return encrypted_pdf(b"<< /Filter /Standard /V 1 /R 2 /P -44 >>")
+
+
+def not_a_pdf() -> bytes:
+    return b"This is not a PDF.\n\nIt is a plain text file, saved as one.\n"
+
+
+def truncated_pdf() -> bytes:
+    """A PDF cut off inside its catalog, as a stopped download leaves one."""
+    return (
+        b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n"
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R\n"
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]"
+        b" >>\nendobj\n"
+    )
 
 
 def two_pages() -> bytes:
@@ -840,8 +1004,13 @@ def sample_md() -> str:
 
 
 if __name__ == "__main__":
-    (Path(__file__).resolve().parent / "sample.md").write_bytes(sample_md().encode())
     here = Path(__file__).resolve().parent
+    (here / "not-a-pdf.txt").write_bytes(not_a_pdf())
+    (here / "truncated.pdf").write_bytes(truncated_pdf())
+    (here / "encrypted.pdf").write_bytes(password_pdf())
+    (here / "encrypted-pubkey.pdf").write_bytes(pubkey_pdf())
+    (here / "encrypted-damaged.pdf").write_bytes(damaged_encryption_pdf())
+    (here / "sample.md").write_bytes(sample_md().encode())
     (here / "outline.pdf").write_bytes(outline())
     (here / "outline-empty.pdf").write_bytes(outline_empty())
     (here / "outline-deep.pdf").write_bytes(outline_deep())

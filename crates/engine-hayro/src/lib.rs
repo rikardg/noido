@@ -9,8 +9,8 @@ mod text;
 
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_interpret::util::TransformExt;
-use hayro::hayro_syntax::Pdf;
 use hayro::hayro_syntax::page::Page;
+use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
 use hayro::kurbo::Affine;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::vello_cpu::{Pixmap, RasterizerSettings, RenderContext, Resources, TargetInit};
@@ -34,9 +34,31 @@ impl PdfEngine for HayroEngine {
             PdfBytes::Mapped(map) => Pdf::new(map),
             PdfBytes::Memory(bytes) => Pdf::new(bytes),
         }
-        .map_err(|e| EngineError::Open(format!("not a readable PDF: {e:?}")))?;
+        .map_err(open_error)?;
         Ok(Box::new(HayroDocument::new(pdf)))
     }
+}
+
+/// What to tell the reader when a PDF can't be opened: a sentence for the
+/// reason hayro gave, never its `Debug` output.
+fn open_error(error: LoadPdfError) -> EngineError {
+    use DecryptionError::{
+        InvalidEncryption, MissingIDEntry, PasswordProtected, UnsupportedAlgorithm,
+    };
+    let message = match error {
+        LoadPdfError::Invalid => "not a readable PDF",
+        LoadPdfError::Decryption(PasswordProtected) => "this PDF is password-protected",
+        LoadPdfError::Decryption(UnsupportedAlgorithm) => {
+            "this PDF is encrypted in a way noido cannot read"
+        }
+        // hayro 0.9 never makes `MissingIDEntry`; it is named so the match
+        // stays exhaustive, and it means to a reader what `InvalidEncryption`
+        // does.
+        LoadPdfError::Decryption(MissingIDEntry | InvalidEncryption) => {
+            "this PDF's encryption is damaged"
+        }
+    };
+    EngineError::Open(message.to_owned())
 }
 
 /// The render cache and the scale it was started at.
