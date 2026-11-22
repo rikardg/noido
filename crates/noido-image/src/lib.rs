@@ -73,8 +73,14 @@ pub fn dimensions(data: &[u8]) -> Option<(u32, u32)> {
 }
 
 /// Decodes `data` to premultiplied RGBA8. An image over [`MAX_PIXELS`] is
-/// refused.
+/// refused, by its header, before any pixel is decoded.
 pub fn decode(data: &[u8]) -> Result<image::RgbaImage, DecodeError> {
+    if let Some((width, height)) = dimensions(data) {
+        let pixels = u64::from(width) * u64::from(height);
+        if pixels > MAX_PIXELS {
+            return Err(DecodeError::TooManyPixels(pixels));
+        }
+    }
     let decoded = image::load_from_memory(data).map_err(|e| DecodeError::Image(e.to_string()))?;
     let mut rgba = decoded.into_rgba8();
     let pixels = u64::from(rgba.width()) * u64::from(rgba.height());
@@ -192,10 +198,7 @@ mod tests {
     fn decode_refuses_too_many_pixels() {
         let result = decode(&png_claiming(8000, 8000));
         assert!(
-            matches!(
-                result,
-                Err(DecodeError::TooManyPixels(_) | DecodeError::Image(_))
-            ),
+            matches!(result, Err(DecodeError::TooManyPixels(64_000_000))),
             "{result:?}"
         );
     }

@@ -36,7 +36,6 @@ pub struct Book {
     /// Glyph outlines, drawn once and kept.
     pub(crate) outlines: Outlines,
     /// The images the pages show, to draw from.
-    #[expect(dead_code, reason = "drawn from in the next step")]
     pub(crate) images: Images,
 }
 
