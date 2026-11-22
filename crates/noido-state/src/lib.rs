@@ -454,8 +454,26 @@ impl Store {
 
 fn read_entry(path: &Path) -> Option<Entry> {
     let text = fs::read_to_string(path).ok()?;
-    let entry: Entry = toml::from_str(&text).ok()?;
+    let entry = parse_entry(&text)?;
     (entry.version == VERSION).then_some(entry)
+}
+
+/// The entry `text` holds: the entry as it stands, or else the entry with
+/// the page rows that can't be read dropped. One hand edit gone wrong then
+/// costs a page's turn, not the document's highlights and place.
+fn parse_entry(text: &str) -> Option<Entry> {
+    if let Ok(entry) = toml::from_str::<Entry>(text) {
+        return Some(entry);
+    }
+    let mut value: toml::Value = toml::from_str(text).ok()?;
+    let pages = value.get_mut("pages")?.as_array_mut()?;
+    let rows = pages.len();
+    pages.retain(|row| row.clone().try_into::<StoredPage>().is_ok());
+    // The pages table is not what the entry tripped on.
+    if pages.len() == rows {
+        return None;
+    }
+    value.try_into().ok()
 }
 
 /// The TOML form of a list of paths: the open documents, or the recent
@@ -517,7 +535,94 @@ struct Entry {
 #[derive(Serialize, Deserialize, Clone, Copy)]
 struct StoredPage {
     page: usize,
+    /// The turn in degrees, read from a number, a float or a string of whole
+    /// degrees; any other value is [`NO_ANGLE`], which the load drops as it
+    /// drops an angle that isn't a quarter turn.
+    #[serde(default = "no_angle", deserialize_with = "loose_degrees")]
     rotation: u16,
+}
+
+/// What an unreadable angle reads as: no angle, so its row is dropped on
+/// load like an angle that isn't a quarter turn.
+const NO_ANGLE: u16 = u16::MAX;
+
+fn no_angle() -> u16 {
+    NO_ANGLE
+}
+
+/// Reads a page's angle loosely: a number, a float or a string of whole
+/// degrees reads as a turn, and any other value is [`NO_ANGLE`] rather than
+/// an error, so a bad angle costs its page's turn and not the rest of the
+/// entry.
+fn loose_degrees<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_any(Angle)
+}
+
+/// The visitor behind [`loose_degrees`]: the angle a TOML value reads as, or
+/// [`NO_ANGLE`] for a value that isn't one.
+struct Angle;
+
+impl<'de> serde::de::Visitor<'de> for Angle {
+    type Value = u16;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("an angle in degrees")
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, n: i64) -> Result<u16, E> {
+        Ok(u16::try_from(n).unwrap_or(NO_ANGLE))
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, n: u64) -> Result<u16, E> {
+        Ok(u16::try_from(n).unwrap_or(NO_ANGLE))
+    }
+
+    // An integer too big for a `u16` to hold, as all `i128`/`u128` readings
+    // are.
+    fn visit_i128<E: serde::de::Error>(self, _: i128) -> Result<u16, E> {
+        Ok(NO_ANGLE)
+    }
+
+    fn visit_u128<E: serde::de::Error>(self, _: u128) -> Result<u16, E> {
+        Ok(NO_ANGLE)
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, n: f64) -> Result<u16, E> {
+        Ok(if n.fract() == 0.0 {
+            u16::try_from(n as i64).unwrap_or(NO_ANGLE)
+        } else {
+            NO_ANGLE
+        })
+    }
+
+    fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<u16, E> {
+        Ok(text
+            .trim()
+            .parse::<i64>()
+            .map_or(NO_ANGLE, |n| u16::try_from(n).unwrap_or(NO_ANGLE)))
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<u16, E> {
+        Ok(NO_ANGLE)
+    }
+
+    // An array or a table, or a datetime on its way through a map: not an
+    // angle, but read to the end all the same, so the entry goes on.
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<u16, A::Error> {
+        while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+        Ok(NO_ANGLE)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<u16, A::Error> {
+        while map
+            .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+            .is_some()
+        {}
+        Ok(NO_ANGLE)
+    }
 }
 
 /// The TOML form of the pagelet's place.
