@@ -12,8 +12,9 @@ use noido_text::{PageText, on_page};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::draw::{Outlines, PageInk};
-use crate::house::{LEADING, LEFT, LINES, PAPER, TOP};
-use crate::images::{Images, natural};
+use crate::fonts::FaceId;
+use crate::house::{LEADING, LEFT, LINES, MEASURE, PAPER, TOP};
+use crate::images::{ImageId, Images, fit, natural};
 use crate::lines::{SetGlyph, SetLine, Shaper};
 use crate::links::{Marks, epub_marks, marks};
 use crate::pages::{Flow, Placed, paginate};
@@ -63,6 +64,8 @@ pub(crate) enum Content<'a> {
     Blocks(&'a Tree, Option<&'a str>),
     /// Paragraphs drawn without source (a title page, a notice).
     Drawn(Vec<Para>),
+    /// A cover: its image and the size it is drawn, centred on the paper.
+    Cover(ImageId, (f32, f32)),
 }
 
 /// One part as it was set: its paragraphs and lines, and where each
@@ -105,23 +108,49 @@ pub fn typeset(source: &str) -> Book {
     }
 }
 
-/// An EPUB typeset: each spine item a part, the cover a title page, an
-/// unreadable item a notice; links and outline resolved through ids and
-/// the table of contents.
+/// An EPUB typeset: each spine item a part, the cover its image (a title
+/// page when it has none to draw), an image in the spine a page of its
+/// own, an unreadable item a notice; links and outline resolved through
+/// ids and the table of contents.
 pub fn typeset_epub(epub: &Epub, bytes: PdfBytes) -> Book {
+    let mut images = Images::of_epub(bytes);
+    let notice = || {
+        Content::Drawn(vec![drawn(
+            Role::Body { indent: false },
+            "This chapter could not be read.",
+        )])
+    };
     let contents: Vec<Content> = epub
         .parts
         .iter()
         .map(|part| match &part.kind {
             PartKind::Text(x) => Content::Blocks(&x.tree, Some(&part.path)),
-            PartKind::Cover { .. } => Content::Drawn(title_page(epub)),
-            PartKind::Image | PartKind::Unreadable => Content::Drawn(vec![drawn(
-                Role::Body { indent: false },
-                "This chapter could not be read.",
-            )]),
+            PartKind::Cover { images: paths } => paths
+                .iter()
+                .find_map(|path| sized(&mut images, path))
+                .map_or_else(
+                    || Content::Drawn(title_page(epub)),
+                    |(id, natural)| {
+                        Content::Cover(id, fit(natural, (PAPER.width, PAPER.height), true))
+                    },
+                ),
+            PartKind::Image => {
+                sized(&mut images, &part.path).map_or_else(notice, |(id, natural)| {
+                    let (width, height) = fit(natural, (MEASURE, LINES as f32 * LEADING), false);
+                    Content::Drawn(vec![drawn(
+                        Role::Figure {
+                            image: id,
+                            width,
+                            height,
+                            heading: None,
+                        },
+                        "",
+                    )])
+                })
+            }
+            PartKind::Unreadable => notice(),
         })
         .collect();
-    let mut images = Images::of_epub(bytes);
     let set = set_parts(&contents, epub_language(epub), &mut images);
     let marks = epub_marks(epub, &set.parts, &set.map, set.pages.len());
     Book {
@@ -132,6 +161,12 @@ pub fn typeset_epub(epub: &Epub, bytes: PdfBytes) -> Book {
         outlines: Outlines::default(),
         images,
     }
+}
+
+/// The image at `path` and its natural size in points.
+fn sized(images: &mut Images, path: &str) -> Option<(ImageId, (f32, f32))> {
+    let (id, px) = images.size(path)?;
+    Some((id, natural(px, None, None)?))
 }
 
 /// A paragraph drawn without source.
@@ -184,6 +219,59 @@ pub(crate) fn set_parts(parts: &[Content], lang: Lang, images: &mut Images) -> S
     let mut ink: Vec<PageInk> = Vec::new();
     let mut out = Vec::with_capacity(parts.len());
     for (number, content) in parts.iter().enumerate() {
+        if let Content::Cover(id, (width, height)) = content {
+            // One page, the image centred on the paper, by the same
+            // rectangle the glyph and the ink are made of.
+            let (top, x) = (
+                (PAPER.height - height) / 2.0,
+                (PAPER.width - width) / 2.0 - LEFT,
+            );
+            let line = SetLine {
+                glyphs: vec![SetGlyph {
+                    face: FaceId(0),
+                    id: 0,
+                    size: *height,
+                    x,
+                    advance: *width,
+                    rise: 0.0,
+                    text: "[image]".to_string(),
+                    drawn: None,
+                    image: Some((*id, *height)),
+                }],
+                decorations: Vec::new(),
+                links: Vec::new(),
+                height: *height,
+                ascent: *height,
+            };
+            let mut page = Page::default();
+            page.glyphs.extend(glyphs_of(&line, top, 0));
+            page.sources.push(vec![None; "[image]".len()]);
+            page.spans.push((top, top + height));
+            page.points.push(None);
+            page.lines = 1;
+            page.ink.add_line(&line, top);
+            // A place for the part all the same, as a title page has.
+            map_pages.push(vec![(
+                0,
+                Run {
+                    start: Location {
+                        part: number,
+                        char: 0,
+                    },
+                    chars: 0,
+                    top,
+                    bottom: top + height,
+                },
+            )]);
+            glyph_pages.push(page.glyphs);
+            ink.push(page.ink);
+            out.push(SetPart {
+                paras: Vec::new(),
+                set: Vec::new(),
+                placed: Vec::new(),
+            });
+            continue;
+        }
         let (paras, notes, drawn) = match content {
             Content::Blocks(tree, Some(path)) => {
                 let (paras, notes) = paragraphs(tree, &mut |src, width, height| {
@@ -198,6 +286,7 @@ pub(crate) fn set_parts(parts: &[Content], lang: Lang, images: &mut Images) -> S
                 (paras, notes, false)
             }
             Content::Drawn(paras) => (paras.clone(), Notes(HashMap::new()), true),
+            Content::Cover(..) => unreachable!("a cover is set above"),
         };
         let set: Vec<Vec<SetLine>> = paras
             .iter()

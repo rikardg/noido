@@ -245,6 +245,15 @@ mod tests {
         assert!(document.text(1).is_err());
     }
 
+    #[test]
+    fn the_layout_key_names_images() {
+        let document = TypesetEngine::new().open(bytes("# Hi\n")).unwrap();
+        assert_eq!(
+            document.layout_key().as_deref(),
+            Some("b-format 11/14 images")
+        );
+    }
+
     fn fixture(name: &str) -> PdfBytes {
         PdfBytes::from(
             std::fs::read(format!(

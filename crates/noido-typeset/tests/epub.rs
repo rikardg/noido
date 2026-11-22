@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use noido_engine::{Destination, Format, Link, LinkTarget, Location, OutlineEntry, PdfBytes};
+use noido_engine::{
+    Destination, Format, Link, LinkTarget, Location, OutlineEntry, PdfBytes, PixelRect,
+};
 use noido_text::{PageText, on_page};
 use noido_typeset::{Book, typeset_epub};
 
@@ -54,15 +56,134 @@ fn lands(d: Destination, (page, top): (usize, f32)) {
 }
 
 #[test]
-fn the_cover_is_a_title_page() {
+fn the_cover_is_its_image() {
     let book = book("book.epub");
-    assert_eq!(page_text(&book, 0), "A Small Book\nAnn Author, Bo Writer");
+    let glyphs = book.glyphs(0);
+    assert_eq!(glyphs.len(), 1);
+    // 30 x 40 px is 22.5 x 30 pt; the width binds on the paper.
+    let (x, y, w, h) = rect(&glyphs[0]);
+    near(w, 365.67);
+    near(h, 487.56);
+    near(x, 0.0);
+    near(y, (561.26 - 487.56) / 2.0);
     let map = book.locations();
+    assert_eq!(map.page_start(0), Some(Location { part: 0, char: 0 }));
     let chars = page_text(&book, 0).chars().count();
     for c in 0..=chars {
         let at = map.location(0, c);
-        assert!(at.is_none() || at == Some(Location { part: 0, char: 0 }));
+        assert_eq!(at, Some(Location { part: 0, char: 0 }), "char {c}");
     }
+    let tile = PixelRect {
+        x: 0,
+        y: 0,
+        width: PAGE.0.ceil() as u32,
+        height: PAGE.1.ceil() as u32,
+    };
+    let image = book.render_tile(0, 1.0, tile).unwrap();
+    let at = ((PAGE.1 / 2.0) as usize * image.width() as usize + (PAGE.0 / 2.0) as usize) * 4;
+    let px = &image.pixels()[at..at + 4];
+    assert!(
+        px[0].abs_diff(200) <= 2 && px[1] <= 2 && px[2] <= 2 && px[3] == 255,
+        "{px:?}"
+    );
+}
+
+#[test]
+fn a_cover_without_an_image_is_a_title_page() {
+    use std::io::{Cursor, Write};
+    use zip::write::SimpleFileOptions;
+    let container = r#"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="p.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#;
+    let opf = r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>title</dc:title><dc:creator>author</dc:creator></metadata><manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine><guide><reference type="cover" href="c.xhtml"/></guide></package>"#;
+    let page = r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><div/></body></html>"#;
+    let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, data) in [
+        ("META-INF/container.xml", container),
+        ("p.opf", opf),
+        ("c.xhtml", page),
+    ] {
+        w.start_file(name, SimpleFileOptions::default()).unwrap();
+        w.write_all(data.as_bytes()).unwrap();
+    }
+    let bytes = w.finish().unwrap().into_inner();
+    let epub = noido_epub::open(&bytes, 8 << 20).unwrap();
+    assert!(matches!(
+        &epub.parts[0].kind,
+        noido_epub::PartKind::Cover { images } if images.is_empty()
+    ));
+    let book = typeset_epub(&epub, PdfBytes::from(bytes));
+    assert_eq!(page_text(&book, 0), "title\nauthor");
+}
+
+#[test]
+fn an_image_part_is_a_figure() {
+    let book = book("images.epub");
+    let last = book.page_count() - 1;
+    let glyphs = book.glyphs(last);
+    assert_eq!(glyphs.len(), 1);
+    let (x, _, w, h) = rect(&glyphs[0]);
+    near(w, 45.0);
+    near(h, 45.0);
+    near(x, LEFT + (270.0 - 45.0) / 2.0);
+    assert_eq!(
+        book.locations().page_start(last),
+        Some(Location { part: 1, char: 0 })
+    );
+    assert_eq!(
+        book.locations().location(last, 0),
+        Some(Location { part: 1, char: 0 })
+    );
+    // The plate is 60 x 60 px of (120, 60, 0).
+    let (x, y, w, h) = rect(&glyphs[0]);
+    let px = pixel(&book, last, x + w / 2.0, y + h / 2.0);
+    assert!(
+        px[0].abs_diff(120) <= 2 && px[1].abs_diff(60) <= 2 && px[2] <= 2 && px[3] == 255,
+        "{px:?}"
+    );
+}
+
+/// The RGBA pixel of `page` rendered at scale 1, at (x, y) in points.
+fn pixel(book: &Book, page: usize, x: f32, y: f32) -> [u8; 4] {
+    let tile = PixelRect {
+        x: 0,
+        y: 0,
+        width: PAGE.0.ceil() as u32,
+        height: PAGE.1.ceil() as u32,
+    };
+    let image = book.render_tile(page, 1.0, tile).unwrap();
+    let at = (y as usize * image.width() as usize + x as usize) * 4;
+    image.pixels()[at..at + 4].try_into().unwrap()
+}
+
+#[test]
+fn a_tall_cover_is_fitted_by_height() {
+    use std::io::{Cursor, Write};
+    use zip::write::SimpleFileOptions;
+    let container = r#"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="p.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#;
+    let opf = r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>t</dc:title></metadata><manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/><item id="i" href="c.png" media-type="image/png" properties="cover-image"/></manifest><spine><itemref idref="c"/></spine><guide><reference type="cover" href="c.xhtml"/></guide></package>"#;
+    let page = r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><div><img src="c.png" alt="Cover"/></div></body></html>"#;
+    let mut png = Cursor::new(Vec::new());
+    image::RgbImage::from_pixel(20, 60, image::Rgb([200, 0, 0]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let mut w = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, data) in [
+        ("META-INF/container.xml", container.as_bytes()),
+        ("p.opf", opf.as_bytes()),
+        ("c.xhtml", page.as_bytes()),
+        ("c.png", png.get_ref().as_slice()),
+    ] {
+        w.start_file(name, SimpleFileOptions::default()).unwrap();
+        w.write_all(data).unwrap();
+    }
+    let bytes = w.finish().unwrap().into_inner();
+    let epub = noido_epub::open(&bytes, 8 << 20).unwrap();
+    let book = typeset_epub(&epub, PdfBytes::from(bytes));
+    let glyphs = book.glyphs(0);
+    assert_eq!(glyphs.len(), 1);
+    let (x, _, w, h) = rect(&glyphs[0]);
+    near(h, 561.26);
+    near(w, 561.26 / 3.0);
+    near(x + w / 2.0, 365.67 / 2.0);
 }
 
 #[test]
@@ -575,4 +696,70 @@ fn a_full_page_figure_is_its_pages_place() {
     let start = map.page_start(page).unwrap();
     assert_eq!(map.page_char(start).map(|(p, _)| p), Some(page));
     assert_eq!(map.line(start).map(|(p, _)| p), Some(page));
+}
+
+/// A book whose first spine item is a cover file `t/c.xhtml` holding
+/// `body`, with the package's `cover-image` `art/c.png` when `package`.
+/// `files` are the images in the archive, 30 by 40 pixels.
+fn cover_book(body: &str, package: bool, files: &[&str]) -> Book {
+    use std::io::Write;
+    let container = r#"<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="p.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#;
+    let art = if package {
+        r#"<item id="a" href="art/c.png" media-type="image/png" properties="cover-image"/>"#
+    } else {
+        ""
+    };
+    let opf = format!(
+        r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>title</dc:title><dc:creator>author</dc:creator></metadata><manifest><item id="c" href="t/c.xhtml" media-type="application/xhtml+xml"/>{art}</manifest><spine><itemref idref="c"/></spine></package>"#
+    );
+    let page = format!("<html xmlns=\"http://www.w3.org/1999/xhtml\"><body>{body}</body></html>");
+    let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default();
+    let mut add = |name: &str, data: &[u8]| {
+        w.start_file(name, opts).unwrap();
+        w.write_all(data).unwrap();
+    };
+    add("META-INF/container.xml", container.as_bytes());
+    add("p.opf", opf.as_bytes());
+    add("t/c.xhtml", page.as_bytes());
+    for file in files {
+        add(file, &png_header(30, 40));
+    }
+    let bytes = w.finish().unwrap().into_inner();
+    let epub = noido_epub::open(&bytes, 8 << 20).unwrap();
+    typeset_epub(&epub, PdfBytes::from(bytes))
+}
+
+fn is_cover_image(book: &Book) -> bool {
+    book.glyphs(0).len() == 1 && page_text(book, 0) != "title\nauthor"
+}
+
+#[test]
+fn a_cover_image_with_a_fragment_resolves() {
+    let book = cover_book(r#"<img src="../img/x.png#top"/>"#, false, &["img/x.png"]);
+    assert!(is_cover_image(&book));
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><image xlink:href="../img/x.png#v"/></svg>"#;
+    assert!(is_cover_image(&cover_book(svg, false, &["img/x.png"])));
+}
+
+#[test]
+fn a_cover_whose_first_image_is_missing_uses_the_packages() {
+    let book = cover_book(r#"<img src="../img/gone.png"/>"#, true, &["art/c.png"]);
+    assert!(is_cover_image(&book));
+}
+
+#[test]
+fn an_unresolvable_cover_is_a_title_page() {
+    let book = cover_book(r#"<img src="../img/gone.png"/>"#, false, &[]);
+    assert_eq!(page_text(&book, 0), "title\nauthor");
+    let book = cover_book(r#"<img src="../img/gone.png"/>"#, true, &[]);
+    assert_eq!(page_text(&book, 0), "title\nauthor");
+}
+
+#[test]
+fn the_first_image_wins_over_the_packages() {
+    // Both exist; the first image is the one drawn (30 x 40 either
+    // way, so tell them apart by the one that is not in the archive).
+    let book = cover_book(r#"<img src="../img/x.png"/>"#, true, &["img/x.png"]);
+    assert!(is_cover_image(&book));
 }

@@ -51,11 +51,12 @@ pub enum PartKind {
     /// package's guide, or `epub:type`). A marked cover with text stays
     /// `Text`.
     Cover {
-        /// The cover's image as a container path: the spine item itself
-        /// when it is an image, else the part's first image, else the
+        /// The cover's image as container paths, to be tried in turn
+        /// (the first that can be read is it): the spine item itself
+        /// when it is an image; else the part's first image, then the
         /// manifest's `cover-image`, else the item `<meta name="cover">`
-        /// names.
-        image: Option<String>,
+        /// names. Empty when there is none.
+        images: Vec<String>,
     },
     /// An image straight in the spine, not first.
     Image,
@@ -215,7 +216,7 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
         let kind = if item.image {
             if first {
                 PartKind::Cover {
-                    image: Some(item.path.clone()),
+                    images: vec![item.path.clone()],
                 }
             } else {
                 PartKind::Image
@@ -237,12 +238,20 @@ pub fn open(bytes: &[u8], limit: usize) -> Result<Epub, EpubError> {
                         Ok(x) => {
                             let marked = x.cover || guide_cover.as_deref() == Some(&item.path);
                             if first && !x.has_text && (marked || x.first_image.is_some()) {
-                                let image = x
+                                // A fragment names a place in the image
+                                // file, not another file.
+                                let mut images: Vec<String> = x
                                     .first_image
                                     .as_deref()
-                                    .map(|src| resolve(&item.path, src))
-                                    .or_else(|| manifest_cover.clone());
-                                PartKind::Cover { image }
+                                    .map(|src| {
+                                        let path = resolve(&item.path, src);
+                                        path.split('#').next().unwrap_or_default().to_string()
+                                    })
+                                    .into_iter()
+                                    .collect();
+                                images
+                                    .extend(manifest_cover.clone().filter(|m| !images.contains(m)));
+                                PartKind::Cover { images }
                             } else {
                                 PartKind::Text(x)
                             }
