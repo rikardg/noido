@@ -35,6 +35,40 @@ fn config_dir(
     }
 }
 
+/// Why a settings file couldn't be read.
+#[derive(Debug)]
+pub enum LoadError {
+    /// The file couldn't be read.
+    Io(io::Error),
+    /// The file isn't noido's settings: bad TOML, or a `version` that isn't
+    /// a version number this noido could have written.
+    Syntax(String),
+    /// The file belongs to another version of noido.
+    Version(u32),
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => error.fmt(f),
+            Self::Syntax(message) => message.fmt(f),
+            Self::Version(version) => write!(
+                f,
+                "the settings file is version {version}, but this noido reads version {VERSION}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::Syntax(_) | Self::Version(_) => None,
+        }
+    }
+}
+
 /// The settings file.
 #[derive(Clone)]
 pub struct SettingsFile {
@@ -70,12 +104,12 @@ impl SettingsFile {
     /// itself; a key so mended is named on stderr. A well-typed value noido
     /// doesn't know (an unknown zoom name, a percentage out of range) is
     /// mended silently. A file that isn't settings, or is another version's,
-    /// is an error, and is left alone.
-    pub fn load(&self) -> io::Result<Settings> {
+    /// is a [`LoadError`], and is left alone.
+    pub fn load(&self) -> Result<Settings, LoadError> {
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Settings::default()),
-            Err(e) => return Err(e),
+            Err(e) => return Err(LoadError::Io(e)),
         };
         let mut mended = Vec::new();
         let settings = read(&text, &mut mended)?;
@@ -108,23 +142,23 @@ impl SettingsFile {
 
 /// The settings `contents` holds. A key whose value can't be used takes its
 /// default and is noted in `mended`; syntax and another version are errors.
-fn read(contents: &str, mended: &mut Vec<String>) -> io::Result<Settings> {
-    let table: toml::Table = toml::from_str(contents).map_err(io::Error::other)?;
+fn read(contents: &str, mended: &mut Vec<String>) -> Result<Settings, LoadError> {
+    let table: toml::Table =
+        toml::from_str(contents).map_err(|e| LoadError::Syntax(e.to_string()))?;
     let version = match table.get("version") {
         None => VERSION,
-        Some(toml::Value::Integer(version)) => u32::try_from(*version)
-            .map_err(|_| io::Error::other(format!("unknown settings version {version}")))?,
+        Some(toml::Value::Integer(version)) => u32::try_from(*version).map_err(|_| {
+            LoadError::Syntax(format!("settings version {version} is out of range"))
+        })?,
         Some(other) => {
-            return Err(io::Error::other(format!(
+            return Err(LoadError::Syntax(format!(
                 "settings version must be a whole number, not {}",
                 other.type_str()
             )));
         }
     };
     if version != VERSION {
-        return Err(io::Error::other(format!(
-            "unknown settings version {version}"
-        )));
+        return Err(LoadError::Version(version));
     }
     let new_documents = match table.get("new_documents") {
         None => Defaults::default(),
@@ -390,12 +424,26 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_file_is_an_error() {
+    fn bad_toml_is_a_syntax_error() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir, "not toml [");
-        assert!(file(&dir).load().is_err());
+        let error = file(&dir).load().unwrap_err();
+        assert!(matches!(error, LoadError::Syntax(_)), "{error:?}");
         let text = fs::read_to_string(dir.path().join("settings.toml")).unwrap();
         assert_eq!(text, "not toml [");
+    }
+
+    #[test]
+    fn an_unreadable_file_is_an_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory where the file should be: the read fails.
+        fs::create_dir(dir.path().join("settings.toml")).unwrap();
+        let error = file(&dir).load().unwrap_err();
+        assert!(matches!(error, LoadError::Io(_)), "{error:?}");
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "the io error is lost"
+        );
     }
 
     #[test]
@@ -473,15 +521,18 @@ mod tests {
     fn a_wrong_typed_version_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir, "version = \"1\"\n");
-        assert!(file(&dir).load().is_err());
+        let error = file(&dir).load().unwrap_err();
+        assert!(matches!(error, LoadError::Syntax(_)), "{error:?}");
     }
 
     #[test]
-    fn another_version_is_an_error() {
+    fn another_version_is_a_version_error() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir, "version = 2\n");
         let error = file(&dir).load().unwrap_err();
-        assert!(error.to_string().contains("version"), "{error}");
+        assert!(matches!(error, LoadError::Version(2)), "{error:?}");
+        let message = error.to_string();
+        assert!(message.contains("version 2"), "{message}");
     }
 
     #[test]

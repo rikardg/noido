@@ -18,8 +18,11 @@ pub(crate) const FADE: f32 = 0.15;
 /// The open settings page.
 #[derive(Default)]
 pub struct Page {
-    /// Why the last change couldn't be saved.
+    /// Why the last change couldn't be saved, or why nothing can be.
     pub error: Option<String>,
+    /// The file on disk is another version's: its values are not used, and
+    /// nothing here is saved over it unless the reader presses Replace.
+    pub blocked: bool,
     /// The pointer was over the Paper row last frame: the scrim clears, so
     /// the paper can be judged.
     paper_hovered: bool,
@@ -39,6 +42,9 @@ pub struct Output {
     /// The settings changed: save them.
     pub changed: bool,
     pub close: bool,
+    /// The reader asked for the file on disk to be replaced with these
+    /// settings, though it is another version's: save, and unblock.
+    pub replace: bool,
 }
 
 /// Shows the page over the window. `current` is how the open document is
@@ -55,6 +61,7 @@ pub fn show(
     let builtin = Defaults::default();
     let on_off = |on: bool| if on { "on" } else { "off" };
     let mut close = false;
+    let mut replace = false;
     let id = egui::Id::unique("settings");
     let clear = ctx.animate_bool_with_time(id.with("scrim"), page.paper_hovered, FADE);
     let scrim = egui::Color32::from_black_alpha((SCRIM_ALPHA * (1.0 - clear)).round() as u8);
@@ -126,6 +133,10 @@ pub fn show(
                 ui.add_space(4.0);
                 ui.colored_label(ui.visuals().error_fg_color, error);
             }
+            if page.blocked {
+                ui.add_space(4.0);
+                replace = ui.button("Replace it with these settings").clicked();
+            }
             ui.add_space(8.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 close = ui.button("Close").clicked();
@@ -137,6 +148,7 @@ pub fn show(
     Output {
         changed: *settings != before,
         close: close || response.should_close(),
+        replace,
     }
 }
 
