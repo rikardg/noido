@@ -240,9 +240,21 @@ pub fn show(ui: &mut egui::Ui, bar: &Bar, search: &mut String, focus: bool) -> O
                 .show(|ui| {
                     // A long menu in a short window scrolls instead of
                     // running past the window's edge, where its last
-                    // entries could not be reached.
-                    let room = (ui.ctx().content_rect().height()
-                        - 2.0 * f32::from(ui.spacing().menu_margin.top))
+                    // entries could not be reached. The room runs from
+                    // where the popup belongs to the window's bottom: it
+                    // hangs below the button, so the window's height
+                    // would overstate it and egui would pull the popup up
+                    // over the title bar. On the first, invisible frame
+                    // egui sizes the popup from a guessed area and may
+                    // already have pushed it up; measure from the button
+                    // then, or a window shorter than the guess keeps it
+                    // pushed up for good.
+                    let margin = egui::Frame::popup(ui.style()).total_margin();
+                    let top = ui
+                        .max_rect()
+                        .top()
+                        .max(menu_button.rect.bottom() + margin.top);
+                    let room = (ui.ctx().content_rect().bottom() - top - margin.bottom)
                         .max(MENU_LOWEST_ROOM);
                     ui.set_max_height(room);
                     egui::ScrollArea::vertical()

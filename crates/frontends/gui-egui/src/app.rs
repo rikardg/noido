@@ -6645,7 +6645,10 @@ pub(crate) mod tests {
             "a-very-long-paper-title-about-network-analysis-".repeat(3)
         );
         let mut h = recent_harness(&[&format!("/papers/{name}")]);
-        h.size = vec2(520.0, 800.0);
+        // Narrower than the 900 it starts at, and wide enough that the
+        // menu, which hangs under its button, still has room beside it for
+        // the submenu: "Clear recent" is the widest entry in it.
+        h.size = vec2(700.0, 800.0);
         h.frames(3, vec![]);
         open_menu(&mut h);
         open_recent(&mut h);
@@ -6659,6 +6662,30 @@ pub(crate) mod tests {
             .find(|(text, _)| text.contains('…') && text.contains("pdf"))
             .unwrap_or_else(|| panic!("no cut label: {:?}", h.latest_texts()));
         assert!(cut.1.right() <= menu_left, "{:?} covers the menu", cut);
+    }
+
+    /// The app's narrowest window leaves no room beside the menu for the
+    /// submenu: it is drawn below its own entry, over the menu, where its
+    /// entries are still on the window rather than past its edge.
+    #[test]
+    fn the_narrowest_window_keeps_the_recent_files_on_the_window() {
+        let name = format!(
+            "{}.pdf",
+            "a-very-long-paper-title-about-network-analysis-".repeat(3)
+        );
+        let mut h = recent_harness(&[&format!("/papers/{name}")]);
+        h.size = vec2(480.0, 800.0);
+        h.frames(3, vec![]);
+        open_menu(&mut h);
+        open_recent(&mut h);
+        let recent = h.text_rect("Open Recent").expect("no Open Recent");
+        let clear = h.text_rect("Clear recent").expect("no Clear recent");
+        assert!(
+            clear.top() > recent.bottom(),
+            "{clear:?} is not below {recent:?}"
+        );
+        assert!(clear.right() <= 480.0, "{clear:?} runs past the window");
+        assert!(clear.bottom() <= 800.0, "{clear:?} runs past the window");
     }
 
     #[test]
@@ -9471,6 +9498,13 @@ pub(crate) mod tests {
         h.frames(30, vec![]);
         // The menu stops at the window's edge instead of running past it...
         let first = h.text_rect("Open…").expect("the menu opens");
+        // ...and starts below the button that opened it, not over the
+        // title bar.
+        let menu = h.app.bar.menu;
+        assert!(
+            first.top() > menu.bottom(),
+            "{first:?} is not below the menu button at {menu:?}"
+        );
         let last = h.text_rect("Dual page").expect("the menu fills the window");
         assert!(last.bottom() <= 600.0, "{last:?} is inside the window");
         assert!(
@@ -9492,6 +9526,27 @@ pub(crate) mod tests {
         }
         let quit = h.text_rect("Quit").expect("the menu scrolls to Quit");
         assert!(quit.bottom() <= 600.0, "{quit:?} is inside the window");
+    }
+
+    /// The app's smallest window, where the menu is taller than the whole
+    /// window: it must still hang below its button, never over the bar.
+    #[test]
+    fn the_menu_stays_below_its_button_in_the_shortest_window() {
+        let mut h = Harness::new();
+        h.size = vec2(480.0, 300.0);
+        h.frames(2, vec![]);
+        h.click(h.app.bar.menu.center());
+        h.frames(30, vec![]);
+        let first = h.text_rect("Open…").expect("the menu opens");
+        let menu = h.app.bar.menu;
+        assert!(
+            first.top() > menu.bottom(),
+            "{first:?} is not below the menu button at {menu:?}"
+        );
+        assert!(
+            h.text_rect("Quit").is_none(),
+            "Quit is past the room the window has"
+        );
     }
 
     #[test]
