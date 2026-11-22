@@ -203,6 +203,184 @@ fn save_leaves_no_temp_file() {
 }
 
 #[test]
+fn prune_removes_stale_temps() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(1)).unwrap();
+    // What a save that failed mid-write, or was killed, leaves behind: the
+    // entry's temp, the frame's, and the two lists'.
+    let temps = [
+        docs(&dir).join(format!("{}.tmp-999", key.hex())),
+        docs(&dir).join(format!("{}.frame-tmp-999", key.hex())),
+        dir.path().join("open.toml.tmp-999"),
+        dir.path().join("recent.toml.tmp-999"),
+    ];
+    for temp in &temps {
+        fs::write(temp, "half a state").unwrap();
+        set_age(temp, 2 * 60 * 60);
+    }
+    store.prune(10);
+    assert_eq!(names(&docs(&dir)), vec![format!("{}.toml", key.hex())]);
+    for temp in &temps {
+        assert!(!temp.exists(), "{} left behind", temp.display());
+    }
+}
+
+#[test]
+fn prune_keeps_a_temp_a_save_is_using() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(1)).unwrap();
+    // Another instance may be writing this one now, so it is not swept.
+    let temp = docs(&dir).join(format!("{}.tmp-999", key.hex()));
+    fs::write(&temp, "half a state").unwrap();
+    store.prune(10);
+    assert!(temp.exists());
+}
+
+#[test]
+fn prune_removes_orphan_window_files() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let kept = slot(&store, &DocKey::new(b"pdf a", Path::new("/papers/a.pdf")));
+    store.save(&kept, &state(1)).unwrap();
+    let window = store.window_file(&kept);
+    fs::write(&window, "w").unwrap();
+    // A window and a frame of a document killed before its first save, so
+    // no entry names them.
+    let orphan = "b".repeat(64);
+    let orphan_window = docs(&dir).join(format!("{orphan}.window.ron"));
+    let orphan_frame = docs(&dir).join(format!("{orphan}.frame.toml"));
+    for path in [&orphan_window, &orphan_frame] {
+        fs::write(path, "x").unwrap();
+        set_age(path, 2 * 60 * 60);
+    }
+    store.prune(10);
+    assert!(!orphan_window.exists());
+    assert!(!orphan_frame.exists());
+    assert!(window.exists(), "took a window the entry names");
+}
+
+#[test]
+fn prune_keeps_a_fresh_orphan_window() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(1)).unwrap();
+    // A document open for less than a save's delay: its window is in use.
+    let orphan = "c".repeat(64);
+    let orphan_window = docs(&dir).join(format!("{orphan}.window.ron"));
+    fs::write(&orphan_window, "w").unwrap();
+    store.prune(10);
+    assert!(orphan_window.exists());
+}
+
+#[test]
+fn prune_keeps_the_window_of_a_kept_entry_that_names_none() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(1)).unwrap();
+    // An entry written before entries named their window: its hash is the
+    // name.
+    let state_file = docs(&dir).join(format!("{}.toml", key.hex()));
+    let text = fs::read_to_string(&state_file).unwrap();
+    let old = text
+        .lines()
+        .filter(|line| !line.starts_with("window = "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&state_file, old).unwrap();
+    assert_eq!(loaded(&store, &key), Some(state(1)));
+    let window = docs(&dir).join(format!("{}.window.ron", key.hex()));
+    fs::write(&window, "w").unwrap();
+    set_age(&window, 2 * 60 * 60);
+    store.prune(10);
+    assert!(window.exists(), "took the window of a kept entry");
+}
+
+#[test]
+fn prune_keeps_the_old_window_and_frame_of_a_kept_document() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let slot = slot(&store, &key);
+    store.save(&slot, &state(1)).unwrap();
+    store
+        .save_frame(
+            &slot,
+            Frame {
+                x: 1.0,
+                y: 2.0,
+                width: 3.0,
+                height: 4.0,
+            },
+        )
+        .unwrap();
+    // A document not opened for hours still keeps where its window was.
+    let window = docs(&dir).join(format!("{}.window.ron", key.hex()));
+    let frame = docs(&dir).join(format!("{}.frame.toml", key.hex()));
+    fs::write(&window, "w").unwrap();
+    for path in [&window, &frame] {
+        set_age(path, 2 * 60 * 60);
+    }
+    store.prune(10);
+    assert!(window.exists(), "took the window of a kept document");
+    assert!(frame.exists(), "took the frame of a kept document");
+}
+
+#[test]
+fn prune_keeps_the_window_of_a_rekeyed_document() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let before = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let mut slot = slot(&store, &before);
+    store.save(&slot, &state(1)).unwrap();
+    store.window_file(&slot);
+    let frame = Frame {
+        x: 1.0,
+        y: 2.0,
+        width: 3.0,
+        height: 4.0,
+    };
+    store.save_frame(&slot, frame).unwrap();
+    // The file was edited in place: the state moves to the new hash and
+    // names the old one's window, which stays where it is.
+    let after = DocKey::new(b"pdf a, recompiled", Path::new("/papers/a.pdf"));
+    store.rekey(&mut slot, after.clone());
+    store.save(&slot, &state(1)).unwrap();
+    // A newer document, so the entry that names the window is not the first
+    // one read.
+    let newer = DocKey::new(b"pdf b", Path::new("/papers/b.pdf"));
+    let newer_slot = store.load(newer).0;
+    store.save(&newer_slot, &state(2)).unwrap();
+    set_age(&docs(&dir).join(format!("{}.toml", after.hex())), 60);
+    let window = docs(&dir).join(format!("{}.window.ron", before.hex()));
+    let frame = docs(&dir).join(format!("{}.frame.toml", before.hex()));
+    for path in [&window, &frame] {
+        fs::write(path, "x").unwrap();
+        set_age(path, 2 * 60 * 60);
+    }
+    store.prune(10);
+    assert!(window.exists(), "took the window the entry names");
+    assert!(frame.exists(), "took the frame the entry names");
+}
+
+#[test]
+fn a_failed_rename_takes_its_temp_file_with_it() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let slot = slot(&store, &key);
+    // A directory where the entry belongs: the rename cannot land.
+    fs::create_dir_all(docs(&dir).join(format!("{}.toml", key.hex()))).unwrap();
+    assert!(store.save(&slot, &state(1)).is_err());
+    assert_eq!(names(&docs(&dir)), vec![format!("{}.toml", key.hex())]);
+}
+
+#[test]
 fn prune_keeps_newest() {
     let dir = TempDir::new().unwrap();
     let store = Store::at(dir.path());
