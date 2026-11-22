@@ -267,6 +267,18 @@ mod tests {
     }
 
     #[test]
+    fn a_truncated_pdf_says_it_is_not_readable() {
+        // The reader-visible case: bytes that start with a PDF header are
+        // hayro's, and its words are what the window shows after the path.
+        let bytes = PdfBytes::from(std::fs::read(fixture("truncated.pdf")).unwrap());
+        let error = match AnyEngine::new().open(bytes) {
+            Err(error) => error,
+            Ok(_) => panic!("opened a truncated PDF"),
+        };
+        assert_eq!(error.to_string(), "not a readable PDF");
+    }
+
+    #[test]
     fn a_cbz_open_error_names_the_cbz() {
         let bytes = PdfBytes::from(std::fs::read(fixture("comic-empty.cbz")).unwrap());
         let error = match AnyEngine::new().open(bytes) {
