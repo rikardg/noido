@@ -1144,6 +1144,9 @@ impl NoidoApp {
         self.view.set_page_sizes(&sizes, remap);
         for &page in &changed {
             self.history.map_points(page, |p| remap(page, p));
+            // An end waiting for the page's text, or the bar hanging from
+            // the page, is a point on the page as it was.
+            self.select.remap(page, |p| remap(page, p));
         }
         let page_count = self.view.layout().page_count();
         // Every page is asked for anew: a fit's scale may have changed.
@@ -7827,10 +7830,12 @@ pub(crate) mod tests {
             path: "/docs/paper.pdf".into(),
         };
         Harness::build_with(Arc::new(engine.clone()), move |app| {
+            // The thread shares the app's transforms, as the window's do.
+            let transforms = app.transforms.clone();
             app.with_source(source).with_searcher(TextSearcher::start(
                 Arc::new(searcher),
                 PdfBytes::default(),
-                noido_render::Transforms::default(),
+                transforms,
                 Box::new(|| {}),
             ))
         })
@@ -12559,10 +12564,14 @@ pub(crate) mod tests {
     fn searching(engine: &TextEngine) -> Harness {
         let searcher = engine.clone();
         Harness::build_with(Arc::new(engine.clone()), move |app| {
+            // The threads share the app's transforms, as they do in the
+            // window: a page read after a turn is stamped with its new
+            // shape, and one read before it with the old.
+            let transforms = app.transforms.clone();
             app.with_searcher(TextSearcher::start(
                 Arc::new(searcher),
                 PdfBytes::default(),
-                noido_render::Transforms::default(),
+                transforms,
                 Box::new(|| {}),
             ))
         })
@@ -12586,10 +12595,11 @@ pub(crate) mod tests {
     fn searching_with_text(engine: &TextEngine, bytes: usize) -> Harness {
         let searcher = engine.clone();
         Harness::build_with(Arc::new(engine.clone()), move |app| {
+            let transforms = app.transforms.clone();
             app.with_searcher(TextSearcher::start(
                 Arc::new(searcher),
                 PdfBytes::default(),
-                noido_render::Transforms::default(),
+                transforms,
                 Box::new(|| {}),
             ))
             .with_text_budget(bytes)
@@ -16935,6 +16945,68 @@ pub(crate) mod tests {
             "the bar is at {bar_at:?}, not where the drag let go, {at:?}"
         );
         engine.open_gate();
+    }
+
+    /// Turning a page whose text is still to come moves the end waiting on
+    /// it with the page: when the text comes, the end lands at the caret
+    /// under where the mouse let go on the page as it is now, not under the
+    /// point it was on before the turn.
+    #[test]
+    fn a_waiting_end_moves_with_its_page_turned() {
+        let (mut h, engine, point, _) = highlight_let_go_on_a_waiting_page();
+        let engine_size = Size {
+            width: 612.0,
+            height: 300.0,
+        };
+        let old = h.app.transforms.get(1);
+        h.app.set_rotation(1, noido_core::Rotation::R90);
+        h.frames(1, vec![]);
+        let new = h.app.transforms.get(1);
+        assert_eq!(new.rotation, noido_core::Rotation::R90, "page 1 turned");
+        assert!(
+            h.app.select.selection.is_some_and(|s| s.carets().is_none()),
+            "the end still waits: nothing here is under test otherwise"
+        );
+        let moved = noido_core::PageTransform::remap(
+            noido_engine::Point {
+                x: point.x,
+                y: point.y,
+            },
+            old,
+            new,
+            engine_size,
+        );
+        let remapped = noido_core::DocPoint {
+            x: moved.x,
+            y: moved.y,
+            ..point
+        };
+        engine.open_gate();
+        h.until(|h| matches!(h.app.texts.get(1), noido_core::PageTextState::Known(_)));
+        h.frames(2, vec![]);
+        let placed = |p: noido_core::DocPoint| match noido_core::spot_at(
+            h.app.view.layout(),
+            p,
+            h.app.texts.get(1),
+        ) {
+            noido_core::Spot::At(caret) => caret,
+            other => panic!("page 1's text came, so a point on it places: {other:?}"),
+        };
+        let stale = placed(point);
+        let here = placed(remapped);
+        assert_ne!(
+            stale, here,
+            "the turn must move the caret the point lands at"
+        );
+        assert_eq!(
+            h.app.highlights.get(0).unwrap().end,
+            noido_engine::Location {
+                part: 1,
+                char: here.char,
+            },
+            "the resize lands under the pointer on the turned page, \
+             not at {stale:?} from before the turn"
+        );
     }
 
     /// A highlight's handle dragged off a page leaves nothing painted
