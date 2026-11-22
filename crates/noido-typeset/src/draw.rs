@@ -4,14 +4,18 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use noido_engine::{EngineError, PixelRect, Rgba8Image};
+use noido_image::MAX_PIXELS;
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{FontRef, GlyphId, MetadataProvider};
-use tiny_skia::{FillRule, Paint, Path, PathBuilder, Pixmap, Rect, Transform};
+use tiny_skia::{
+    FillRule, Paint, Path, PathBuilder, Pixmap, PixmapPaint, PixmapRef, Rect, Transform,
+};
 
 use crate::book::Book;
 use crate::fonts::{FaceId, fonts};
 use crate::house::LEFT;
+use crate::images::ImageId;
 use crate::lines::{Decoration, SetGlyph, SetLine};
 
 /// The text colour, #1b1b1b.
@@ -22,6 +26,8 @@ const HAIRLINE: f32 = 0.5;
 /// far above it, in ems of the line's text.
 const UNDERLINE: f32 = 0.1;
 const STRIKE: f32 = 0.3;
+/// The grey of the frame drawn for an image that cannot be, #999999.
+const FRAME: u8 = 0x99;
 /// The pixels drawn beyond a tile on every side, and cut off.
 const PAD: u32 = 2;
 
@@ -44,9 +50,19 @@ struct Bar {
     em: f32,
 }
 
-/// What a page shows: the glyphs and the lines over them.
+/// An image's rectangle on the page, in points.
+pub(crate) struct ImageInk {
+    pub(crate) id: ImageId,
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+}
+
+/// What a page shows: the images, the glyphs and the lines over them.
 #[derive(Default)]
 pub(crate) struct PageInk {
+    pub(crate) images: Vec<ImageInk>,
     glyphs: Vec<Ink>,
     bars: Vec<Bar>,
 }
@@ -57,6 +73,17 @@ impl PageInk {
     pub(crate) fn add_line(&mut self, line: &SetLine, top: f32) {
         let baseline = top + line.ascent;
         // An image is not a glyph; it is drawn from its own rectangle.
+        for g in &line.glyphs {
+            if let Some((id, height)) = g.image {
+                self.images.push(ImageInk {
+                    id,
+                    x: LEFT + g.x,
+                    y: top,
+                    width: g.advance,
+                    height,
+                });
+            }
+        }
         for g in line.glyphs.iter().filter(|g| g.image.is_none()) {
             self.glyphs.push(Ink {
                 face: g.face,
@@ -166,6 +193,11 @@ impl Book {
         let (dx, dy) = (rect.x as f32 - PAD as f32, rect.y as f32 - PAD as f32);
         let view = Rect::from_xywh(0.0, 0.0, w as f32, h as f32);
 
+        let thick = (HAIRLINE * scale).max(1.0);
+        for image in &ink.images {
+            self.draw_image(&mut pixmap, image, scale, (dx, dy), thick);
+        }
+
         for g in &ink.glyphs {
             let Some(path) = self.outlines.get(g.face, g.id) else {
                 continue;
@@ -192,7 +224,6 @@ impl Book {
             }
         }
 
-        let thick = (HAIRLINE * scale).max(1.0);
         for bar in &ink.bars {
             let y = match bar.kind {
                 Decoration::Underline => bar.y + UNDERLINE * bar.em,
@@ -217,6 +248,68 @@ impl Book {
         }
         Rgba8Image::from_premultiplied(rect.width, rect.height, pixels)
             .ok_or_else(|| EngineError::Render("the pixels do not fit the tile".into()))
+    }
+}
+
+impl Book {
+    /// `image`, at `scale`, on `pixmap` whose top left is the page's
+    /// pixel `origin`: its pixels, or a frame when it has none.
+    fn draw_image(
+        &self,
+        pixmap: &mut Pixmap,
+        image: &ImageInk,
+        scale: f32,
+        origin: (f32, f32),
+        thick: f32,
+    ) {
+        // Rounded on the page, so that a tile's image is the page's.
+        let edge = |at: f32| (at * scale).round();
+        let (x0, y0) = (edge(image.x), edge(image.y));
+        let (x1, y1) = (edge(image.x + image.width), edge(image.y + image.height));
+        let (w, h) = (x1 - x0, y1 - y0);
+        if w < 1.0 || h < 1.0 {
+            return;
+        }
+        let (left, top) = (x0 - origin.0, y0 - origin.1);
+        if left >= pixmap.width() as f32
+            || top >= pixmap.height() as f32
+            || left + w <= 0.0
+            || top + h <= 0.0
+        {
+            return;
+        }
+        let pixels = if (w as u64) * (h as u64) > MAX_PIXELS {
+            None
+        } else {
+            self.images.pixels(image.id, w as u32, h as u32)
+        };
+        let drawn = pixels
+            .as_ref()
+            .and_then(|p| PixmapRef::from_bytes(p.as_raw(), p.width(), p.height()));
+        if let Some(drawn) = drawn {
+            pixmap.draw_pixmap(
+                left as i32,
+                top as i32,
+                drawn,
+                &PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
+            return;
+        }
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(FRAME, FRAME, FRAME, 255);
+        let t = thick.round();
+        for (x, y, w, h) in [
+            (left, top, w, t),
+            (left, top + h - t, w, t),
+            (left, top, t, h),
+            (left + w - t, top, t, h),
+        ] {
+            if let Some(bar) = Rect::from_xywh(x, y, w, h) {
+                pixmap.fill_rect(bar, &paint, Transform::identity(), None);
+            }
+        }
     }
 }
 
@@ -447,6 +540,174 @@ mod tests {
             !under.is_empty() && under.iter().all(|&y| y > baseline),
             "{under:?}"
         );
+    }
+
+    // Images: `images.epub`, drawn.
+
+    fn images_book() -> Book {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/images.epub");
+        let bytes = std::fs::read(path).unwrap();
+        let epub = noido_epub::open(&bytes, 8 << 20).unwrap();
+        crate::typeset_epub(&epub, noido_engine::PdfBytes::from(bytes))
+    }
+
+    /// The page and place of the first image `width` x `height` points.
+    fn image_of(book: &Book, width: f32, height: f32) -> (usize, usize) {
+        for (page, ink) in book.ink.iter().enumerate() {
+            for (n, i) in ink.images.iter().enumerate() {
+                if (i.width - width).abs() < 0.01 && (i.height - height).abs() < 0.01 {
+                    return (page, n);
+                }
+            }
+        }
+        panic!("no image {width} x {height}");
+    }
+
+    fn pixel(image: &Rgba8Image, x: u32, y: u32) -> [u8; 4] {
+        let at = (y * image.width() + x) as usize * 4;
+        image.pixels()[at..at + 4].try_into().unwrap()
+    }
+
+    fn near_to(px: [u8; 4], want: [u8; 3]) {
+        let ok = px[..3].iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 2) && px[3] == 255;
+        assert!(ok, "{px:?} is not {want:?}");
+    }
+
+    fn page_at(book: &Book, page: usize, scale: f32) -> Rgba8Image {
+        let rect = PixelRect {
+            x: 0,
+            y: 0,
+            width: (PAPER.width * scale).ceil() as u32,
+            height: (PAPER.height * scale).ceil() as u32,
+        };
+        book.render_tile(page, scale, rect).unwrap()
+    }
+
+    #[test]
+    fn a_figure_is_drawn_in_its_rectangle() {
+        let book = images_book();
+        let (page, n) = image_of(&book, 15.0, 15.0);
+        let i = &book.ink[page].images[n];
+        let image = page_at(&book, page, 2.0);
+        let (cx, cy) = ((i.x + i.width / 2.0) * 2.0, (i.y + i.height / 2.0) * 2.0);
+        near_to(pixel(&image, cx as u32, cy as u32), [0, 120, 200]);
+        let outside = ((i.x - 3.0) * 2.0) as u32;
+        assert!(is_white(&pixel(&image, outside, cy as u32)));
+    }
+
+    #[test]
+    fn a_tile_through_an_image_matches_the_page() {
+        let book = images_book();
+        let (page, n) = image_of(&book, 43.4, 434.0);
+        let i = &book.ink[page].images[n];
+        let scale = 1.7;
+        let whole = page_at(&book, page, scale);
+        let (x0, y0) = ((i.x * scale) as u32 - 20, (i.y * scale) as u32 + 100);
+        let mut tiles = 0;
+        for ty in (y0..y0 + 5 * 41).step_by(41) {
+            for tx in (x0..x0 + 3 * 37).step_by(37) {
+                let rect = PixelRect {
+                    x: tx,
+                    y: ty,
+                    width: 37,
+                    height: 41,
+                };
+                let tile = book.render_tile(page, scale, rect).unwrap();
+                let mut crop = Vec::new();
+                for row in ty..ty + 41 {
+                    let from = (row * whole.width() + tx) as usize * 4;
+                    crop.extend_from_slice(&whole.pixels()[from..from + 37 * 4]);
+                }
+                assert_eq!(tile.pixels(), crop.as_slice(), "tile {tx},{ty}");
+                tiles += 1;
+            }
+        }
+        assert_eq!(tiles, 15);
+        // The tiles cross the image.
+        let centre = pixel(&whole, ((i.x + i.width / 2.0) * scale) as u32, y0 + 100);
+        near_to(centre, [0, 150, 0]);
+    }
+
+    #[test]
+    fn a_transparent_image_draws_over_white() {
+        let book = images_book();
+        let (page, n) = image_of(&book, 150.0, 150.0);
+        let i = &book.ink[page].images[n];
+        let image = page_at(&book, page, 1.0);
+        let px = pixel(
+            &image,
+            (i.x + i.width / 2.0) as u32,
+            (i.y + i.height / 2.0) as u32,
+        );
+        near_to(px, [228, 177, 152]);
+    }
+
+    #[test]
+    fn an_image_is_decoded_once() {
+        use std::sync::atomic::Ordering;
+        let book = images_book();
+        let (page, _) = image_of(&book, 43.4, 434.0);
+        assert_eq!(book.images.decodes.load(Ordering::SeqCst), 0);
+        page_at(&book, page, 1.0);
+        page_at(&book, page, 1.0);
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| page_at(&book, page, 1.0));
+            }
+        });
+        assert_eq!(book.images.decodes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_broken_image_draws_a_frame() {
+        let book = images_book();
+        let (page, n) = image_of(&book, 7.5, 7.5);
+        let i = &book.ink[page].images[n];
+        let scale = 4.0;
+        let image = page_at(&book, page, scale);
+        let x0 = (i.x * scale).round() as u32;
+        let y0 = (i.y * scale).round() as u32;
+        let x1 = ((i.x + i.width) * scale).round() as u32;
+        let y1 = ((i.y + i.height) * scale).round() as u32;
+        assert_eq!(pixel(&image, x0, (y0 + y1) / 2), [0x99, 0x99, 0x99, 255]);
+        assert_eq!(pixel(&image, (x0 + x1) / 2, y0), [0x99, 0x99, 0x99, 255]);
+        assert!(is_white(&pixel(&image, (x0 + x1) / 2, (y0 + y1) / 2)));
+    }
+
+    #[test]
+    fn an_image_over_the_cap_at_this_scale_draws_a_frame() {
+        use std::sync::atomic::Ordering;
+        let book = images_book();
+        let (page, n) = image_of(&book, 43.4, 434.0);
+        let i = &book.ink[page].images[n];
+        // A scale at which the rectangle has 10% more pixels per side than
+        // the cap allows in all.
+        let scale = (MAX_PIXELS as f32 / (i.width * i.height)).sqrt() * 1.1;
+        let (x0, y0) = ((i.x * scale).round() as u32, (i.y * scale).round() as u32);
+        let (x1, y1) = (
+            ((i.x + i.width) * scale).round() as u32,
+            ((i.y + i.height) * scale).round() as u32,
+        );
+        assert!(u64::from(x1 - x0) * u64::from(y1 - y0) > MAX_PIXELS);
+        let tile = |x: u32, y: u32| {
+            let rect = PixelRect {
+                x,
+                y,
+                width: 16,
+                height: 16,
+            };
+            book.render_tile(page, scale, rect).unwrap()
+        };
+        // The top left corner of the rectangle: its frame.
+        let corner = tile(x0, y0);
+        assert_eq!(pixel(&corner, 0, 8), [0x99, 0x99, 0x99, 255]);
+        assert_eq!(pixel(&corner, 8, 0), [0x99, 0x99, 0x99, 255]);
+        // Its centre: nothing, not the image.
+        let centre = tile((x0 + x1) / 2, (y0 + y1) / 2);
+        assert!(centre.pixels().chunks(4).all(is_white));
+        // And the image was never decoded for it.
+        assert_eq!(book.images.decodes.load(Ordering::SeqCst), 0);
     }
 
     #[test]
