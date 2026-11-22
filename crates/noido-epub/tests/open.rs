@@ -420,9 +420,9 @@ fn a_package_and_container_with_a_doctype_open() {
     assert_eq!(open(&bytes, 8 << 20).ok().unwrap().parts.len(), 1);
 }
 
-fn cover_of(book: &noido_epub::Epub) -> Option<String> {
+fn cover_of(book: &noido_epub::Epub) -> Vec<String> {
     match &book.parts[0].kind {
-        PartKind::Cover { image } => image.clone(),
+        PartKind::Cover { images } => images.clone(),
         _ => panic!("not a cover"),
     }
 }
@@ -430,12 +430,12 @@ fn cover_of(book: &noido_epub::Epub) -> Option<String> {
 #[test]
 fn the_cover_names_its_image() {
     let book = open(&fixture("book.epub"), 8 << 20).ok().unwrap();
-    assert_eq!(cover_of(&book).as_deref(), Some("OEBPS/cover.png"));
+    assert_eq!(cover_of(&book), ["OEBPS/cover.png"]);
 }
 
 /// A marked cover whose file holds no image; `manifest_extra` and
 /// `metadata` may still name one.
-fn marked_cover(manifest_extra: &str, metadata: &str) -> Option<String> {
+fn marked_cover(manifest_extra: &str, metadata: &str) -> Vec<String> {
     let opf = format!(
         r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata>{metadata}</metadata><manifest>
         <item id="c" href="t/c.xhtml" media-type="application/xhtml+xml"/>{manifest_extra}
@@ -453,17 +453,17 @@ fn marked_cover(manifest_extra: &str, metadata: &str) -> Option<String> {
 
 #[test]
 fn a_cover_with_no_image_names_none() {
-    assert_eq!(marked_cover("", ""), None);
+    assert!(marked_cover("", "").is_empty());
 }
 
 #[test]
 fn a_cover_with_no_image_falls_back_to_the_manifest() {
     let property =
         r#"<item id="i" href="art/c.png" media-type="image/png" properties="cover-image"/>"#;
-    assert_eq!(marked_cover(property, "").as_deref(), Some("art/c.png"));
+    assert_eq!(marked_cover(property, ""), ["art/c.png"]);
     let plain = r#"<item id="i" href="art/m.png" media-type="image/png"/>"#;
     let meta = r#"<meta name="cover" content="i"/>"#;
-    assert_eq!(marked_cover(plain, meta).as_deref(), Some("art/m.png"));
+    assert_eq!(marked_cover(plain, meta), ["art/m.png"]);
 }
 
 #[test]
@@ -488,4 +488,45 @@ fn image_data_reads_the_entry() {
     let data = image_data(&bytes, "OEBPS/img/small.png").unwrap();
     assert!(data.starts_with(b"\x89PNG\r\n\x1a\n"));
     assert_eq!(image_data(&bytes, "OEBPS/img/missing.png"), None);
+}
+
+/// A cover file `t/c.xhtml` holding `body`, with the package's
+/// `cover-image` `art/c.png`.
+fn cover_with(body: &str) -> Vec<String> {
+    let opf = r#"<package xmlns="http://www.idpf.org/2007/opf"><metadata/><manifest>
+        <item id="c" href="t/c.xhtml" media-type="application/xhtml+xml"/>
+        <item id="i" href="art/c.png" media-type="image/png" properties="cover-image"/>
+        </manifest><spine><itemref idref="c"/></spine></package>"#;
+    let c = format!(r#"<html xmlns="http://www.w3.org/1999/xhtml"><body>{body}</body></html>"#);
+    let bytes = zip_of(&[
+        ("META-INF/container.xml", CONTAINER),
+        ("p.opf", opf),
+        ("t/c.xhtml", &c),
+    ]);
+    cover_of(&open(&bytes, 8 << 20).ok().unwrap())
+}
+
+#[test]
+fn the_first_image_comes_before_the_packages_cover() {
+    assert_eq!(
+        cover_with(r#"<img src="../img/x.png"/>"#),
+        ["img/x.png", "art/c.png"]
+    );
+    assert_eq!(
+        cover_with(r#"<img src="y.png"/>"#),
+        ["t/y.png", "art/c.png"]
+    );
+}
+
+#[test]
+fn a_cover_image_loses_its_fragment() {
+    assert_eq!(
+        cover_with(r#"<img src="../img/x.png#top"/>"#),
+        ["img/x.png", "art/c.png"]
+    );
+}
+
+#[test]
+fn the_same_image_is_named_once() {
+    assert_eq!(cover_with(r#"<img src="../art/c.png"/>"#), ["art/c.png"]);
 }
