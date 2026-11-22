@@ -200,6 +200,7 @@ impl View {
         self.offset
     }
 
+    /// The last real size, or (0, 0) before the first one.
     pub fn viewport_size(&self) -> (f32, f32) {
         self.viewport
     }
@@ -214,18 +215,23 @@ impl View {
     }
 
     /// Resizes the viewport, refitting in fit modes and keeping the document
-    /// point at the centre in place.
+    /// point at the centre in place. A size with no room — a hidden window,
+    /// a page area squeezed to nothing — or one that isn't finite is no
+    /// viewport: the last real size and the reader's place stay.
     pub fn set_viewport_size(&mut self, width: f32, height: f32) {
+        if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0) {
+            return;
+        }
         if (width, height) == self.viewport {
             return;
         }
         let old_centre = self.centre();
-        let was_empty = self.viewport.0 <= 0.0 || self.viewport.1 <= 0.0;
+        let never_sized = self.viewport.0 <= 0.0 || self.viewport.1 <= 0.0;
         self.viewport = (width, height);
         let scale = self.fit_scale(self.mode);
-        if was_empty && self.pending.is_some() {
+        if never_sized && self.pending.is_some() {
             self.place_pending();
-        } else if was_empty {
+        } else if never_sized {
             // Nothing was on screen yet: start at the top.
             self.layout.arrange(scale, width, height);
             self.clamp_offset();
@@ -2589,6 +2595,56 @@ mod tests {
         let state = saved(ZoomMode::FitWidth, 1.0, true, false, 6);
         let mut view = View::new(vec![size(612.0, 792.0); 10]);
         view.restore(&state);
+        view.set_viewport_size(636.0, 800.0);
+        let centre = doc_at(&view, (318.0, 400.0));
+        assert_eq!(centre.page, 6);
+        assert_near((centre.x, centre.y), (306.0, 400.0), 0.5);
+    }
+
+    /// A viewport with no room, or one that isn't finite, is no viewport:
+    /// taking it as real would refit to the smallest zoom and lose the
+    /// reader's place, which the next save would keep.
+    #[test]
+    fn a_viewport_with_no_room_keeps_the_place() {
+        let mut view = letter_view();
+        view.scrolled_to(0.0, 3000.0);
+        let place = view.place().unwrap();
+        let before = (view.offset(), view.scale(), view.viewport_size());
+        for (width, height) in [
+            (0.0, 0.0),
+            (0.0, 800.0),
+            (-0.0, 800.0),
+            (-1.0, 800.0),
+            (636.0, 0.0),
+            (800.0, -1.0),
+            (f32::NAN, 800.0),
+            (800.0, f32::NAN),
+            (f32::INFINITY, 800.0),
+            (800.0, f32::INFINITY),
+            (f32::NEG_INFINITY, 800.0),
+            (800.0, f32::NEG_INFINITY),
+        ] {
+            view.set_viewport_size(width, height);
+            assert_eq!(
+                (view.offset(), view.scale(), view.viewport_size()),
+                before,
+                "{width}×{height} was taken as a real viewport"
+            );
+        }
+        // A real size after them finds the place still there.
+        view.set_viewport_size(700.0, 800.0);
+        assert_eq!(view.place().unwrap().page, place.page);
+    }
+
+    /// The first real size places a restored place; a first viewport with
+    /// no room must leave it pending until a size with room.
+    #[test]
+    fn a_first_viewport_with_no_room_leaves_the_pending_place() {
+        let state = saved(ZoomMode::FitWidth, 1.0, true, false, 6);
+        let mut view = View::new(vec![size(612.0, 792.0); 10]);
+        view.restore(&state);
+        view.set_viewport_size(636.0, 0.0);
+        view.set_viewport_size(0.0, 0.0);
         view.set_viewport_size(636.0, 800.0);
         let centre = doc_at(&view, (318.0, 400.0));
         assert_eq!(centre.page, 6);
