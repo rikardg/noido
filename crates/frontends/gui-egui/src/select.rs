@@ -88,13 +88,29 @@ pub const BAR_CLEARANCE: f32 = 2.0;
 /// Which end of `selection` its focus is (0 start, 1 end): where the mouse let
 /// go, before a highlight's range forgets it.
 fn focus_end(selection: &Selection) -> usize {
-    let page = |spot: Spot| match spot {
-        Spot::At(caret) => caret.page,
-        Spot::Waiting(point) => point.page,
-    };
-    match selection.carets() {
-        Some((start, _)) => usize::from(selection.focus != Spot::At(start)),
-        None => usize::from(page(selection.focus) >= page(selection.anchor)),
+    if let Some((start, _)) = selection.carets() {
+        return usize::from(selection.focus != Spot::At(start));
+    }
+    match (selection.anchor, selection.focus) {
+        // Both ends wait for their pages' text: where each one is in the
+        // document says which the mouse let go of, since the pages alone
+        // don't.
+        (Spot::Waiting(anchor), Spot::Waiting(focus)) => {
+            usize::from((focus.page, focus.y, focus.x) >= (anchor.page, anchor.y, anchor.x))
+        }
+        // One end placed: the pages say which came first, and on one page
+        // only a boundary at its start can be there, which comes before any
+        // point on the page.
+        (anchor, focus) => {
+            let page = |spot: Spot| match spot {
+                Spot::At(caret) => caret.page,
+                Spot::Waiting(point) => point.page,
+            };
+            if page(focus) != page(anchor) {
+                return usize::from(page(focus) > page(anchor));
+            }
+            usize::from(!matches!(focus, Spot::At(Caret { char: 0, .. })))
+        }
     }
 }
 
@@ -680,6 +696,53 @@ mod tests {
         let view = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, height));
         let (pos, pivot) = bar_place((at, at), lines, view, view, SIZE, GAP, outside);
         pivot.anchor_size(pos, SIZE)
+    }
+
+    #[test]
+    fn the_bar_goes_past_the_end_a_waiting_drag_let_go_of() {
+        // Both ends wait for their page's text: where each one is in the
+        // document says which came first, not the page numbers, which are
+        // the same.
+        let waiting = |x: f32, y: f32| Spot::Waiting(DocPoint { page: 0, x, y });
+        let down = Selection {
+            anchor: waiting(100.0, 100.0),
+            focus: waiting(100.0, 500.0),
+        };
+        assert_eq!(focus_end(&down), 1, "down, the end was let go of");
+        let up = Selection {
+            anchor: waiting(100.0, 500.0),
+            focus: waiting(100.0, 100.0),
+        };
+        assert_eq!(focus_end(&up), 0, "up, the start was let go of");
+        // Along one line, the left end comes first.
+        let back = Selection {
+            anchor: waiting(300.0, 100.0),
+            focus: waiting(100.0, 100.0),
+        };
+        assert_eq!(focus_end(&back), 0, "leftward, the start was let go of");
+    }
+
+    #[test]
+    fn the_bar_goes_by_a_pages_edge_when_a_drag_let_go_there_waits() {
+        // One end waits for the page's text while the other is the boundary
+        // caret at the page's start, as a drag past the page's top makes: the
+        // boundary comes before any point on the page.
+        let waiting = Spot::Waiting(DocPoint {
+            page: 0,
+            x: 100.0,
+            y: 500.0,
+        });
+        let boundary = Spot::At(Caret { page: 0, char: 0 });
+        let up = Selection {
+            anchor: waiting,
+            focus: boundary,
+        };
+        assert_eq!(focus_end(&up), 0, "up past the top, the start was let go");
+        let down = Selection {
+            anchor: boundary,
+            focus: waiting,
+        };
+        assert_eq!(focus_end(&down), 1, "down from the top, the end was let go");
     }
 
     #[test]
