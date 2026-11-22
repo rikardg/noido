@@ -299,6 +299,33 @@ impl State {
         std::mem::take(&mut self.resized)
     }
 
+    /// Moves what waits for `page`'s text from where it was on the page
+    /// before the page's shape changed to where it is after: a selection's
+    /// ends and a copy's, which the text places when it comes, and the bar
+    /// hanging from the page. An end placed already is a caret into the
+    /// text, which a new page shape does not move.
+    pub fn remap(&mut self, page: usize, f: impl Fn(DocPoint) -> DocPoint) {
+        let waiting = |spot: &mut Spot| {
+            if let Spot::Waiting(p) = spot
+                && p.page == page
+            {
+                *p = f(*p);
+            }
+        };
+        for selection in [&mut self.selection, &mut self.copy_pending]
+            .into_iter()
+            .flatten()
+        {
+            waiting(&mut selection.anchor);
+            waiting(&mut selection.focus);
+        }
+        if let Some(point) = &mut self.bar_doc
+            && point.doc.page == page
+        {
+            point.doc = f(point.doc);
+        }
+    }
+
     /// Drops the selection and any drag: a new version of the document.
     pub fn clear(&mut self) {
         self.selection = None;
@@ -970,5 +997,100 @@ mod tests {
             assert!(light.a() < 255 && dark.a() < 255, "opaque {colour:?}");
             assert_ne!(light, dark, "{colour:?}");
         }
+    }
+
+    /// A page turned or reshaped moves what waits for its text: a
+    /// selection's waiting ends and a copy's, and no more. An end placed
+    /// already is a caret in the text, which the page's shape doesn't move,
+    /// and another page's points are on that page's own shape.
+    #[test]
+    fn a_pages_waiting_ends_move_with_it_and_placed_ends_stay() {
+        let waiting = |page, x, y| Spot::Waiting(DocPoint { page, x, y });
+        let at = |page, char| Spot::At(Caret { page, char });
+        let mut state = State {
+            selection: Some(Selection {
+                anchor: at(0, 3),
+                focus: waiting(0, 100.0, 500.0),
+            }),
+            copy_pending: Some(Selection {
+                anchor: waiting(1, 10.0, 20.0),
+                focus: waiting(0, 30.0, 40.0),
+            }),
+            editing: Some(2),
+            ..State::default()
+        };
+        state.remap(0, |p| DocPoint {
+            x: p.x + 10.0,
+            y: p.y + 20.0,
+            ..p
+        });
+        assert_eq!(
+            state.selection,
+            Some(Selection {
+                anchor: at(0, 3),
+                focus: waiting(0, 110.0, 520.0),
+            }),
+            "the waiting end moved; the placed one did not"
+        );
+        assert_eq!(
+            state.copy_pending,
+            Some(Selection {
+                anchor: waiting(1, 10.0, 20.0),
+                focus: waiting(0, 40.0, 60.0),
+            }),
+            "page 0's waiting end moved; page 1's did not"
+        );
+        assert_eq!(
+            state.editing,
+            Some(2),
+            "the highlight under edit is a range"
+        );
+    }
+
+    /// The bar hangs from a point on a page, so it moves with that page and
+    /// stays with any other; the end it hangs from is an index, not a point.
+    #[test]
+    fn the_bar_moves_with_the_page_it_hangs_from() {
+        let bar = |page, x, y| BarPoint {
+            doc: DocPoint { page, x, y },
+            end: Some(1),
+        };
+        let doc = |state: &State| state.bar_doc.map(|bar| bar.doc);
+        let mut state = State {
+            bar_doc: Some(bar(0, 100.0, 200.0)),
+            ..State::default()
+        };
+        state.remap(0, |p| DocPoint {
+            x: p.x + 10.0,
+            y: p.y + 20.0,
+            ..p
+        });
+        assert_eq!(
+            doc(&state),
+            Some(DocPoint {
+                page: 0,
+                x: 110.0,
+                y: 220.0
+            })
+        );
+        assert_eq!(
+            state.bar_doc.and_then(|bar| bar.end),
+            Some(1),
+            "the end it hangs from is an index of the selection's ends"
+        );
+        state.remap(1, |p| DocPoint {
+            x: p.x + 10.0,
+            y: p.y + 20.0,
+            ..p
+        });
+        assert_eq!(
+            doc(&state),
+            Some(DocPoint {
+                page: 0,
+                x: 110.0,
+                y: 220.0
+            }),
+            "another page's turn does not move it"
+        );
     }
 }
