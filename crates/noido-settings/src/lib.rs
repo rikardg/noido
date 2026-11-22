@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
 use noido_core::{Defaults, Paper, StartZoom};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 const VERSION: u32 = 1;
 const FILE_NAME: &str = "settings.toml";
@@ -65,26 +65,24 @@ impl SettingsFile {
         &self.path
     }
 
-    /// The settings; the defaults without a file. Missing fields take their
-    /// defaults and odd values are mended; a file that isn't settings is an
-    /// error, and is left alone.
+    /// The settings; the defaults without a file. A missing field, or one
+    /// holding a value of the wrong type, takes its default and costs only
+    /// itself; a key so mended is named on stderr. A well-typed value noido
+    /// doesn't know (an unknown zoom name, a percentage out of range) is
+    /// mended silently. A file that isn't settings, or is another version's,
+    /// is an error, and is left alone.
     pub fn load(&self) -> io::Result<Settings> {
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Settings::default()),
             Err(e) => return Err(e),
         };
-        let file: File = toml::from_str(&text).map_err(io::Error::other)?;
-        if file.version != VERSION {
-            return Err(io::Error::other(format!(
-                "unknown settings version {}",
-                file.version
-            )));
+        let mut mended = Vec::new();
+        let settings = read(&text, &mut mended)?;
+        for note in mended {
+            eprintln!("noido: settings {}: {note}", self.path.display());
         }
-        Ok(Settings {
-            new_documents: file.new_documents.defaults(),
-            paper: paper_from_name(&file.paper),
-        })
+        Ok(settings)
     }
 
     /// Writes the settings; the file is replaced atomically.
@@ -108,15 +106,136 @@ impl SettingsFile {
     }
 }
 
-/// The TOML form of the settings.
-#[derive(Serialize, Deserialize)]
+/// The settings `contents` holds. A key whose value can't be used takes its
+/// default and is noted in `mended`; syntax and another version are errors.
+fn read(contents: &str, mended: &mut Vec<String>) -> io::Result<Settings> {
+    let table: toml::Table = toml::from_str(contents).map_err(io::Error::other)?;
+    let version = match table.get("version") {
+        None => VERSION,
+        Some(toml::Value::Integer(version)) => u32::try_from(*version)
+            .map_err(|_| io::Error::other(format!("unknown settings version {version}")))?,
+        Some(other) => {
+            return Err(io::Error::other(format!(
+                "settings version must be a whole number, not {}",
+                other.type_str()
+            )));
+        }
+    };
+    if version != VERSION {
+        return Err(io::Error::other(format!(
+            "unknown settings version {version}"
+        )));
+    }
+    let new_documents = match table.get("new_documents") {
+        None => Defaults::default(),
+        Some(toml::Value::Table(fields)) => new_documents(fields, mended),
+        Some(other) => {
+            note(mended, "new_documents", other, "a table", "the defaults");
+            Defaults::default()
+        }
+    };
+    let paper = text(&table, mended, "paper", paper_name(Paper::default()))
+        .map(paper_from_name)
+        .unwrap_or_default();
+    Ok(Settings {
+        new_documents,
+        paper,
+    })
+}
+
+/// [`Defaults`] from the `[new_documents]` table: loose where a hand edit may
+/// go wrong, so an unknown zoom or a percentage out of range is mended, and a
+/// key of the wrong type costs only itself.
+fn new_documents(table: &toml::Table, mended: &mut Vec<String>) -> Defaults {
+    let builtin = Defaults::default();
+    let zoom = match text(table, mended, "zoom", zoom_name(builtin.zoom)) {
+        None => builtin.zoom,
+        Some("fit-width") => StartZoom::FitWidth,
+        Some("fit-page") => StartZoom::FitPage,
+        Some("fixed") => StartZoom::Fixed,
+        Some(_) => builtin.zoom,
+    };
+    Defaults {
+        zoom,
+        zoom_percent: integer(table, mended, "zoom_percent", builtin.zoom_percent.into())
+            .clamp(0, u32::MAX.into()) as u32,
+        continuous: boolean(table, mended, "continuous", builtin.continuous),
+        dual: boolean(table, mended, "dual", builtin.dual),
+        odd_left: boolean(table, mended, "odd_left", builtin.odd_left),
+        gapless: boolean(table, mended, "gapless", builtin.gapless),
+        sidebar: boolean(table, mended, "sidebar", builtin.sidebar),
+    }
+    .clamped()
+}
+
+/// What `table` holds under `key` as text, or `None` when it is missing or
+/// something else (noted in `mended`, with `default` as the word for it).
+fn text<'a>(
+    table: &'a toml::Table,
+    mended: &mut Vec<String>,
+    key: &str,
+    default: &str,
+) -> Option<&'a str> {
+    match table.get(key) {
+        None => None,
+        Some(toml::Value::String(text)) => Some(text),
+        Some(other) => {
+            note(mended, key, other, "text", default);
+            None
+        }
+    }
+}
+
+/// What `table` holds under `key` as a boolean, or `default` when it is
+/// missing or something else (noted in `mended`).
+fn boolean(table: &toml::Table, mended: &mut Vec<String>, key: &str, default: bool) -> bool {
+    match table.get(key) {
+        None => default,
+        Some(toml::Value::Boolean(value)) => *value,
+        Some(other) => {
+            note(mended, key, other, "a boolean", on_off(default));
+            default
+        }
+    }
+}
+
+/// What `table` holds under `key` as a whole number, or `default` when it is
+/// missing or something else (noted in `mended`).
+fn integer(table: &toml::Table, mended: &mut Vec<String>, key: &str, default: i64) -> i64 {
+    match table.get(key) {
+        None => default,
+        Some(toml::Value::Integer(value)) => *value,
+        Some(other) => {
+            note(mended, key, other, "a whole number", default);
+            default
+        }
+    }
+}
+
+/// Notes that `key` holds `found` where it should hold `expected`, and that
+/// `used` is taken instead.
+fn note(
+    mended: &mut Vec<String>,
+    key: &str,
+    found: &toml::Value,
+    expected: &str,
+    used: impl std::fmt::Display,
+) {
+    mended.push(format!(
+        "{key} must be {expected}, not {}; using {used}",
+        found.type_str()
+    ));
+}
+
+fn on_off(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
+}
+
+/// The TOML form the settings are written in.
+#[derive(Serialize)]
 struct File {
-    #[serde(default = "version")]
     version: u32,
-    #[serde(default)]
     new_documents: NewDocuments,
-    /// Missing or unknown is white.
-    #[serde(default)]
     paper: String,
 }
 
@@ -132,6 +251,15 @@ fn paper_name(paper: Paper) -> &'static str {
     }
 }
 
+fn zoom_name(zoom: StartZoom) -> &'static str {
+    match zoom {
+        StartZoom::FitWidth => "fit-width",
+        StartZoom::FitPage => "fit-page",
+        StartZoom::Fixed => "fixed",
+    }
+}
+
+/// Unknown or missing is white.
 fn paper_from_name(name: &str) -> Paper {
     Paper::ALL
         .into_iter()
@@ -139,14 +267,8 @@ fn paper_from_name(name: &str) -> Paper {
         .unwrap_or_default()
 }
 
-fn version() -> u32 {
-    VERSION
-}
-
-/// The TOML form of [`Defaults`]. Loose where a hand edit may go wrong: an
-/// unknown zoom or a percentage out of range is mended, not refused.
-#[derive(Serialize, Deserialize)]
-#[serde(default)]
+/// The TOML form [`Defaults`] is written in.
+#[derive(Serialize)]
 struct NewDocuments {
     zoom: String,
     zoom_percent: i64,
@@ -157,21 +279,10 @@ struct NewDocuments {
     sidebar: bool,
 }
 
-impl Default for NewDocuments {
-    fn default() -> Self {
-        Self::from(&Defaults::default())
-    }
-}
-
 impl From<&Defaults> for NewDocuments {
     fn from(defaults: &Defaults) -> Self {
-        let zoom = match defaults.zoom {
-            StartZoom::FitWidth => "fit-width",
-            StartZoom::FitPage => "fit-page",
-            StartZoom::Fixed => "fixed",
-        };
         Self {
-            zoom: zoom.to_owned(),
+            zoom: zoom_name(defaults.zoom).to_owned(),
             zoom_percent: defaults.zoom_percent.into(),
             continuous: defaults.continuous,
             dual: defaults.dual,
@@ -179,26 +290,6 @@ impl From<&Defaults> for NewDocuments {
             gapless: defaults.gapless,
             sidebar: defaults.sidebar,
         }
-    }
-}
-
-impl NewDocuments {
-    fn defaults(&self) -> Defaults {
-        let zoom = match self.zoom.as_str() {
-            "fit-page" => StartZoom::FitPage,
-            "fixed" => StartZoom::Fixed,
-            _ => StartZoom::FitWidth,
-        };
-        Defaults {
-            zoom,
-            zoom_percent: self.zoom_percent.clamp(0, u32::MAX.into()) as u32,
-            continuous: self.continuous,
-            dual: self.dual,
-            odd_left: self.odd_left,
-            gapless: self.gapless,
-            sidebar: self.sidebar,
-        }
-        .clamped()
     }
 }
 
@@ -305,6 +396,128 @@ mod tests {
         assert!(file(&dir).load().is_err());
         let text = fs::read_to_string(dir.path().join("settings.toml")).unwrap();
         assert_eq!(text, "not toml [");
+    }
+
+    #[test]
+    fn a_wrong_typed_percentage_costs_only_its_own_field() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir,
+            "version = 1\n[new_documents]\nzoom = \"fixed\"\nzoom_percent = 150.0\ndual = true\n",
+        );
+        let loaded = file(&dir).load().unwrap().new_documents;
+        assert_eq!(loaded.zoom, StartZoom::Fixed);
+        assert_eq!(loaded.zoom_percent, Defaults::default().zoom_percent);
+        assert!(loaded.dual);
+    }
+
+    #[test]
+    fn a_wrong_typed_flag_costs_only_its_own_field() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir,
+            "version = 1\npaper = \"sepia\"\n[new_documents]\ncontinuous = \"off\"\ngapless = true\n",
+        );
+        let loaded = file(&dir).load().unwrap();
+        // The built-in default, not `bool::default()`.
+        assert!(loaded.new_documents.continuous);
+        assert!(loaded.new_documents.gapless);
+        assert_eq!(loaded.paper, Paper::Sepia);
+    }
+
+    #[test]
+    fn a_mistyped_field_is_rewritten_when_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir,
+            "version = 1\n[new_documents]\nzoom = \"fixed\"\nzoom_percent = 150\ngapless = true\nodd_left = \"yes\"\n",
+        );
+        let loaded = file(&dir).load().unwrap();
+        // The bad key costs only itself: the rest of the file is kept, and
+        // the fallback is the built-in default (`odd_left` is on), not zero.
+        assert_eq!(loaded.new_documents.zoom, StartZoom::Fixed);
+        assert_eq!(loaded.new_documents.zoom_percent, 150);
+        assert!(loaded.new_documents.gapless);
+        assert!(loaded.new_documents.odd_left);
+
+        file(&dir).save(&loaded).unwrap();
+        let text = fs::read_to_string(file(&dir).path()).unwrap();
+        assert!(text.contains("zoom = \"fixed\""), "{text}");
+        assert!(text.contains("zoom_percent = 150"), "{text}");
+        assert!(text.contains("gapless = true"), "{text}");
+        assert!(text.contains("odd_left = true"), "{text}");
+        assert!(!text.contains("yes"), "{text}");
+        assert_eq!(file(&dir).load().unwrap(), loaded);
+    }
+
+    #[test]
+    fn new_documents_that_is_not_a_table_costs_only_the_table() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir,
+            "version = 1\nnew_documents = \"x\"\npaper = \"sepia\"\n",
+        );
+        let loaded = file(&dir).load().unwrap();
+        assert_eq!(loaded.new_documents, Defaults::default());
+        assert_eq!(loaded.paper, Paper::Sepia);
+    }
+
+    #[test]
+    fn a_wrong_typed_paper_is_white() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir, "version = 1\npaper = 3\n");
+        assert_eq!(file(&dir).load().unwrap().paper, Paper::White);
+    }
+
+    #[test]
+    fn a_wrong_typed_version_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir, "version = \"1\"\n");
+        assert!(file(&dir).load().is_err());
+    }
+
+    #[test]
+    fn another_version_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir, "version = 2\n");
+        let error = file(&dir).load().unwrap_err();
+        assert!(error.to_string().contains("version"), "{error}");
+    }
+
+    #[test]
+    fn an_ignored_key_is_noted_with_the_value_used() {
+        let mut mended = Vec::new();
+        let settings = read(
+            "version = 1\n[new_documents]\nzoom = 3\nzoom_percent = 150.0\n",
+            &mut mended,
+        )
+        .unwrap();
+        assert_eq!(mended.len(), 2, "{mended:?}");
+        assert!(
+            mended
+                .iter()
+                .any(|note| note.contains("zoom must be") && note.contains("fit-width")),
+            "{mended:?}"
+        );
+        assert!(
+            mended
+                .iter()
+                .any(|note| note.contains("zoom_percent must be") && note.contains("100")),
+            "{mended:?}"
+        );
+        assert_eq!(settings.new_documents.zoom, StartZoom::FitWidth);
+        assert_eq!(settings.new_documents.zoom_percent, 100);
+    }
+
+    #[test]
+    fn every_ignored_key_is_noted_once() {
+        let mut mended = Vec::new();
+        read(
+            "version = 1\npaper = 3\n[new_documents]\nzoom_percent = 150.0\ndual = \"yes\"\n",
+            &mut mended,
+        )
+        .unwrap();
+        assert_eq!(mended.len(), 3, "{mended:?}");
     }
 
     #[test]
