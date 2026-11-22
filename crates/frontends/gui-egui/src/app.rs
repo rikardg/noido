@@ -12,7 +12,7 @@ use noido_core::{
     page_point, render_bytes, render_scale, window_keep, window_order,
 };
 use noido_render::{DocumentInfo, RenderRequest, Renderer, TextSearcher, Thumbnailer};
-use noido_settings::{Settings, SettingsFile};
+use noido_settings::{LoadError, Settings, SettingsFile};
 use noido_state::{DocState, Pagelet, Slot, Store};
 
 use crate::frame;
@@ -1840,13 +1840,28 @@ impl NoidoApp {
             }
             Action::OpenSettings => {
                 // Another noido may have saved changes since: start from
-                // them, so saving here doesn't undo them.
-                if let Some(Ok(settings)) = self.settings_file.as_ref().map(SettingsFile::load) {
-                    self.settings = settings;
+                // them, so saving here doesn't undo them. A file from a
+                // newer noido is not ours to drop: its fields are unknown,
+                // so it is shown as unreadable and never saved over.
+                let mut page = settings::Page::default();
+                if let Some(file) = &self.settings_file {
+                    match file.load() {
+                        Ok(settings) => self.settings = settings,
+                        Err(error @ LoadError::Version(_)) => {
+                            page.blocked = true;
+                            page.error = Some(format!(
+                                "{error}. Its values are not used, and a change here does \
+                                 not save over it unless you press Replace."
+                            ));
+                        }
+                        // The defaults stand, and the file is written afresh
+                        // when a setting changes, as it always has been.
+                        Err(LoadError::Io(_) | LoadError::Syntax(_)) => {}
+                    }
                 }
                 // So Esc closes the page, not the search behind it.
                 ctx.memory_mut(|m| m.stop_text_input());
-                self.settings_page = Some(settings::Page::default());
+                self.settings_page = Some(page);
             }
             // Jumps, like a thumbnail click: Back returns to where the reader
             // was; a press that moves nothing leaves no entry.
@@ -3690,14 +3705,17 @@ impl NoidoApp {
             .state()
             .map(|state| Defaults::from_view(&state, self.sidebar.open));
         let output = settings::show(page, ctx, &mut self.settings, current);
-        if output.changed
+        if (output.replace || (output.changed && !page.blocked))
             && let Some(file) = &self.settings_file
         {
             let saved = file.save(&self.settings);
-            if saved.is_ok()
-                && let Some(requests) = &self.requests
-            {
-                requests.send(crate::shell::Request::SettingsSaved(self.settings));
+            if saved.is_ok() {
+                if output.replace {
+                    page.blocked = false;
+                }
+                if let Some(requests) = &self.requests {
+                    requests.send(crate::shell::Request::SettingsSaved(self.settings));
+                }
             }
             page.error = saved.err().map(|e| format!("Couldn't save settings: {e}"));
         }
@@ -7248,6 +7266,182 @@ pub(crate) mod tests {
         let error = h.app.settings_page.as_ref().unwrap().error.clone();
         assert!(error.is_some_and(|e| e.starts_with("Couldn't save settings")));
         assert!(h.app.settings.new_documents.dual, "kept for this run");
+    }
+
+    #[test]
+    fn a_newer_settings_file_says_so_and_is_not_saved_over() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("settings.toml");
+        let newer = "version = 2\n[new_documents]\ndual = true\n";
+        std::fs::write(&path, newer).unwrap();
+        let mut h = settings_in(dir.path());
+        open_settings(&mut h);
+        let error = h.app.settings_page.as_ref().unwrap().error.clone();
+        assert!(
+            error.as_deref().is_some_and(|e| e.contains("version 2")),
+            "{error:?}"
+        );
+        assert!(
+            !h.app.settings.new_documents.dual,
+            "the newer file's values were used"
+        );
+        h.click_text("Gapless mode (default: off)");
+        h.frames(2, vec![]);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            newer,
+            "a newer file was saved over"
+        );
+        assert!(
+            h.app.settings.new_documents.gapless,
+            "the change was not kept for this run"
+        );
+        assert!(
+            h.app.settings_page.as_ref().unwrap().error.is_some(),
+            "the notice went away"
+        );
+    }
+
+    #[test]
+    fn replacing_a_newer_settings_file_saves_these_settings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("settings.toml");
+        std::fs::write(&path, "version = 2\n[new_documents]\ndual = true\n").unwrap();
+        let mut h = settings_in(dir.path());
+        open_settings(&mut h);
+        h.click_text("Gapless mode (default: off)");
+        h.frames(2, vec![]);
+        h.click_text("Replace it with these settings");
+        h.frames(2, vec![]);
+        let saved = SettingsFile::at(dir.path())
+            .load()
+            .expect("still another version's");
+        assert!(
+            saved.new_documents.gapless,
+            "the page's settings were not written"
+        );
+        assert!(
+            !saved.new_documents.dual,
+            "the newer file's values came along"
+        );
+        let page = h.app.settings_page.as_ref().unwrap();
+        assert!(!page.blocked, "still blocked");
+        assert!(page.error.is_none(), "{:?}", page.error);
+        h.click_text("Continuous (default: on)");
+        h.frames(2, vec![]);
+        assert!(
+            !SettingsFile::at(dir.path())
+                .load()
+                .unwrap()
+                .new_documents
+                .continuous,
+            "the file does not save after replacing it"
+        );
+    }
+
+    #[test]
+    fn a_replaced_settings_file_is_announced() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = SettingsFile::at(dir.path());
+        std::fs::write(dir.path().join("settings.toml"), "version = 2\n").unwrap();
+        let (requests, rx, _) = shell_end();
+        let mut h = Harness::build(|app| {
+            app.with_requests(requests)
+                .with_settings(Some(file), Settings::default())
+        });
+        open_settings(&mut h);
+        h.click_text("Gapless mode (default: off)");
+        h.frames(2, vec![]);
+        assert!(rx.try_recv().is_err(), "sent while blocked");
+        h.click_text("Replace it with these settings");
+        h.frames(2, vec![]);
+        match rx.try_recv() {
+            Ok(crate::shell::Request::SettingsSaved(settings)) => {
+                assert!(settings.new_documents.gapless);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_failed_replace_says_so_and_stays_blocked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("settings.toml");
+        std::fs::write(&path, "version = 2\n").unwrap();
+        let mut h = settings_in(dir.path());
+        open_settings(&mut h);
+        // The file can't be written now.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        h.click_text("Replace it with these settings");
+        h.frames(2, vec![]);
+        let page = h.app.settings_page.as_ref().unwrap();
+        assert!(page.blocked, "the page unblocked without saving");
+        let error = page.error.clone().unwrap_or_default();
+        assert!(error.starts_with("Couldn't save settings"), "{error:?}");
+        assert!(
+            h.text_rect("Replace it with these settings").is_some(),
+            "no way to try again"
+        );
+        // Once the path can be written again, the same button retries.
+        std::fs::remove_dir(&path).unwrap();
+        h.click_text("Replace it with these settings");
+        h.frames(2, vec![]);
+        assert!(
+            SettingsFile::at(dir.path()).load().is_ok(),
+            "the retry did not save"
+        );
+        let page = h.app.settings_page.as_ref().unwrap();
+        assert!(!page.blocked, "still blocked after the retry");
+        assert!(page.error.is_none(), "{:?}", page.error);
+    }
+
+    #[test]
+    fn a_mended_file_no_longer_blocks() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("settings.toml");
+        std::fs::write(&path, "version = 2\n").unwrap();
+        let mut h = settings_in(dir.path());
+        open_settings(&mut h);
+        assert!(h.app.settings_page.as_ref().unwrap().blocked);
+        h.press(egui::Key::Escape, Modifiers::NONE);
+        h.frames(2, vec![]);
+        std::fs::write(&path, "version = 1\n").unwrap();
+        open_settings(&mut h);
+        assert!(!h.app.settings_page.as_ref().unwrap().blocked);
+        h.click_text("Gapless mode (default: off)");
+        h.frames(2, vec![]);
+        assert!(
+            SettingsFile::at(dir.path())
+                .load()
+                .unwrap()
+                .new_documents
+                .gapless,
+            "the page did not save after the file was mended"
+        );
+    }
+
+    #[test]
+    fn a_broken_settings_file_is_not_shown_on_the_page() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("settings.toml");
+        std::fs::write(&path, "not toml [").unwrap();
+        let mut h = settings_in(dir.path());
+        open_settings(&mut h);
+        assert!(
+            h.app.settings_page.as_ref().unwrap().error.is_none(),
+            "a syntax error is not the page's business"
+        );
+        h.click_text("Gapless mode (default: off)");
+        h.frames(2, vec![]);
+        assert!(
+            SettingsFile::at(dir.path())
+                .load()
+                .unwrap()
+                .new_documents
+                .gapless,
+            "the change was not saved"
+        );
     }
 
     fn focus_search(h: &mut Harness) {

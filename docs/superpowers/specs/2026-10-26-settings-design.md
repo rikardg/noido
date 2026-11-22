@@ -57,7 +57,9 @@ same crates but hides the path and I/O, which tests need to control.
   fixed; clamped to 10–400 on load), `continuous`, `dual`, `odd_left`.
 - Missing file or fields give the built-in defaults; an unreadable file gives
   the defaults and a warning on stderr, and is overwritten only when the
-  reader changes a setting. Written atomically (temp file, rename).
+  reader changes a setting. A file from another version is not used and not
+  saved over: the settings page says so, and replaces it only when the reader
+  asks. Written atomically (temp file, rename).
 
 ## Code shape
 
