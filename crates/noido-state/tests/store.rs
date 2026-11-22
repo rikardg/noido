@@ -516,6 +516,174 @@ fn odd_angles_are_dropped_on_load() {
     );
 }
 
+/// Adds `rows` where a hand edit appends to the pages table: at the end of
+/// the entry, which is where TOML puts an array of tables.
+fn append(dir: &TempDir, key: &DocKey, rows: &str) {
+    let file = docs(dir).join(format!("{}.toml", key.hex()));
+    let mut text = fs::read_to_string(&file).unwrap();
+    text.push('\n');
+    text.push_str(rows);
+    fs::write(&file, text).unwrap();
+}
+
+#[test]
+fn an_angle_in_another_type_is_read() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(3)).unwrap();
+    append(
+        &dir,
+        &key,
+        "[[pages]]\npage = 1\nrotation = 90.0\n\n[[pages]]\npage = 2\nrotation = \"180\"\n\n\n[[pages]]\npage = 3\nrotation = 270\n",
+    );
+    assert_eq!(
+        loaded(&store, &key).unwrap().transforms,
+        PageTransforms::from_records([
+            (1, turned(Rotation::R90)),
+            (2, turned(Rotation::R180)),
+            (3, turned(Rotation::R270)),
+        ])
+    );
+}
+
+#[test]
+fn an_unreadable_angle_keeps_the_rest_of_the_entry() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        highlights: vec![highlight((1, 3), (1, 9), HighlightColour::Yellow)],
+        pins: Pins::from_sorted([2, 7]),
+        history: History::from_parts(vec![point(1), point(7)], vec![point(9)]),
+        pagelet: Some(Pagelet {
+            x: 12.0,
+            y: 34.0,
+            width: 400.0,
+            page: Some(point_on(4)),
+        }),
+        transforms: PageTransforms::from_records([(4, turned(Rotation::R270))]),
+        ..state(5)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    append(
+        &dir,
+        &key,
+        "[[pages]]\npage = 1\nrotation = \"east\"\n\n[[pages]]\npage = 2\nrotation = true\n\n[[pages]]\npage = 3\n\n[[pages]]\npage = 5\nrotation = 90.5\n",
+    );
+    assert_eq!(loaded(&store, &key), Some(saved));
+}
+
+#[test]
+fn an_entry_broken_outside_the_pages_table_is_still_refused() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    store.save(&slot(&store, &key), &state(3)).unwrap();
+    // A page row is bad, and so is a top-level field: only page rows are
+    // repairable, and a field that is still wrong ends the entry.
+    let file = docs(&dir).join(format!("{}.toml", key.hex()));
+    let text = fs::read_to_string(&file)
+        .unwrap()
+        .replace("scale = 1.5", "scale = \"big\"");
+    fs::write(
+        &file,
+        format!("{text}\n[[pages]]\npage = \"x\"\nrotation = 90\n"),
+    )
+    .unwrap();
+    assert_eq!(loaded(&store, &key), None);
+}
+
+#[test]
+fn a_row_whose_page_is_unreadable_drops_only_itself() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        highlights: vec![highlight((1, 3), (1, 9), HighlightColour::Yellow)],
+        pins: Pins::from_sorted([2, 7]),
+        transforms: PageTransforms::from_records([(6, turned(Rotation::R90))]),
+        ..state(4)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    append(
+        &dir,
+        &key,
+        "[[pages]]\npage = \"two\"\nrotation = 90\n\n[[pages]]\npage = -1\nrotation = 180\n",
+    );
+    assert_eq!(loaded(&store, &key), Some(saved));
+}
+
+#[test]
+fn an_entry_whose_page_rows_all_fail_still_loads() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        highlights: vec![highlight((2, 4), (2, 8), HighlightColour::Pink)],
+        transforms: PageTransforms::from_records([(4, turned(Rotation::R180))]),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    append(
+        &dir,
+        &key,
+        "[[pages]]\npage = \"x\"\nrotation = 90\n\n[[pages]]\npage = 1\nrotation = \"east\"\n",
+    );
+    assert_eq!(loaded(&store, &key), Some(saved));
+}
+
+#[test]
+fn a_negative_or_full_angle_is_dropped() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        highlights: vec![highlight((1, 3), (1, 9), HighlightColour::Blue)],
+        transforms: PageTransforms::from_records([(3, turned(Rotation::R90))]),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    append(
+        &dir,
+        &key,
+        "[[pages]]\npage = 1\nrotation = -90\n\n[[pages]]\npage = 2\nrotation = 360\n",
+    );
+    assert_eq!(loaded(&store, &key), Some(saved));
+}
+
+#[test]
+fn an_angle_of_another_type_drops_only_its_row() {
+    let dir = TempDir::new().unwrap();
+    let store = Store::at(dir.path());
+    let key = DocKey::new(b"pdf a", Path::new("/papers/a.pdf"));
+    let saved = DocState {
+        highlights: vec![highlight((1, 3), (1, 9), HighlightColour::Green)],
+        transforms: PageTransforms::from_records([
+            (7, turned(Rotation::R90)),
+            (8, turned(Rotation::R270)),
+            (10, turned(Rotation::R90)),
+            (11, turned(Rotation::R270)),
+        ]),
+        ..state(3)
+    };
+    store.save(&slot(&store, &key), &saved).unwrap();
+    append(
+        &dir,
+        &key,
+        "[[pages]]\npage = 1\nrotation = nan\n\n\
+         [[pages]]\npage = 2\nrotation = inf\n\n\
+         [[pages]]\npage = 3\nrotation = 65535\n\n\
+         [[pages]]\npage = 4\nrotation = 1979-05-27T07:32:00Z\n\n\
+         [[pages]]\npage = 5\nrotation = [90]\n\n\
+         [[pages]]\npage = 6\nrotation = { degrees = 90 }\n\n\
+         [[pages]]\npage = 9\nrotation = 99999999999999999999\n\n\
+         [[pages]]\npage = 10\nrotation = \"+90\"\n\n\
+         [[pages]]\npage = 11\nrotation = \" 270 \"\n",
+    );
+    assert_eq!(loaded(&store, &key), Some(saved));
+}
+
 #[test]
 fn files_without_pages_load_without_transforms() {
     let dir = TempDir::new().unwrap();
