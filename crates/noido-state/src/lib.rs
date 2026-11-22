@@ -7,10 +7,11 @@
 //! given at launch, so the window file stays put when the document's hash
 //! changes (a file edited in place, or reloaded while open).
 
+use std::collections::HashSet;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
 use noido_core::{
@@ -28,6 +29,10 @@ const RECENT_FILE: &str = "recent.toml";
 pub const RECENT_LIMIT: usize = 10;
 const WINDOW_SUFFIX: &str = ".window.ron";
 const FRAME_SUFFIX: &str = ".frame.toml";
+/// How long a temp file, or a window or frame file no entry names, must
+/// have sat untouched before [`Store::prune`] sweeps it: long enough that
+/// no save, and no window, of another instance can still be writing it.
+const STALE_AFTER: Duration = Duration::from_secs(60 * 60);
 
 /// Identifies a document: the hash of its content, and its canonical path for
 /// finding the state of a file that was edited in place.
@@ -235,7 +240,8 @@ impl Store {
         }
     }
 
-    /// Writes the document's state; the file is replaced atomically.
+    /// Writes the document's state; the file is replaced atomically, once
+    /// the new copy is on disk.
     pub fn save(&self, slot: &Slot, state: &DocState) -> io::Result<()> {
         fs::create_dir_all(&self.docs)?;
         let key = &slot.key;
@@ -245,14 +251,12 @@ impl Store {
         let temp = self
             .docs
             .join(format!("{}.tmp-{}", key.hex(), std::process::id()));
-        fs::write(&temp, text)?;
-        fs::rename(&temp, &target).inspect_err(|_| {
-            let _ = fs::remove_file(&temp);
-        })
+        write_atomically(&target, &temp, &text)
     }
 
     /// Writes the documents that are open, in order, for the next start to
-    /// reopen; the file is replaced atomically. An empty list clears it.
+    /// reopen; the file is replaced atomically, once the new copy is on disk.
+    /// An empty list clears it.
     pub fn save_open(&self, paths: &[PathBuf]) -> io::Result<()> {
         self.save_list(OPEN_FILE, paths)
     }
@@ -265,8 +269,9 @@ impl Store {
 
     /// Puts `path` at the front of the recently opened files, out of
     /// wherever it was, and drops the oldest beyond [`RECENT_LIMIT`]; the
-    /// file is replaced atomically. It is remembered by its canonical
-    /// path, so a document reached two ways is one entry.
+    /// file is replaced atomically, once the new copy is on disk. It is
+    /// remembered by its canonical path, so a document reached two ways is
+    /// one entry.
     pub fn note_recent(&self, path: &Path) -> io::Result<()> {
         let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let mut paths = self.read_list(RECENT_FILE);
@@ -295,7 +300,8 @@ impl Store {
     }
 
     /// Writes `paths` to `name` in the state directory, one path a line
-    /// of TOML; the file is replaced atomically. An empty list clears it.
+    /// of TOML; the file is replaced atomically, once the new copy is on
+    /// disk. An empty list clears it.
     fn save_list(&self, name: &str, paths: &[PathBuf]) -> io::Result<()> {
         fs::create_dir_all(&self.dir)?;
         let list = PathList {
@@ -308,10 +314,7 @@ impl Store {
         let text = toml::to_string(&list).map_err(io::Error::other)?;
         let target = self.dir.join(name);
         let temp = self.dir.join(format!("{name}.tmp-{}", std::process::id()));
-        fs::write(&temp, text)?;
-        fs::rename(&temp, &target).inspect_err(|_| {
-            let _ = fs::remove_file(&temp);
-        })
+        write_atomically(&target, &temp, &text)
     }
 
     /// The paths [`save_list`](Self::save_list) wrote to `name`; none when
@@ -336,21 +339,102 @@ impl Store {
         slot.key = key;
     }
 
-    /// Deletes all but the `keep` most recently written documents' files.
+    /// Deletes all but the `keep` most recently written documents' files,
+    /// along with the temp files a failed or interrupted save left behind
+    /// and the window and frame files no entry names, once they are an hour
+    /// old.
     pub fn prune(&self, keep: usize) {
         let mut entries = self.files_with(STATE_SUFFIX);
         entries.sort_by_key(|(_, modified)| std::cmp::Reverse(*modified));
-        for (hex, _) in entries.into_iter().skip(keep) {
+        let kept: HashSet<String> = entries
+            .iter()
+            .take(keep)
+            .map(|(hex, _)| hex.clone())
+            .collect();
+        for (hex, _) in entries.iter().skip(keep) {
             let state = self.docs.join(format!("{hex}{STATE_SUFFIX}"));
             let window = read_entry(&state).and_then(|entry| entry.window);
             let _ = fs::remove_file(&state);
-            let window = window.as_deref().unwrap_or(&hex);
+            let window = window.as_deref().unwrap_or(hex);
             let _ = fs::remove_file(self.window_path(window));
             let _ = fs::remove_file(self.frame_path(window));
         }
+        self.remove_stale(&self.docs, is_temp);
+        self.remove_stale(&self.dir, is_temp);
+        // A window or frame file is kept with the entry of the same hash. One
+        // may also outlive its doc: a file edited in place keeps its window
+        // where it is, under the old hash, which the entry names. Reading a
+        // kept entry is not cheap, so they are read only until every old file
+        // is accounted for, and not at all when there is none.
+        let mut unnamed: HashSet<String> = self
+            .stale_files(&self.docs, |name| {
+                window_stem(name).is_some_and(|hex| !kept.contains(hex))
+            })
+            .into_iter()
+            .collect();
+        for hex in entries.iter().take(keep).map(|(hex, _)| hex) {
+            if unnamed.is_empty() {
+                break;
+            }
+            // The name is read from the line the entry's TOML form writes for
+            // it, not by parsing the entry: parsing a full entry costs more
+            // than the whole sweep is worth, and the sweep wants nothing else
+            // from the file.
+            let Ok(text) = fs::read_to_string(self.docs.join(format!("{hex}{STATE_SUFFIX}")))
+            else {
+                continue;
+            };
+            for line in text.lines() {
+                let Some(window) = line.strip_prefix("window = \"") else {
+                    continue;
+                };
+                let Some(window) = window.strip_suffix('"') else {
+                    continue;
+                };
+                unnamed.remove(&format!("{window}{WINDOW_SUFFIX}"));
+                unnamed.remove(&format!("{window}{FRAME_SUFFIX}"));
+                break;
+            }
+        }
+        for name in unnamed {
+            // No kept entry names it: a document killed before its first save.
+            let _ = fs::remove_file(self.docs.join(name));
+        }
     }
 
-    /// Writes the document's window frame; the file is replaced atomically.
+    /// The names of the files in `dir` that `stale` accepts and that nothing
+    /// has touched for [`STALE_AFTER`]; one whose time can't be read is left
+    /// be.
+    fn stale_files(&self, dir: &Path, stale: impl Fn(&str) -> bool) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return vec![];
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                if !stale(&name) {
+                    return None;
+                }
+                let modified = entry.metadata().and_then(|file| file.modified()).ok()?;
+                let old = SystemTime::now()
+                    .duration_since(modified)
+                    .is_ok_and(|age| age > STALE_AFTER);
+                old.then_some(name)
+            })
+            .collect()
+    }
+
+    /// Removes the files in `dir` that `stale` accepts and that nothing has
+    /// touched for [`STALE_AFTER`].
+    fn remove_stale(&self, dir: &Path, stale: impl Fn(&str) -> bool) {
+        for name in self.stale_files(dir, stale) {
+            let _ = fs::remove_file(dir.join(name));
+        }
+    }
+
+    /// Writes the document's window frame; the file is replaced atomically,
+    /// once the new copy is on disk.
     pub fn save_frame(&self, slot: &Slot, frame: Frame) -> io::Result<()> {
         fs::create_dir_all(&self.docs)?;
         let text = toml::to_string(&frame).map_err(io::Error::other)?;
@@ -358,10 +442,7 @@ impl Store {
         let temp = self
             .docs
             .join(format!("{}.frame-tmp-{}", slot.window, std::process::id()));
-        fs::write(&temp, text)?;
-        fs::rename(&temp, &target).inspect_err(|_| {
-            let _ = fs::remove_file(&temp);
-        })
+        write_atomically(&target, &temp, &text)
     }
 
     /// The document's window frame. A document without one takes the size
@@ -450,6 +531,40 @@ impl Store {
         })
         .collect()
     }
+}
+
+/// Writes `text` to `target` by way of `temp`, so a reader sees the old
+/// file or the new one and never a half-written one. The new copy is
+/// flushed before the rename: without that, a crash can record the rename
+/// before the data, leaving an empty file where the entry was. A failure
+/// on any step takes the temp file with it.
+fn write_atomically(target: &Path, temp: &Path, text: &str) -> io::Result<()> {
+    fs::File::create(temp)
+        .and_then(|mut file| {
+            file.write_all(text.as_bytes())?;
+            file.sync_data()
+        })
+        .and_then(|()| fs::rename(temp, target))
+        .inspect_err(|_| {
+            let _ = fs::remove_file(temp);
+        })
+}
+
+/// The hash a window or frame file is held under.
+fn window_stem(name: &str) -> Option<&str> {
+    name.strip_suffix(WINDOW_SUFFIX)
+        .or_else(|| name.strip_suffix(FRAME_SUFFIX))
+}
+
+/// Whether a file name is a save's temp file: `<name>.tmp-<pid>` for an
+/// entry or a list, `<name>.frame-tmp-<pid>` for a frame.
+fn is_temp(name: &str) -> bool {
+    let Some((stem, pid)) = name.rsplit_once('-') else {
+        return false;
+    };
+    !pid.is_empty()
+        && pid.bytes().all(|b| b.is_ascii_digit())
+        && (stem.ends_with(".tmp") || stem.ends_with(".frame-tmp"))
 }
 
 fn read_entry(path: &Path) -> Option<Entry> {
