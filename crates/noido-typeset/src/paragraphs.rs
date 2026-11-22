@@ -42,6 +42,9 @@ pub(crate) struct Para {
     pub new_page: bool,
     /// The label of the footnote this paragraph begins.
     pub note: Option<String>,
+    /// The images drawn in its lines: the range of the drawn text, the
+    /// image and its natural size in points.
+    pub images: Vec<(Range<usize>, ImageId, (f32, f32))>,
 }
 
 /// An image drawn as a block of its own.
@@ -151,7 +154,7 @@ impl Out<'_> {
             Role::Heading(level) => Some(level),
             _ => None,
         };
-        let figures = self.figures(text);
+        let (figures, inline) = self.figures(text);
         if figures.is_empty() {
             self.paras.push(Para {
                 role: match role {
@@ -164,6 +167,7 @@ impl Out<'_> {
                 prefix: None,
                 new_page,
                 note: None,
+                images: inline,
             });
             self.indent = heading.is_none();
             return;
@@ -201,20 +205,28 @@ impl Out<'_> {
                 },
             };
             ends_in_text = figure.is_none();
+            let images = inline
+                .iter()
+                .filter(|(at, ..)| range.start <= at.start && at.end <= range.end)
+                .map(|(at, id, size)| (at.start - range.start..at.end - range.start, *id, *size))
+                .collect();
             self.paras.push(Para {
                 role,
                 text: clip(text, range),
                 prefix: None,
                 new_page: new_page && self.paras.len() == first,
                 note: None,
+                images,
             });
         }
         self.indent = ends_in_text && heading.is_none();
     }
 
     /// The images of `text` that are figures, in order: the only drawn
-    /// content of the paragraph, or taller than two lines.
-    fn figures(&mut self, text: &Text) -> Vec<Figure> {
+    /// content of the paragraph, or taller than two lines; and the other
+    /// images that can be drawn, which stay in the line.
+    #[allow(clippy::type_complexity)]
+    fn figures(&mut self, text: &Text) -> (Vec<Figure>, Vec<(Range<usize>, ImageId, (f32, f32))>) {
         let mut found: Vec<(Range<usize>, ImageId, (f32, f32))> = Vec::new();
         for styled in &text.styles {
             let Style::Image {
@@ -236,16 +248,19 @@ impl Out<'_> {
             text.string[..range.start].trim().is_empty()
                 && text.string[range.end..].trim().is_empty()
         };
-        found
+        let (large, small): (Vec<_>, Vec<_>) = found
             .into_iter()
-            .filter(|(_, _, natural)| alone || natural.1 > 2.0 * LEADING)
+            .partition(|(_, _, natural)| alone || natural.1 > 2.0 * LEADING);
+        let figures = large
+            .into_iter()
             .map(|(at, image, natural)| Figure {
                 at,
                 image,
                 size: fit(natural, (MEASURE, LINES as f32 * LEADING), false),
                 alone,
             })
-            .collect()
+            .collect();
+        (figures, small)
     }
 
     /// The blocks of a container, the first paragraph carrying `prefix`.
@@ -270,6 +285,7 @@ impl Out<'_> {
                     prefix: None,
                     new_page: false,
                     note: None,
+                    images: Vec::new(),
                 });
                 self.indent = false;
             }
@@ -305,6 +321,7 @@ impl Out<'_> {
                         prefix: None,
                         new_page: false,
                         note: None,
+                        images: Vec::new(),
                     });
                 }
                 self.indent = false;
@@ -674,6 +691,7 @@ mod tests {
         let p = xhtml_paras("<p>Before <img src=\"a.png\" alt=\"a\"/> after.</p>", 10.0);
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].text.styles.len(), 1);
+        assert_eq!(p[0].images, vec![(7..10, ImageId::test(1), (10.0, 10.0))]);
     }
 
     #[test]
