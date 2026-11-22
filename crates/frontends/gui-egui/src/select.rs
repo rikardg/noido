@@ -268,6 +268,10 @@ pub struct State {
     /// The selection Copy was asked for while a page's text in it was
     /// still to come; dropped when the selection changes.
     pub copy_pending: Option<Selection>,
+    /// A drag resized the highlight at this index and an end of the
+    /// selection was still waiting for its page's text: settled when the
+    /// text comes.
+    pending: Option<usize>,
     /// When a selection drag reached the band along the pages' edge, for
     /// the edge scroll's speed-up; `None` outside it.
     pub edge_since: Option<f64>,
@@ -287,6 +291,7 @@ impl State {
         self.bar_at = None;
         self.drag = None;
         self.copy_pending = None;
+        self.pending = None;
     }
 
     /// The end of the selection the mouse let go of, which the bar goes
@@ -294,6 +299,21 @@ impl State {
     /// mouse. With no point to hang from, the bar hangs from the later end.
     pub fn bar_end(&self) -> Option<usize> {
         self.bar_doc.map_or(Some(1), |point| point.end)
+    }
+
+    /// Settles the highlight being edited: now, or, while an end of the
+    /// selection waits for its page's text, when the text comes.
+    fn settle_or_wait(
+        &mut self,
+        texts: &Texts,
+        locations: &noido_engine::LocationMap,
+        highlights: &mut Highlights,
+    ) {
+        if self.selection.is_some_and(|s| s.carets().is_none()) {
+            self.pending = self.editing;
+        } else {
+            self.settle(texts, locations, highlights);
+        }
     }
 
     /// Keeps the highlight being edited in step with the selection: its
@@ -363,18 +383,21 @@ impl State {
         let Some(selection) = self.selection else {
             return;
         };
-        let Some((start, end)) = selection.carets() else {
-            return;
-        };
-        if selection.is_empty(|page| texts.get(page)) {
-            return;
-        }
         // The point the bar hangs from, moved with the page it was made
-        // on: scrolling, zooming or flipping pages takes it along.
+        // on: scrolling, zooming or flipping pages takes it along. An end
+        // waiting for its page's text has no caret to hang from, but the
+        // bar stays where the drag let go.
         self.bar_at = self
             .bar_doc
             .and_then(|point| layout.content_point(point.doc))
             .map(|(x, y)| content.min + vec2(x, y));
+        let Some((start, end)) = selection.carets() else {
+            return;
+        };
+        if selection.is_empty(|page| texts.get(page)) {
+            self.bar_at = None;
+            return;
+        }
         for (i, caret) in [start, end].into_iter().enumerate() {
             let Some((page, char)) = shown_caret(texts, caret, i == 1) else {
                 continue;
@@ -470,6 +493,19 @@ impl State {
         if let Some(selection) = &mut self.selection {
             selection.resolve(|page| texts.get(page));
         }
+        // A resize let go of while an end waited for its page's text: the
+        // text has come, so settle it now.
+        if let Some(index) = self.pending {
+            let placed = self.selection.is_some_and(|s| s.carets().is_some());
+            if self.editing != Some(index) || self.selection.is_none() {
+                // The drag was left behind: another highlight, a click
+                // elsewhere, an undo, a new version.
+                self.pending = None;
+            } else if placed {
+                self.pending = None;
+                self.settle(texts, locations, highlights);
+            }
+        }
         if released && let Some(drag) = self.drag.take() {
             let let_go = self.selection.as_ref().map_or(1, focus_end);
             // Read before a highlight's range is restored: such a resize
@@ -490,7 +526,7 @@ impl State {
                 layout.doc_point(drag.origin.x - content.min.x, drag.origin.y - content.min.y);
             if drag.kind == DragKind::Handle && self.editing.is_some() {
                 // The handles resized the highlight being edited.
-                self.settle(texts, locations, highlights);
+                self.settle_or_wait(texts, locations, highlights);
             } else if click && drag.kind == DragKind::Select && (double || triple) {
                 self.editing = None;
                 self.bar_doc = point.map(|doc| BarPoint { doc, end: Some(1) });
@@ -517,7 +553,7 @@ impl State {
                 let end = self.selection.as_ref().map(focus_end);
                 self.bar_doc = point.map(|doc| BarPoint { doc, end });
                 if self.editing.is_some() {
-                    self.settle(texts, locations, highlights);
+                    self.settle_or_wait(texts, locations, highlights);
                 }
             } else if click {
                 // A plain click: on a link it follows it, on a highlight it

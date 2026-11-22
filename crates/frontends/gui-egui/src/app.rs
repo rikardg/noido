@@ -2290,10 +2290,13 @@ impl NoidoApp {
             );
             // The document's highlights, under the selection and the
             // matches. The one being edited follows the selection, so a
-            // handle resizes it on screen.
+            // handle resizes it on screen; while an end of the selection
+            // waits for its page's text, it shows the range it has.
             if let PageTextState::Known(text) = self.texts.get(page) {
                 for (index, highlight) in self.highlights.items().iter().enumerate() {
-                    let range = if self.select.editing == Some(index) {
+                    let editing = self.select.editing == Some(index);
+                    let placed = self.select.selection.is_some_and(|s| s.carets().is_some());
+                    let range = if editing && placed {
                         self.select
                             .selection
                             .and_then(|s| s.on_page(page, text.char_count()))
@@ -12269,12 +12272,15 @@ pub(crate) mod tests {
 
     /// Letter pages with text: each page's lines, 12 pt glyphs 6 pt wide,
     /// lines 20 pt apart from y = 100, starting at x = 72. Counts `text`
-    /// calls; with a gate, each `text` call waits until the gate opens.
+    /// calls; with a gate, each `text` call waits until the gate opens (or,
+    /// with `gate_pages`, each call for one of those pages).
     #[derive(Clone)]
     struct TextEngine {
         pages: Arc<Vec<Vec<String>>>,
         calls: Arc<std::sync::atomic::AtomicUsize>,
         gate: Option<Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>>,
+        /// The pages whose `text` waits for the gate; none means every page.
+        gate_pages: Vec<usize>,
         /// The pages rendered, in order.
         rendered: Arc<std::sync::Mutex<Vec<usize>>>,
         /// Each page's links.
@@ -12303,6 +12309,7 @@ pub(crate) mod tests {
                 ),
                 calls: Arc::default(),
                 gate: None,
+                gate_pages: Vec::new(),
                 rendered: Arc::default(),
                 links: Arc::new(vec![Vec::new(); pages.len()]),
                 link_gate: None,
@@ -12368,6 +12375,14 @@ pub(crate) mod tests {
             self
         }
 
+        /// With only these pages' text gated: the rest comes as it is asked
+        /// for, and these wait for the gate. Empty gates every page.
+        fn gated_pages(mut self, pages: &[usize]) -> TextEngine {
+            self.gate = Some(Arc::default());
+            self.gate_pages = pages.to_vec();
+            self
+        }
+
         fn open_gate(&self) {
             if let Some(gate) = &self.gate {
                 *gate.0.lock().unwrap() = true;
@@ -12414,7 +12429,9 @@ pub(crate) mod tests {
         fn text(&self, page: usize) -> Result<Vec<noido_engine::Glyph>, EngineError> {
             use noido_engine::{Glyph, Point, Quad};
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if let Some(gate) = &self.gate {
+            if let Some(gate) = &self.gate
+                && (self.gate_pages.is_empty() || self.gate_pages.contains(&page))
+            {
                 let mut open = gate.0.lock().unwrap();
                 while !*open {
                     open = gate.1.wait(open).unwrap();
@@ -16752,6 +16769,166 @@ pub(crate) mod tests {
         assert_eq!(h.app.highlights.get(0).unwrap().end.char, 7);
         assert_eq!(h.app.highlights.get(0).unwrap().start.char, 0);
         assert_eq!(h.app.select.editing, None);
+    }
+
+    /// Two short pages, both in view, their second's text held back; the
+    /// highlight on page 0 is selected for editing and its end's handle is
+    /// let go of on page 1, so both ends wait for page 1's text. Returns
+    /// the point the end was placed from, and where the pointer let go.
+    fn highlight_let_go_on_a_waiting_page()
+    -> (Harness, TextEngine, noido_core::DocPoint, egui::Pos2) {
+        let engine = TextEngine::new(&[&["the cat sat", "on the mat"], &["a dog"]])
+            .with_sizes(vec![
+                Size {
+                    width: 612.0,
+                    height: 300.0,
+                };
+                2
+            ])
+            .gated_pages(&[1]);
+        let mut h = searching(&engine);
+        h.until(|h| matches!(h.app.texts.get(0), noido_core::PageTextState::Known(_)));
+        assert!(
+            matches!(h.app.texts.get(1), noido_core::PageTextState::Unknown),
+            "page 1's text is still to come"
+        );
+        select_the_highlight(&mut h);
+        let end = h.app.select.handles[1].expect("the end's handle shows");
+        let to = screen_pos(&h, 1, 95.0, 110.0);
+        h.frames(1, vec![Event::PointerMoved(end)]);
+        h.frames(
+            1,
+            vec![Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        h.frames(1, vec![Event::PointerMoved(to)]);
+        let Some(noido_core::Spot::Waiting(point)) = h.app.select.selection.map(|s| s.focus) else {
+            panic!("the end waits: {:?}", h.app.select.selection);
+        };
+        assert_eq!(point.page, 1, "the end is on the page without text");
+        h.frames(
+            1,
+            vec![Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        h.frames(1, vec![]);
+        assert_eq!(
+            h.app.highlights.get(0).unwrap().end.char,
+            7,
+            "the highlight keeps its range until the text says what it is"
+        );
+        (h, engine, point, to)
+    }
+
+    /// An end let go of on a page whose text is still to come keeps the
+    /// resize: the highlight takes the dragged range when the text arrives,
+    /// rather than keeping its stored one and forgetting the drag.
+    #[test]
+    fn a_highlights_end_let_go_while_its_text_waits_is_kept() {
+        let (mut h, engine, point, _) = highlight_let_go_on_a_waiting_page();
+        engine.open_gate();
+        h.until(|h| matches!(h.app.texts.get(1), noido_core::PageTextState::Known(_)));
+        h.frames(2, vec![]);
+        let noido_core::Spot::At(caret) =
+            noido_core::spot_at(h.app.view.layout(), point, h.app.texts.get(1))
+        else {
+            panic!("page 1's text came; the end is placed");
+        };
+        assert_eq!(caret.page, 1);
+        assert_eq!(
+            h.app.highlights.get(0).unwrap().end,
+            noido_engine::Location {
+                part: 1,
+                char: caret.char,
+            },
+            "the resize landed once the text came"
+        );
+    }
+
+    /// While an end waits for its page's text, the highlight keeps showing
+    /// the range it has, and its bar stays where the drag let go, rather
+    /// than both vanishing until the text comes.
+    #[test]
+    fn a_highlight_whose_end_waits_keeps_its_range_and_bar() {
+        let (h, engine, _point, at) = highlight_let_go_on_a_waiting_page();
+        assert!(
+            h.app.select.selection.is_some_and(|s| s.carets().is_none()),
+            "the end is still waiting: nothing here is under test otherwise"
+        );
+        let dark = h.ctx.global_style().visuals.dark_mode;
+        let fill = select::highlight_fill(HighlightColour::Yellow, dark);
+        let shown = screen_pos(&h, 0, 85.0, 95.0);
+        assert!(
+            filled_with(&h, fill).iter().any(|r| r.contains(shown)),
+            "the highlight is not drawn at {shown:?} while its end waits"
+        );
+        let bar_at = h
+            .app
+            .select
+            .bar_at
+            .expect("the bar hangs from where the drag let go");
+        assert!(
+            (bar_at - at).length() < 0.5,
+            "the bar is at {bar_at:?}, not where the drag let go, {at:?}"
+        );
+        engine.open_gate();
+    }
+
+    /// A highlight's handle dragged off a page leaves nothing painted
+    /// there: the live range is the range, not the one it had before.
+    #[test]
+    fn a_highlights_handle_dragged_off_a_page_paints_nothing_there() {
+        let engine =
+            TextEngine::new(&[&["the cat sat", "on the mat"], &["a dog"]]).with_sizes(vec![
+                Size {
+                    width: 612.0,
+                    height: 300.0,
+                };
+                2
+            ]);
+        let mut h = searching(&engine);
+        h.until(|h| matches!(h.app.texts.get(1), noido_core::PageTextState::Known(_)));
+        select_the_highlight(&mut h);
+        // Take the end onto page 1 and let go: the highlight covers both.
+        let end = h.app.select.handles[1].expect("the end's handle shows");
+        let onto = screen_pos(&h, 1, 110.0, 110.0);
+        h.drag(end, onto - end);
+        h.frames(1, vec![]);
+        assert_eq!(h.app.highlights.get(0).unwrap().end.part, 1);
+        let dark = h.ctx.global_style().visuals.dark_mode;
+        let fill = select::highlight_fill(HighlightColour::Yellow, dark);
+        let covered = screen_pos(&h, 1, 75.0, 95.0);
+        assert!(
+            filled_with(&h, fill).iter().any(|r| r.contains(covered)),
+            "page 1 is covered to begin with"
+        );
+        // Hold the end and drag it back onto page 0: page 1 is outside the
+        // live range, so the highlight goes from it while the drag runs.
+        let end = h.app.select.handles[1].expect("the end's handle shows");
+        let back = screen_pos(&h, 0, 100.0, 120.0);
+        h.frames(1, vec![Event::PointerMoved(end)]);
+        h.frames(
+            1,
+            vec![Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        h.frames(1, vec![Event::PointerMoved(back)]);
+        assert!(
+            !filled_with(&h, fill).iter().any(|r| r.contains(covered)),
+            "the live range is not on page 1, but the stored one is painted there"
+        );
     }
 
     #[test]
