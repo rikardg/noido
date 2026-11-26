@@ -16,4 +16,6 @@ pub(crate) const BODY: f32 = 11.0;
 pub(crate) const HEADING: [f32; 6] = [18.0, 14.0, 12.0, 11.0, 11.0, 11.0];
 pub(crate) const CODE_SCALE: f32 = 0.85;
 pub(crate) const INDENT_EM: f32 = 1.0;
-pub(crate) const LAYOUT_KEY: &str = "b-format 11/14 images";
+/// Between a list item's hung marker and its text.
+pub(crate) const MARKER_GAP: f32 = 0.5 * BODY;
+pub(crate) const LAYOUT_KEY: &str = "b-format 11/14 images lists";

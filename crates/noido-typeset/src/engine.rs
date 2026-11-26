@@ -246,11 +246,11 @@ mod tests {
     }
 
     #[test]
-    fn the_layout_key_names_images() {
+    fn the_layout_key_names_hung_lists() {
         let document = TypesetEngine::new().open(bytes("# Hi\n")).unwrap();
         assert_eq!(
             document.layout_key().as_deref(),
-            Some("b-format 11/14 images")
+            Some("b-format 11/14 images lists")
         );
     }
 

@@ -8,8 +8,9 @@ use std::ops::Range;
 
 use noido_blocks::{Block, BlockKind, Segment, Style, Styled, Text, Tree};
 
-use crate::house::{LEADING, LINES, MEASURE};
+use crate::house::{LEADING, LINES, MARKER_GAP, MEASURE};
 use crate::images::{ImageId, fit};
+use crate::lines::Shaper;
 
 /// How a paragraph is set.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,8 +37,14 @@ pub(crate) struct Para {
     pub role: Role,
     /// The block's own text, source map intact.
     pub text: Text,
-    /// Drawn before the text, with no source: "• ", "3. ", a note's "1 ".
+    /// Drawn before the text, with no source: a note's "1 ".
     pub prefix: Option<String>,
+    /// A list item's "•" or "3.", hung before its first line, each with
+    /// the inset its right edge is set against: more than one when an
+    /// item opens with a list of its own.
+    pub markers: Vec<(String, f32)>,
+    /// Points from the left of the measure: a list item's.
+    pub inset: f32,
     /// A level-1 heading starts a page.
     pub new_page: bool,
     /// The label of the footnote this paragraph begins.
@@ -115,13 +122,20 @@ pub(crate) fn no_images(
     None
 }
 
-pub(crate) fn paragraphs(tree: &Tree, resolve: &mut Resolve) -> (Vec<Para>, Notes) {
+/// `shaper` measures list markers.
+pub(crate) fn paragraphs(
+    tree: &Tree,
+    resolve: &mut Resolve,
+    shaper: &mut Shaper,
+) -> (Vec<Para>, Notes) {
     let notes = number_notes(&tree.blocks);
     let mut out = Out {
         paras: Vec::new(),
         notes: &notes,
         resolve,
+        shaper,
         indent: false,
+        inset: 0.0,
     };
     out.blocks(&tree.blocks);
     (out.paras, notes)
@@ -131,9 +145,13 @@ struct Out<'a> {
     paras: Vec<Para>,
     notes: &'a Notes,
     resolve: &'a mut Resolve<'a>,
+    shaper: &'a mut Shaper,
     /// Whether the next body paragraph is indented: not the first, nor
     /// the first after a heading.
     indent: bool,
+    /// Of the paragraphs being added: a list item's, its markers' width
+    /// from where its list starts, up to half the measure.
+    inset: f32,
 }
 
 impl Out<'_> {
@@ -165,6 +183,8 @@ impl Out<'_> {
                 },
                 text: text.clone(),
                 prefix: None,
+                markers: Vec::new(),
+                inset: self.inset,
                 new_page,
                 note: None,
                 images: inline,
@@ -214,6 +234,8 @@ impl Out<'_> {
                 role,
                 text: clip(text, range),
                 prefix: None,
+                markers: Vec::new(),
+                inset: self.inset,
                 new_page: new_page && self.paras.len() == first,
                 note: None,
                 images,
@@ -256,11 +278,30 @@ impl Out<'_> {
             .map(|(at, image, natural)| Figure {
                 at,
                 image,
-                size: fit(natural, (MEASURE, LINES as f32 * LEADING), false),
+                size: fit(
+                    natural,
+                    (MEASURE - self.inset, LINES as f32 * LEADING),
+                    false,
+                ),
                 alone,
             })
             .collect();
         (figures, small)
+    }
+
+    /// The width of a list's widest marker. Only the first and last of
+    /// the longest are measured: a long numbered list would otherwise
+    /// shape every number.
+    fn widest(&mut self, markers: &[String]) -> f32 {
+        let longest = markers.iter().map(|m| m.chars().count()).max();
+        let mut longest = markers
+            .iter()
+            .filter(|m| Some(m.chars().count()) == longest);
+        let ends = [longest.next(), longest.next_back()];
+        ends.into_iter()
+            .flatten()
+            .map(|m| self.shaper.marker_width(m))
+            .fold(0.0, f32::max)
     }
 
     /// The blocks of a container, the first paragraph carrying `prefix`.
@@ -283,6 +324,8 @@ impl Out<'_> {
                     role: Role::Code,
                     text: text.clone(),
                     prefix: None,
+                    markers: Vec::new(),
+                    inset: self.inset,
                     new_page: false,
                     note: None,
                     images: Vec::new(),
@@ -295,13 +338,25 @@ impl Out<'_> {
                 self.indent = false;
             }
             BlockKind::List { start, items } => {
-                for (i, item) in items.iter().enumerate() {
-                    let marker = match start {
-                        Some(start) => format!("{}. ", start + i as u64),
-                        None => "• ".to_string(),
-                    };
+                let markers: Vec<String> = (0..items.len() as u64)
+                    .map(|i| match start {
+                        Some(start) => format!("{}.", start.saturating_add(i)),
+                        None => "\u{2022}".to_string(),
+                    })
+                    .collect();
+                // The widest marker sits flush where the list starts, the
+                // text MARKER_GAP after it.
+                let outer = self.inset;
+                let widest = self.widest(&markers);
+                self.inset = (outer + widest + MARKER_GAP).min(MEASURE / 2.0);
+                for (item, marker) in items.iter().zip(markers) {
                     let from = self.paras.len();
-                    self.with_prefix(&item.blocks, marker);
+                    self.blocks(&item.blocks);
+                    // An item that opens with a list of its own hangs
+                    // both markers, this one first.
+                    if let Some(first) = self.paras.get_mut(from) {
+                        first.markers.insert(0, (marker, self.inset));
+                    }
                     // The marker marks an item: none of it is indented.
                     for para in &mut self.paras[from..] {
                         if let Role::Body { indent } = &mut para.role {
@@ -309,6 +364,7 @@ impl Out<'_> {
                         }
                     }
                 }
+                self.inset = outer;
                 self.indent = false;
             }
             BlockKind::Table { head, rows, .. } => {
@@ -319,6 +375,8 @@ impl Out<'_> {
                         role: Role::Body { indent: false },
                         text: cell.text.clone(),
                         prefix: None,
+                        markers: Vec::new(),
+                        inset: self.inset,
                         new_page: false,
                         note: None,
                         images: Vec::new(),
@@ -465,12 +523,13 @@ fn unquote(value: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::house::BODY;
     use noido_blocks::markdown::parse;
 
     fn paras(md: &str) -> Vec<Para> {
-        paragraphs(&parse(md), &mut no_images).0
+        paragraphs(&parse(md), &mut no_images, &mut Shaper::new()).0
     }
 
     #[test]
@@ -510,7 +569,7 @@ mod tests {
     #[test]
     fn notes_referenced_in_a_table_are_numbered_by_reference() {
         let md = "A.\n\n| a[^x] |\n|---|\n| b |\n\n[^y]: Y.\n\n[^x]: X.\n";
-        let (_, notes) = paragraphs(&parse(md), &mut no_images);
+        let (_, notes) = paragraphs(&parse(md), &mut no_images, &mut Shaper::new());
         assert_eq!((notes.0["x"], notes.0["y"]), (1, 2));
     }
 
@@ -551,23 +610,120 @@ mod tests {
         assert_eq!(indents("> A.\n>\n> B.\n"), [false, true]);
     }
 
+    /// Each paragraph's markers' texts.
+    fn marker_texts(md: &str) -> Vec<Vec<String>> {
+        paras(md)
+            .into_iter()
+            .map(|p| p.markers.into_iter().map(|(m, _)| m).collect())
+            .collect()
+    }
+
     #[test]
     fn list_items_carry_their_markers() {
-        let prefixes =
-            |md| -> Vec<Option<String>> { paras(md).into_iter().map(|p| p.prefix).collect() };
+        assert_eq!(marker_texts("- a\n- b\n"), [["•"], ["•"]]);
+        assert_eq!(marker_texts("3. a\n4. b\n"), [["3."], ["4."]]);
+        // The marker hangs apart: nothing is drawn before the text.
+        assert!(paras("- a\n3. b\n").iter().all(|p| p.prefix.is_none()));
+    }
+
+    /// How far a list whose widest marker is `widest` insets its items.
+    fn step(widest: &str) -> f32 {
+        Shaper::new().marker_width(widest) + MARKER_GAP
+    }
+
+    #[test]
+    fn list_paragraphs_are_inset_by_their_markers_from_where_the_list_starts() {
+        let p = paras("- a\n\n  b\n\n  - c\n- d\n\nAfter.\n");
+        let got: Vec<_> = p
+            .iter()
+            .map(|p| (p.text.string.as_str(), p.inset, p.markers.clone()))
+            .collect();
+        let b = step("•");
+        let bullet = |inset: f32| vec![("•".to_string(), inset)];
         assert_eq!(
-            prefixes("- a\n- b\n"),
-            [Some("• ".into()), Some("• ".into())]
+            got,
+            [
+                ("a", b, bullet(b)),
+                ("b", b, vec![]),
+                ("c", 2.0 * b, bullet(2.0 * b)),
+                ("d", b, bullet(b)),
+                ("After.", 0.0, vec![]),
+            ]
         );
+        // Far less than a browser's 2 em.
+        assert!(b < BODY);
+    }
+
+    #[test]
+    fn a_list_is_inset_by_its_widest_marker() {
+        let p = paras("9. a\n10. b\n");
+        let ten = step("10.");
+        assert!(ten > step("9."));
+        assert_eq!(p[0].inset, ten);
+        assert_eq!(p[1].inset, ten);
+        assert_eq!(p[0].markers, [("9.".to_string(), ten)]);
+    }
+
+    #[test]
+    fn an_item_opening_with_a_list_hangs_both_markers_at_their_levels() {
+        let p = paras("1. - inner\n2. b\n");
+        let n = step("2.");
         assert_eq!(
-            prefixes("3. a\n4. b\n"),
-            [Some("3. ".into()), Some("4. ".into())]
+            p[0].markers,
+            [("1.".to_string(), n), ("•".to_string(), n + step("•"))]
         );
+        assert_eq!(p[1].markers, [("2.".to_string(), n)]);
+    }
+
+    /// A list nested `levels` deep, an item of words at each level.
+    pub(crate) fn nested(levels: usize) -> String {
+        (0..levels)
+            .map(|i| format!("{}- level{i} word word\n", "  ".repeat(i)))
+            .collect()
+    }
+
+    #[test]
+    fn deep_nesting_stops_insetting_at_half_the_measure() {
+        let p = paras(&nested(40));
+        assert_eq!(p.len(), 40);
+        assert!(p.iter().all(|p| p.inset <= MEASURE / 2.0), "{p:#?}");
+        assert!(
+            p[39]
+                .markers
+                .iter()
+                .all(|(_, inset)| *inset <= MEASURE / 2.0)
+        );
+        // The steps it does take are kept.
+        assert!((p[2].inset - 3.0 * step("•")).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_huge_start_does_not_overflow() {
+        let p = xhtml_paras(
+            "<ol start=\"18446744073709551615\"><li><p>a</p></li><li><p>b</p></li></ol>",
+            10.0,
+        );
+        let numbers: Vec<_> = p.iter().map(|p| p.markers[0].0.as_str()).collect();
+        assert_eq!(numbers, ["18446744073709551615.", "18446744073709551615."]);
+    }
+
+    #[test]
+    fn a_figure_in_a_list_fits_the_inset_measure() {
+        let p = xhtml_paras("<ul><li><img src=\"a.png\" alt=\"a\"/></li></ul>", 1000.0);
+        let Role::Figure { width, .. } = p[0].role else {
+            panic!("{p:#?}")
+        };
+        assert_eq!(p[0].inset, step("•"));
+        assert!(width <= MEASURE - p[0].inset + 1e-3, "{width}");
     }
 
     #[test]
     fn a_footnote_stays_where_it_is_defined() {
-        let (p, notes) = paragraphs(&parse("A[^x].\n\n[^x]: Note.\n\nB.\n"), &mut no_images);
+        let (p, notes) = paragraphs(
+            &parse("A[^x].\n\n[^x]: Note.\n\nB.\n"),
+            &mut no_images,
+            &mut Shaper::new(),
+        );
         assert_eq!(p.len(), 3);
         assert_eq!(p[1].text.string, "Note.");
         assert_eq!(p[1].prefix.as_deref(), Some("1 "));
@@ -577,7 +733,7 @@ mod tests {
     #[test]
     fn notes_are_numbered_by_first_reference_then_unreferenced() {
         let md = "A[^b] and [^a].\n\n[^a]: One.\n\n[^b]: Two.\n\n[^c]: Three.\n";
-        let (_, notes) = paragraphs(&parse(md), &mut no_images);
+        let (_, notes) = paragraphs(&parse(md), &mut no_images, &mut Shaper::new());
         assert_eq!((notes.0["b"], notes.0["a"], notes.0["c"]), (1, 2, 3));
     }
 
@@ -668,7 +824,7 @@ mod tests {
             next += 1;
             Some((ImageId::test(next), (side, side)))
         };
-        paragraphs(&xhtml.tree, &mut resolve).0
+        paragraphs(&xhtml.tree, &mut resolve, &mut Shaper::new()).0
     }
 
     #[test]
