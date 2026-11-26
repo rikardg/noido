@@ -9,7 +9,7 @@ use skrifa::instance::{LocationRef, Size};
 use skrifa::{FontRef, MetadataProvider};
 
 use crate::fonts::{FaceId, Family, fonts};
-use crate::house::{BODY, CODE_SCALE, HEADING, INDENT_EM, LEADING, MEASURE};
+use crate::house::{BODY, CODE_SCALE, HEADING, INDENT_EM, LEADING, MARKER_GAP, MEASURE};
 use crate::images::{ImageId, fit};
 use crate::kp::{self, INFINITY, Item};
 use crate::paragraphs::{Notes, Para, Role};
@@ -84,7 +84,73 @@ impl Shaper {
 
     /// The lines of a paragraph at the house measure.
     pub(crate) fn set(&mut self, para: &Para, notes: &Notes, lang: hypher::Lang) -> Vec<SetLine> {
-        self.set_width(para, notes, lang, MEASURE)
+        self.set_inset(para, notes, lang, MEASURE)
+    }
+
+    /// The lines of a paragraph in a measure `width` wide: at its inset,
+    /// a list item's marker hung before the first.
+    fn set_inset(
+        &mut self,
+        para: &Para,
+        notes: &Notes,
+        lang: hypher::Lang,
+        width: f32,
+    ) -> Vec<SetLine> {
+        let mut lines = self.set_width(para, notes, lang, width - para.inset);
+        for line in &mut lines {
+            shift(line, para.inset);
+        }
+        let Some(first) = lines.first_mut() else {
+            return lines;
+        };
+        // Each its right edge MARKER_GAP before its inset, but not left
+        // of the margin; at a figure, its baseline where a line of text at
+        // the figure's top has it.
+        let mut hung = Vec::new();
+        for (marker, inset) in &para.markers {
+            let Some(set) = self.marker_line(marker, lang) else {
+                continue;
+            };
+            let right = set.glyphs.last().map_or(0.0, |g| g.x + g.advance);
+            let left = set.glyphs.first().map_or(0.0, |g| g.x);
+            let dx = (inset - MARKER_GAP - right).max(-left);
+            let rise = match para.role {
+                Role::Figure { height, .. } => height - set.ascent,
+                _ => 0.0,
+            };
+            hung.extend(set.glyphs.into_iter().map(|g| SetGlyph {
+                x: g.x + dx,
+                rise: g.rise + rise,
+                ..g
+            }));
+        }
+        first.glyphs.splice(0..0, hung);
+        lines
+    }
+
+    /// The width of a list marker set as body text.
+    pub(crate) fn marker_width(&mut self, marker: &str) -> f32 {
+        self.marker_line(marker, hypher::Lang::English)
+            .and_then(|l| l.glyphs.last().map(|g| g.x + g.advance))
+            .unwrap_or(0.0)
+    }
+
+    /// A list marker set as body text, from the left of a line.
+    fn marker_line(&mut self, marker: &str, lang: hypher::Lang) -> Option<SetLine> {
+        let para = Para {
+            role: Role::Body { indent: false },
+            text: Text::default(),
+            prefix: Some(marker.to_string()),
+            markers: Vec::new(),
+            inset: 0.0,
+            new_page: false,
+            note: None,
+            images: Vec::new(),
+        };
+        let notes = Notes(HashMap::new());
+        self.set_width(&para, &notes, lang, MEASURE)
+            .into_iter()
+            .next()
     }
 
     #[cfg(test)]
@@ -95,7 +161,7 @@ impl Shaper {
         lang: hypher::Lang,
         width: f32,
     ) -> Vec<SetLine> {
-        self.set_width(para, notes, lang, width)
+        self.set_inset(para, notes, lang, width)
     }
 
     fn set_width(
@@ -112,22 +178,7 @@ impl Shaper {
             ..
         } = para.role
         {
-            let mut line = figure_line(para, image, fig_width, fig_height);
-            if para.prefix.is_some() {
-                // A list item's marker, set as for text, at the left, its
-                // baseline where a line of text at the figure's top has it.
-                let marker = Para {
-                    role: Role::Body { indent: false },
-                    text: Text::default(),
-                    ..para.clone()
-                };
-                if let Some(first) = self.set_width(&marker, notes, lang, width).first() {
-                    let rise = fig_height - first.ascent;
-                    let glyphs = first.glyphs.iter().cloned().map(|g| SetGlyph { rise, ..g });
-                    line.glyphs.splice(0..0, glyphs);
-                }
-            }
-            return vec![line];
+            return vec![figure_line(para, image, fig_width, fig_height, width)];
         }
         let (family, size, bold) = match para.role {
             Role::Body { .. } | Role::Figure { .. } => (Family::Body, BODY, false),
@@ -151,7 +202,7 @@ impl Shaper {
                 );
                 continue;
             };
-            let (width, height) = fit(inline.natural, (MEASURE, metrics.ascent), false);
+            let (width, height) = fit(inline.natural, (width, metrics.ascent), false);
             atom.advance = width;
             atom.glyphs.clear();
             atom.image = Some((inline.image, height, inline.text.clone()));
@@ -423,15 +474,15 @@ fn stand_in(src: &str, alt: &str) -> String {
 }
 
 /// The line of a figure: one glyph, the image's rectangle, centred on
-/// the measure. Its text is the image's stand-in; a link around it
+/// a measure `measure` wide. Its text is the image's stand-in; a link around it
 /// covers the rectangle.
-fn figure_line(para: &Para, image: ImageId, width: f32, height: f32) -> SetLine {
+fn figure_line(para: &Para, image: ImageId, width: f32, height: f32, measure: f32) -> SetLine {
     let found = para.text.styles.iter().find_map(|s| match &s.style {
         Style::Image { src, alt, .. } => Some((stand_in(src, alt), s.drawn.clone())),
         _ => None,
     });
     let (text, drawn) = found.map_or(("[image]".to_string(), None), |(t, d)| (t, Some(d)));
-    let x = (MEASURE - width) / 2.0;
+    let x = (measure - width) / 2.0;
     let links = para
         .text
         .styles
@@ -457,6 +508,21 @@ fn figure_line(para: &Para, image: ImageId, width: f32, height: f32) -> SetLine 
         links,
         height,
         ascent: height,
+    }
+}
+
+/// Moves a line's content `dx` to the right.
+fn shift(line: &mut SetLine, dx: f32) {
+    for g in &mut line.glyphs {
+        g.x += dx;
+    }
+    for (_, x0, x1) in &mut line.decorations {
+        *x0 += dx;
+        *x1 += dx;
+    }
+    for (_, x0, x1) in &mut line.links {
+        *x0 += dx;
+        *x1 += dx;
     }
 }
 
@@ -997,7 +1063,7 @@ impl Ctx<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::house::{CODE_SCALE, MEASURE};
+    use crate::house::{CODE_SCALE, MARKER_GAP, MEASURE};
     use crate::images::ImageId;
     use crate::paragraphs::{no_images, paragraphs};
     use hypher::Lang;
@@ -1012,12 +1078,12 @@ mod tests {
         third one finishes the thought about extraordinarily careful line breaking.";
 
     fn set_md(md: &str) -> Vec<SetLine> {
-        let (paras, notes) = paragraphs(&parse(md), &mut no_images);
+        let (paras, notes) = paragraphs(&parse(md), &mut no_images, &mut Shaper::new());
         Shaper::new().set(&paras[0], &notes, Lang::English)
     }
 
     fn set_md_at(md: &str, width: f32) -> Vec<SetLine> {
-        let (paras, notes) = paragraphs(&parse(md), &mut no_images);
+        let (paras, notes) = paragraphs(&parse(md), &mut no_images, &mut Shaper::new());
         Shaper::new().set_at(&paras[0], &notes, Lang::English, width)
     }
 
@@ -1108,7 +1174,7 @@ mod tests {
             lines.iter().all(|l| end_of(l) <= MEASURE + 0.01),
             "{lines:#?}"
         );
-        let (paras, _) = paragraphs(&parse(&md), &mut no_images);
+        let (paras, _) = paragraphs(&parse(&md), &mut no_images, &mut Shaper::new());
         let drawn = &paras[0].text.string;
         let mut covered = vec![false; drawn.len()];
         for g in lines.iter().flat_map(|l| &l.glyphs) {
@@ -1132,7 +1198,11 @@ mod tests {
 
     #[test]
     fn code_keeps_its_lines() {
-        let (paras, notes) = paragraphs(&parse("```\na\nbb\n```\n"), &mut no_images);
+        let (paras, notes) = paragraphs(
+            &parse("```\na\nbb\n```\n"),
+            &mut no_images,
+            &mut Shaper::new(),
+        );
         let lines = Shaper::new().set(&paras[0], &notes, Lang::English);
         assert_eq!(lines.len(), 2, "{lines:#?}");
         assert_eq!(text_of(&lines[0]), "a");
@@ -1143,7 +1213,11 @@ mod tests {
     #[test]
     fn a_long_code_line_wraps_at_the_measure_at_any_character() {
         let long = "x".repeat(100);
-        let (paras, notes) = paragraphs(&parse(&format!("```\n{long}\n```\n")), &mut no_images);
+        let (paras, notes) = paragraphs(
+            &parse(&format!("```\n{long}\n```\n")),
+            &mut no_images,
+            &mut Shaper::new(),
+        );
         let lines = Shaper::new().set(&paras[0], &notes, Lang::English);
         assert!(lines.len() > 1);
         assert!(lines.iter().all(|l| end_of(l) <= MEASURE + 0.01));
@@ -1187,6 +1261,8 @@ mod tests {
             role: Role::Body { indent: false },
             text,
             prefix: None,
+            markers: Vec::new(),
+            inset: 0.0,
             new_page: false,
             note: None,
             images: Vec::new(),
@@ -1214,6 +1290,8 @@ mod tests {
             role: Role::Body { indent: false },
             text,
             prefix: None,
+            markers: Vec::new(),
+            inset: 0.0,
             new_page: false,
             note: None,
             images: Vec::new(),
@@ -1261,7 +1339,11 @@ mod tests {
 
     #[test]
     fn the_first_line_is_indented_one_em_when_asked() {
-        let (paras, notes) = paragraphs(&parse("One.\n\nTwo words here.\n"), &mut no_images);
+        let (paras, notes) = paragraphs(
+            &parse("One.\n\nTwo words here.\n"),
+            &mut no_images,
+            &mut Shaper::new(),
+        );
         let mut shaper = Shaper::new();
         let first = shaper.set(&paras[0], &notes, Lang::English);
         let second = shaper.set(&paras[1], &notes, Lang::English);
@@ -1271,17 +1353,140 @@ mod tests {
 
     #[test]
     fn a_prefix_is_drawn_without_source() {
-        let (paras, notes) = paragraphs(&parse("- item\n"), &mut no_images);
-        let lines = Shaper::new().set(&paras[0], &notes, Lang::English);
-        assert_eq!(text_of(&lines[0]), "\u{2022} item");
+        let (paras, notes) = paragraphs(
+            &parse("A[^x].\n\n[^x]: Note.\n"),
+            &mut no_images,
+            &mut Shaper::new(),
+        );
+        let lines = Shaper::new().set(&paras[1], &notes, Lang::English);
+        assert_eq!(text_of(&lines[0]), "1 Note.");
         let g = &lines[0].glyphs;
         assert!(g[0].drawn.is_none() && g[1].drawn.is_none());
         assert_eq!(g[2].drawn, Some(0..1));
     }
 
+    /// The glyphs of a line that have no source: a list's marker.
+    fn marker_of(line: &SetLine) -> Vec<&SetGlyph> {
+        line.glyphs
+            .iter()
+            .filter(|g| g.drawn.is_none() && g.image.is_none() && g.text != "\u{ad}")
+            .collect()
+    }
+
+    fn right_of(glyphs: &[&SetGlyph]) -> f32 {
+        let g = glyphs.last().expect("a glyph");
+        g.x + g.advance
+    }
+
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
     #[test]
-    fn a_list_markers_figure_narrower_than_it_does_not_wrap_it() {
-        let (paras, notes) = paragraphs(&parse("- item\n"), &mut no_images);
+    fn a_list_item_is_set_inset_with_its_marker_flush_left() {
+        let md = format!("- {LONG} [a link](u)\n");
+        let (paras, notes) = paragraphs(&parse(&md), &mut no_images, &mut Shaper::new());
+        let inset = paras[0].inset;
+        let lines = Shaper::new().set(&paras[0], &notes, Lang::English);
+        assert!(lines.len() > 3);
+        let marker = marker_of(&lines[0]);
+        let text: String = marker.iter().map(|g| g.text.as_str()).collect();
+        assert_eq!(text, "\u{2022}");
+        assert!(near(marker[0].x, 0.0), "{}", marker[0].x);
+        assert!(near(right_of(&marker), inset - MARKER_GAP));
+        for (n, line) in lines.iter().enumerate() {
+            let text: Vec<_> = line.glyphs.iter().filter(|g| g.drawn.is_some()).collect();
+            assert!(near(text[0].x, inset), "line {n}");
+            assert!(end_of(line) <= MEASURE + 1e-3, "line {n}");
+            for (_, x0, _) in &line.links {
+                assert!(*x0 >= inset);
+            }
+            for (_, x0, _) in &line.decorations {
+                assert!(*x0 >= inset);
+            }
+            if n > 0 {
+                assert!(marker_of(line).is_empty(), "line {n}");
+            }
+        }
+        assert!(lines.iter().any(|l| !l.links.is_empty()));
+    }
+
+    #[test]
+    fn the_widest_number_is_flush_left_and_the_others_right_aligned() {
+        let (paras, notes) =
+            paragraphs(&parse("9. a\n10. b\n"), &mut no_images, &mut Shaper::new());
+        let mut shaper = Shaper::new();
+        let nine = shaper.set(&paras[0], &notes, Lang::English);
+        let ten = shaper.set(&paras[1], &notes, Lang::English);
+        let (nine, ten) = (marker_of(&nine[0]), marker_of(&ten[0]));
+        assert!(near(ten[0].x, 0.0));
+        assert!(nine[0].x > 0.0);
+        assert!(near(right_of(&nine), right_of(&ten)));
+    }
+
+    #[test]
+    fn a_nested_lists_marker_is_flush_with_its_parent_items_text() {
+        let (paras, notes) = paragraphs(
+            &parse("- a\n  - nested\n"),
+            &mut no_images,
+            &mut Shaper::new(),
+        );
+        let lines = Shaper::new().set(&paras[1], &notes, Lang::English);
+        let marker = marker_of(&lines[0]);
+        assert!(near(marker[0].x, paras[0].inset));
+        let text: Vec<_> = lines[0]
+            .glyphs
+            .iter()
+            .filter(|g| g.drawn.is_some())
+            .collect();
+        assert!(near(text[0].x, paras[1].inset));
+    }
+
+    #[test]
+    fn both_markers_of_an_item_opening_with_a_list_hang_at_their_levels() {
+        let (paras, notes) = paragraphs(&parse("1. - inner\n"), &mut no_images, &mut Shaper::new());
+        let lines = Shaper::new().set(&paras[0], &notes, Lang::English);
+        let marker = marker_of(&lines[0]);
+        let text: String = marker.iter().map(|g| g.text.as_str()).collect();
+        assert_eq!(text, "1.\u{2022}");
+        let (number, bullet) = marker.split_at(2);
+        assert!(near(number[0].x, 0.0));
+        assert!(near(bullet[0].x, paras[0].markers[0].1));
+    }
+
+    #[test]
+    fn a_deeply_nested_item_stays_in_the_measure_and_keeps_its_text() {
+        let md = crate::paragraphs::tests::nested(40);
+        let (paras, notes) = paragraphs(&parse(&md), &mut no_images, &mut Shaper::new());
+        let mut shaper = Shaper::new();
+        for (n, para) in paras.iter().enumerate() {
+            let lines = shaper.set(para, &notes, Lang::English);
+            for line in &lines {
+                assert!(end_of(line) <= MEASURE + 1e-3, "item {n}");
+                assert!(line.glyphs.iter().all(|g| g.x >= 0.0), "item {n}");
+            }
+            let text: String = lines.iter().map(text_of).collect();
+            assert!(text.contains(&format!("level{n}")), "item {n}: {text}");
+        }
+    }
+
+    #[test]
+    fn a_marker_wider_than_its_inset_stays_on_the_page() {
+        let (paras, notes) = paragraphs(&parse("- item\n"), &mut no_images, &mut Shaper::new());
+        let para = Para {
+            markers: vec![("10000000000000000000.".to_string(), 22.0)],
+            inset: 22.0,
+            ..paras[0].clone()
+        };
+        let lines = Shaper::new().set(&para, &notes, Lang::English);
+        let marker = marker_of(&lines[0]);
+        assert!(marker[0].x >= -1e-3, "{}", marker[0].x);
+    }
+
+    #[test]
+    fn a_figure_items_marker_hangs_at_the_figures_top() {
+        let (paras, notes) = paragraphs(&parse("- item\n"), &mut no_images, &mut Shaper::new());
+        let inset = Shaper::new().marker_width("1234567.") + MARKER_GAP;
         let para = Para {
             role: Role::Figure {
                 image: ImageId::test(0),
@@ -1289,20 +1494,24 @@ mod tests {
                 height: 40.0,
                 heading: None,
             },
-            prefix: Some("1234567. ".to_string()),
+            markers: vec![("1234567.".to_string(), inset)],
+            inset,
             ..paras[0].clone()
         };
         let lines = Shaper::new().set(&para, &notes, Lang::English);
         assert_eq!(lines.len(), 1);
-        let marker: Vec<_> = lines[0]
-            .glyphs
-            .iter()
-            .filter(|g| g.image.is_none())
-            .collect();
+        let marker = marker_of(&lines[0]);
         let text: String = marker.iter().map(|g| g.text.as_str()).collect();
-        assert_eq!(text, "1234567. ");
+        assert_eq!(text, "1234567.");
         assert!(marker.iter().all(|g| g.rise == marker[0].rise));
-        assert!(marker[0].x.abs() < 1e-3);
+        // Its top at the figure's: raised from the baseline.
+        assert!(marker[0].rise > 0.0);
+        assert!(near(right_of(&marker), inset - MARKER_GAP));
+        let figure = lines[0].glyphs.iter().find(|g| g.image.is_some()).unwrap();
+        assert!(near(
+            figure.x + figure.advance / 2.0,
+            inset + (MEASURE - inset) / 2.0
+        ));
     }
 
     #[test]
@@ -1362,7 +1571,7 @@ mod tests {
                   word  \nnext internationalization representation.\n\n\
                   - [x] task with ![](x.png) a documentation\n\n\
                   1. extraordinarily wonderfully\n\n[^n]: Note one.\n\n[^m]: Note two.\n";
-        let (paras, notes) = paragraphs(&parse(md), &mut no_images);
+        let (paras, notes) = paragraphs(&parse(md), &mut no_images, &mut Shaper::new());
         let mut shaper = Shaper::new();
         for width in [60.0, 120.0, MEASURE] {
             for para in &paras {
@@ -1409,7 +1618,8 @@ mod tests {
 
     #[test]
     fn headings_are_bold_sans_and_ragged() {
-        let (paras, notes) = paragraphs(&parse("## A heading\n"), &mut no_images);
+        let (paras, notes) =
+            paragraphs(&parse("## A heading\n"), &mut no_images, &mut Shaper::new());
         let lines = Shaper::new().set(&paras[0], &notes, Lang::English);
         let g = &lines[0].glyphs[0];
         let face = &noido_fonts::faces()[usize::from(g.face.0)];
@@ -1419,7 +1629,7 @@ mod tests {
 
         let long = "## The very long heading of a chapter which surely needs several lines to \
                     be set in a narrow measure\n";
-        let (paras, notes) = paragraphs(&parse(long), &mut no_images);
+        let (paras, notes) = paragraphs(&parse(long), &mut no_images, &mut Shaper::new());
         let lines = Shaper::new().set(&paras[0], &notes, Lang::English);
         assert!(lines.len() > 1);
         assert!(

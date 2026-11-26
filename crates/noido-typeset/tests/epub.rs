@@ -667,9 +667,14 @@ fn a_list_item_that_is_a_figure_keeps_its_marker() {
     let figure = &glyphs.iter().find(|(_, g)| g.text == "Art").unwrap().1;
     let (x, top, w, _) = rect(figure);
     near(w, 75.0);
-    near(x, LEFT + (270.0 - 75.0) / 2.0);
+    // The bullet flush with the margin, the figure centred in what is
+    // left of the measure after it and its gap.
     let bullet = &glyphs.iter().find(|(_, g)| g.text == "\u{2022}").unwrap().1;
-    near(rect(bullet).0, LEFT);
+    near(bullet.origin.x, LEFT);
+    // Moved right by half an inset of a bullet and its 5.5 pt gap: well
+    // under 1 em.
+    let moved = x + w / 2.0 - (LEFT + 270.0 / 2.0);
+    assert!((2.75..5.5).contains(&moved), "{moved}");
     assert!(bullet.origin.y > top, "{} {top}", bullet.origin.y);
 }
 

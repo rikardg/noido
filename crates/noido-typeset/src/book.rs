@@ -179,6 +179,8 @@ fn drawn(role: Role, string: &str) -> Para {
             segments: vec![],
         },
         prefix: None,
+        markers: Vec::new(),
+        inset: 0.0,
         new_page: false,
         note: None,
         images: Vec::new(),
@@ -274,15 +276,19 @@ pub(crate) fn set_parts(parts: &[Content], lang: Lang, images: &mut Images) -> S
         }
         let (paras, notes, drawn) = match content {
             Content::Blocks(tree, Some(path)) => {
-                let (paras, notes) = paragraphs(tree, &mut |src, width, height| {
-                    let src = src.split('#').next().unwrap_or_default();
-                    let (id, px) = images.size(&noido_epub::resolve(path, src))?;
-                    Some((id, natural(px, width, height)?))
-                });
+                let (paras, notes) = paragraphs(
+                    tree,
+                    &mut |src, width, height| {
+                        let src = src.split('#').next().unwrap_or_default();
+                        let (id, px) = images.size(&noido_epub::resolve(path, src))?;
+                        Some((id, natural(px, width, height)?))
+                    },
+                    &mut shaper,
+                );
                 (paras, notes, false)
             }
             Content::Blocks(tree, None) => {
-                let (paras, notes) = paragraphs(tree, &mut no_images);
+                let (paras, notes) = paragraphs(tree, &mut no_images, &mut shaper);
                 (paras, notes, false)
             }
             Content::Drawn(paras) => (paras.clone(), Notes(HashMap::new()), true),
@@ -714,6 +720,8 @@ mod tests {
                 segments: vec![],
             },
             prefix: None,
+            markers: Vec::new(),
+            inset: 0.0,
             new_page: false,
             note: None,
             images: Vec::new(),
@@ -755,7 +763,7 @@ mod tests {
         assert!(book.ink.iter().all(|ink| ink.images.is_empty()));
         // Set in italic: another face than the same words as plain text.
         let face_of = |md: &str| {
-            let (paras, notes) = paragraphs(&parse(md), &mut no_images);
+            let (paras, notes) = paragraphs(&parse(md), &mut no_images, &mut Shaper::new());
             let lines = Shaper::new().set(&paras[0], &notes, Lang::English);
             assert!(lines[0].glyphs.iter().all(|g| g.image.is_none()));
             lines[0].glyphs[0].face
@@ -768,6 +776,7 @@ mod tests {
         let (paras, notes) = paragraphs(
             &parse("An internationalization of representation, extraordinarily.\n"),
             &mut no_images,
+            &mut Shaper::new(),
         );
         let lines = Shaper::new().set_at(&paras[0], &notes, Lang::English, 120.0);
         let hyphenated = lines
