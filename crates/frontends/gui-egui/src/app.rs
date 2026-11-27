@@ -10067,7 +10067,7 @@ pub(crate) mod tests {
 
     #[test]
     fn placeholders_are_paper_coloured() {
-        let mut h = Harness::build_with(Arc::new(SlowEngine), |app| {
+        let mut h = Harness::build_with(Arc::new(SlowEngine::default()), |app| {
             app.with_settings(None, on_sepia())
         });
         h.press(egui::Key::F9, Modifiers::NONE);
@@ -12098,12 +12098,18 @@ pub(crate) mod tests {
         assert_eq!(h.app.chosen, None);
     }
 
-    /// Ten Letter pages; each render takes 150 ms.
-    struct SlowEngine;
+    /// Ten Letter pages; each render takes 150 ms. The renders started and
+    /// finished are counted, so a test can wait for one rather than for a
+    /// sleep long enough to have covered it.
+    #[derive(Clone, Default)]
+    struct SlowEngine {
+        started: Arc<std::sync::atomic::AtomicUsize>,
+        finished: Arc<std::sync::atomic::AtomicUsize>,
+    }
 
     impl PdfEngine for SlowEngine {
         fn open(&self, _bytes: PdfBytes) -> Result<Box<dyn Document>, EngineError> {
-            Ok(Box::new(SlowEngine))
+            Ok(Box::new(self.clone()))
         }
     }
 
@@ -12120,36 +12126,52 @@ pub(crate) mod tests {
             scale: f32,
             tile: PixelRect,
         ) -> Result<Rgba8Image, EngineError> {
+            use std::sync::atomic::Ordering;
+            self.started.fetch_add(1, Ordering::SeqCst);
             std::thread::sleep(std::time::Duration::from_millis(150));
-            BlankDocument.render_tile(page, scale, tile)
+            let made = BlankDocument.render_tile(page, scale, tile);
+            self.finished.fetch_add(1, Ordering::SeqCst);
+            made
         }
     }
 
     #[test]
     fn render_arriving_while_closed_is_requested_again() {
-        let mut h = Harness::build(|app| {
-            let renderer = Renderer::start_background(
-                Arc::new(SlowEngine),
-                PdfBytes::default(),
-                noido_render::Transforms::default(),
-                Box::new(|| {}),
-            );
-            app.with_sidebar_renderer(renderer)
+        let engine = SlowEngine::default();
+        let mut h = Harness::build({
+            let engine = engine.clone();
+            move |app| {
+                let renderer = Renderer::start_background(
+                    Arc::new(engine),
+                    PdfBytes::default(),
+                    noido_render::Transforms::default(),
+                    Box::new(|| {}),
+                );
+                app.with_sidebar_renderer(renderer)
+            }
         });
         h.press(egui::Key::F9, Modifiers::NONE);
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        // Closed while the first render is on its way; it arrives meanwhile.
+        // The first render is under way, not merely asked for: the sleeps
+        // this replaces could pass while the pool had not started it.
+        h.until(|_| engine.started.load(std::sync::atomic::Ordering::SeqCst) > 0);
+        assert!(
+            engine.started.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "no render started"
+        );
+        // Closed while it is on its way; it arrives meanwhile.
         h.press(egui::Key::F9, Modifiers::NONE);
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        h.until(|_| engine.finished.load(std::sync::atomic::Ordering::SeqCst) > 0);
+        assert!(
+            engine.finished.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "the render never arrived"
+        );
         h.frames(2, vec![]);
         h.press(egui::Key::F9, Modifiers::NONE);
         let all_sharp = |h: &Harness| {
             let drawn = drawn_pages(h);
             !drawn.is_empty() && h.app.sidebar_view.sharp_pages() == drawn
         };
-        for _ in 0..3 {
-            h.until(all_sharp);
-        }
+        h.until(|h| all_sharp(h));
         assert!(
             all_sharp(&h),
             "drawn {:?} sharp {:?}",
