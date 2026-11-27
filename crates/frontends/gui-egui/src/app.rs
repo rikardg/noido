@@ -5630,19 +5630,31 @@ pub(crate) mod tests {
         // Slow pages, so the budget rather than the cheap rule answers.
         let engine = SlowRecordingEngine::default();
         let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app.with_texture_budget(1));
-        h.until(|_| engine.0.pages().len() > 2);
+        // A byte holds the page on screen and no other, so the wait is only
+        // for the app to be rendering at all; what it keeps is the claim.
+        h.until(|_| !engine.0.pages().is_empty());
         h.frames(2, vec![]);
         let keep = h.app.renderer.keep();
-        assert!(keep.contains(0), "the page on screen dropped: {keep:?}");
-        assert!(keep.contains(1), "the page beside it dropped: {keep:?}");
+        assert_eq!(
+            keep,
+            Keep::from(0..2),
+            "the floor let another page through: {keep:?}"
+        );
     }
 
     #[test]
     fn the_floor_keeps_the_spread_and_its_neighbours() {
         let engine = SlowRecordingEngine::default();
         let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app.with_texture_budget(1));
-        h.until(|_| engine.0.pages().len() > 2);
         go_to(&mut h, 5);
+        // The page jumped to is the one a byte can hold, so it is the one
+        // that shows the jump was taken.
+        h.until(|_| engine.0.pages().iter().any(|&page| page >= 4));
+        assert!(
+            engine.0.pages().iter().any(|&page| page >= 4),
+            "the jump never rendered: {:?}",
+            engine.0.pages()
+        );
         h.frames(2, vec![]);
         // The focus the app keeps its window around.
         let focus = h
@@ -5693,7 +5705,14 @@ pub(crate) mod tests {
     fn a_cheap_document_keeps_only_what_is_beside_the_reader() {
         let engine = RecordingEngine::default();
         let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app);
-        h.until(|_| engine.pages().len() > 2);
+        // The cheap rule asks for the two pages beside the reader, so the
+        // wait is for those two and the assertion says no other came.
+        h.until(|_| engine.pages().contains(&0) && engine.pages().contains(&1));
+        assert_eq!(
+            engine.pages(),
+            std::collections::BTreeSet::from([0, 1]),
+            "rendered beyond the window"
+        );
         h.frames(2, vec![]);
         assert_eq!(h.app.renderer.keep(), Keep::from(0..2));
     }
@@ -5714,9 +5733,13 @@ pub(crate) mod tests {
 
     #[test]
     fn only_kept_pages_are_requested() {
+        // A cheap document keeps the two pages beside the reader, while the
+        // prefetch reaches six pages past them: a page asked for beyond the
+        // window is one the renderer has to drop, and one reaching the engine
+        // here is the failure.
         let engine = RecordingEngine::default();
         let mut h = Harness::build_with(Arc::new(engine.clone()), |app| app);
-        h.until(|_| engine.pages().len() > 2);
+        h.until(|_| !engine.pages().is_empty());
         h.frames(10, vec![]);
         let keep = h.app.renderer.keep();
         for page in engine.pages() {
@@ -8033,7 +8056,13 @@ pub(crate) mod tests {
         let mut h = Harness::build(|app| app.with_source(source));
         h.size = vec2(900.0, 500.0);
         h.press(egui::Key::I, Modifiers::COMMAND);
-        h.until(|h| h.text_rect("Intervogue").is_some());
+        // The title is the one line the page surely draws; the section that
+        // names the font may be below the fold of a window this short.
+        h.until(|h| h.text_rect("Document info").is_some());
+        assert!(
+            h.text_rect("Document info").is_some(),
+            "the page drew nothing"
+        );
         h.frames(3, vec![]);
         let modal = h
             .ctx
@@ -12605,6 +12634,10 @@ pub(crate) mod tests {
         link_gate: Option<Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>>,
         /// The named places.
         named: Arc<Vec<(String, noido_engine::Destination)>>,
+        /// How many `named_destination` calls have answered, so a test can
+        /// wait for the answer rather than for a sleep that would have
+        /// covered it.
+        answered: Arc<std::sync::atomic::AtomicUsize>,
         /// Each page's label.
         labels: Arc<Vec<Option<String>>>,
         /// The outline.
@@ -12628,6 +12661,7 @@ pub(crate) mod tests {
                 rendered: Arc::default(),
                 links: Arc::new(vec![Vec::new(); pages.len()]),
                 link_gate: None,
+                answered: Arc::default(),
                 named: Arc::default(),
                 labels: Arc::default(),
                 outline: Arc::default(),
@@ -12714,6 +12748,10 @@ pub(crate) mod tests {
         fn calls(&self) -> usize {
             self.calls.load(std::sync::atomic::Ordering::SeqCst)
         }
+
+        fn answered(&self) -> usize {
+            self.answered.load(std::sync::atomic::Ordering::SeqCst)
+        }
     }
 
     impl PdfEngine for TextEngine {
@@ -12793,6 +12831,8 @@ pub(crate) mod tests {
                     open = gate.1.wait(open).unwrap();
                 }
             }
+            self.answered
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.named.iter().find(|(n, _)| n == name).map(|(_, t)| *t)
         }
         fn page_labels(&self) -> Vec<Option<String>> {
@@ -14791,7 +14831,10 @@ pub(crate) mod tests {
     #[test]
     fn unknown_named_place_stays() {
         let mut h = named_places(Target::Named("nope".into()));
-        h.until(|h| h.app.current_page() != Some(0));
+        // An answer comes for a name the document has not got, and is taken
+        // in: that is what makes the wait a fact rather than a timeout.
+        h.until(|h| h.app.links.named_replies() > 0);
+        assert!(h.app.links.named_replies() > 0, "the answer never came");
         assert_eq!(h.app.current_page(), Some(0));
         assert!(h.app.history.back_entries().is_empty());
     }
@@ -14821,7 +14864,8 @@ pub(crate) mod tests {
         go_to(&mut h, 2);
         let page = h.centre().page;
         engine.open_link_gate();
-        h.until(|h| h.centre().page != page);
+        h.until(|h| h.app.links.named_replies() > 0);
+        assert!(h.app.links.named_replies() > 0, "the answer never came");
         assert_eq!(h.centre().page, page);
     }
 
@@ -14829,14 +14873,24 @@ pub(crate) mod tests {
     fn a_reload_drops_the_old_versions_named_place() {
         let (mut h, engine) = gated_named_place();
         let page = h.centre().page;
-        // The old version's answer waits, unread, when the new one arrives.
+        // The old version's answer is made and left unread: no frames here,
+        // which would take it in. The limit only stops a hang.
         engine.open_link_gate();
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while engine.answered() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the answer was never made"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         h.reload(
             Arc::new(TextEngine::new(&[&["a line"] as &[&str]; 10])),
             recompiled_key(),
         );
-        h.until(|h| h.centre().page != page);
+        // The reload runs a frame of its own, and the frame that could read
+        // the old answer is behind it: nothing to wait for but the premise
+        // above, that the answer had arrived.
         assert_eq!(h.centre().page, page);
     }
 
@@ -14864,7 +14918,8 @@ pub(crate) mod tests {
         activation.request(Some(Target::Page(2)));
         h.frames(1, vec![]);
         engine.open_link_gate();
-        h.until(|h| h.app.current_page() != Some(2));
+        h.until(|h| h.app.links.named_replies() > 0);
+        assert!(h.app.links.named_replies() > 0, "the answer never came");
         assert_eq!(h.app.current_page(), Some(2));
     }
 
