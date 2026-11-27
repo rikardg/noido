@@ -5736,13 +5736,7 @@ pub(crate) mod tests {
         h.press(egui::Key::D, Modifiers::NONE);
         assert_eq!(h.app.view.current_spread(), Some(0));
         let ready = |h: &Harness| (0..4).all(|page| h.app.textures.contains_key(&page));
-        for _ in 0..200 {
-            if ready(&h) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            h.frames(1, vec![]);
-        }
+        h.until(|h| ready(h));
         assert!(ready(&h), "textures: {:?}", h.app.textures.keys());
     }
 
@@ -8543,19 +8537,14 @@ pub(crate) mod tests {
         }
         let page = h.app.view.centre_page().unwrap();
         assert!(page > 3, "page {page}");
-        for _ in 0..200 {
-            if h.app
+        h.until(|h| {
+            h.app
                 .thumbnails
                 .as_ref()
                 .unwrap()
                 .textures
                 .contains_key(&page)
-            {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            h.frames(1, vec![]);
-        }
+        });
         let thumbnails = &h.app.thumbnails.as_ref().unwrap().textures;
         let thumbnail = thumbnails
             .get(&page)
@@ -8699,13 +8688,7 @@ pub(crate) mod tests {
         assert_eq!(h.app.view.current_spread(), Some(12));
         let window = window_order(30, 12, Direction::Forward, PREFETCH_BUDGET);
         let ready = |h: &Harness| window.iter().all(|page| h.app.textures.contains_key(page));
-        for _ in 0..400 {
-            if ready(&h) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            h.frames(1, vec![]);
-        }
+        h.until(|h| ready(h));
         let mut pages: Vec<_> = h.app.textures.keys().copied().collect();
         pages.sort();
         assert!(ready(&h), "window {window:?}, textures {pages:?}");
