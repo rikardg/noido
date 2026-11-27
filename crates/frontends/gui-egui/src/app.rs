@@ -12899,12 +12899,19 @@ pub(crate) mod tests {
         let engine = TextEngine::cats();
         let mut h = searching(&engine);
         h.frames(20, vec![]);
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        h.frames(2, vec![]);
         let (_, top) = h.app.view.offset();
         let height = h.app.last_scroll.unwrap().inner.height();
         let visible = h.app.view.layout().visible_pages(top, top + height).len();
         assert!(visible > 0);
+        // The opening read covers the visible pages as one batch: wait for the
+        // batch, not for its first page, or the count below is a sample.
+        h.until(|_| engine.calls() >= visible);
+        assert!(
+            engine.calls() >= visible,
+            "read only {} of {visible}",
+            engine.calls()
+        );
+        h.frames(2, vec![]);
         assert_eq!(engine.calls(), visible);
     }
 
@@ -12928,15 +12935,25 @@ pub(crate) mod tests {
         let engine = TextEngine::cats();
         let mut h = searching(&engine);
         h.frames(10, vec![]);
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        let (_, top) = h.app.view.offset();
+        let height = h.app.last_scroll.unwrap().inner.height();
+        let visible = h.app.view.layout().visible_pages(top, top + height).len();
+        assert!(visible > 0);
+        // The batch is waited for, not sampled: a count taken part way through
+        // would be overrun by the rest of it during the focus below.
+        h.until(|_| engine.calls() >= visible);
+        assert!(
+            engine.calls() >= visible,
+            "read only {} of {visible}",
+            engine.calls()
+        );
         h.frames(2, vec![]);
         let shown = engine.calls();
-        assert!(shown > 0 && shown < 10, "opening read {shown} pages");
+        assert!(shown < 10, "opening read {shown} pages");
         // The field takes focus to be typed into; the reading is the walk's
         // work, when there is a query.
         focus_search(&mut h);
         h.frames(5, vec![]);
-        std::thread::sleep(std::time::Duration::from_millis(50));
         h.frames(2, vec![]);
         assert_eq!(engine.calls(), shown, "focusing the field read the book");
     }
