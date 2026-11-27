@@ -38,6 +38,10 @@ pub struct Links {
     outline_changed: bool,
     /// The outline replies taken in since the linker was set.
     outline_replies: usize,
+    /// The named-place replies taken in since the linker was set: one for
+    /// every answer, whether it was the one wanted or not.
+    #[cfg(test)]
+    named_replies: usize,
 }
 
 impl Links {
@@ -52,6 +56,8 @@ impl Links {
             outline: None,
             outline_changed: false,
             outline_replies: 0,
+            #[cfg(test)]
+            named_replies: 0,
         }
     }
 
@@ -65,6 +71,13 @@ impl Links {
     #[cfg(test)]
     pub fn outline_replies(&self) -> usize {
         self.outline_replies
+    }
+
+    /// The named-place replies taken in since the linker was set, wanted or
+    /// not.
+    #[cfg(test)]
+    pub fn named_replies(&self) -> usize {
+        self.named_replies
     }
 
     /// Reads links with `linker` from now on, forgetting those known: a
@@ -150,6 +163,10 @@ impl Links {
                     }
                 }
                 LinkReply::Named { name, target } => {
+                    #[cfg(test)]
+                    {
+                        self.named_replies += 1;
+                    }
                     if self.named.as_ref() == Some(&name) {
                         self.named = None;
                         answer = Some(match target {
