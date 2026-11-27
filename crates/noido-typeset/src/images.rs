@@ -334,14 +334,15 @@ mod tests {
     fn a_decode_in_progress_does_not_hold_the_cache() {
         use std::sync::atomic::Ordering;
         use std::sync::mpsc::channel;
+        use std::time::Duration;
         let images = Images::none();
         let (entered, entered_rx) = channel();
         let (release, release_rx) = channel::<()>();
-        let (entered, release_rx) = (Mutex::new(entered), Mutex::new(release_rx));
+        let release_rx = Mutex::new(release_rx);
         *images.decoder.lock().unwrap() = Some(Arc::new(move |id| {
             if id == ImageId(0) {
                 // The slow one: say so, and wait to be let go.
-                entered.lock().unwrap().send(()).unwrap();
+                entered.send(()).unwrap();
                 release_rx.lock().unwrap().recv().unwrap();
             }
             Some(side(8))
@@ -353,22 +354,39 @@ mod tests {
             let slow: Vec<_> = (0..2)
                 .map(|_| s.spawn(|| images.pixels(ImageId(0), 8, 8)))
                 .collect();
-            entered_rx.recv().unwrap();
-            // Image 0 is mid-decode: the cache is free, and hits are
-            // served, and a new decode of another image is made.
-            let free = images.cache.try_lock().is_ok();
-            if free {
-                let hit = images.pixels(ImageId(1), 4, 4).unwrap();
-                assert_eq!(hit.dimensions(), (4, 4));
-                let hit = images.pixels(ImageId(1), 2, 2).unwrap();
-                assert_eq!(hit.dimensions(), (2, 2));
-                assert!(images.pixels(ImageId(2), 8, 8).is_some());
+            // A decode that never asked would hang the test rather than
+            // fail it; the limit only stops a hang.
+            entered_rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("the decode was not asked for");
+            // Image 0 is mid-decode, so a hit, a size of the same one and a
+            // decode of another image all get through, in a thread whose
+            // answer is waited for: a decode holding the cache would keep
+            // it waiting until the slow one is let go. The limit only
+            // stops a hang.
+            let (answered, answer) = channel();
+            let probe_images = &images;
+            s.spawn(move || {
+                let hit = probe_images.pixels(ImageId(1), 4, 4).unwrap().dimensions();
+                let smaller = probe_images.pixels(ImageId(1), 2, 2).unwrap().dimensions();
+                let fresh = probe_images.pixels(ImageId(2), 8, 8).is_some();
+                answered.send((hit, smaller, fresh)).unwrap();
+            });
+            let probe = answer.recv_timeout(Duration::from_secs(30));
+            // Let go, and join, before deciding: a test that fails while the
+            // slow decode waits would hang on the scoped thread instead. One
+            // token each, so that a dedup gone wrong fails the count below
+            // rather than leaving a thread here for good.
+            for _ in &slow {
+                release.send(()).unwrap();
             }
-            release.send(()).unwrap();
             for t in slow {
                 assert!(t.join().unwrap().is_some());
             }
-            assert!(free, "the cache was held by a decode");
+            let Ok(probe) = probe else {
+                panic!("the cache was held by a decode");
+            };
+            assert_eq!(probe, ((4, 4), (2, 2), true));
         });
         // One decode of each image, however many asked.
         assert_eq!(images.decodes.load(Ordering::SeqCst), 3);
