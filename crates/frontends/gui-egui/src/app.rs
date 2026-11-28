@@ -4463,10 +4463,18 @@ pub(crate) mod tests {
             self.frames(1, vec![]);
         }
 
-        /// Runs frames until `done`, for at most 30 seconds: the deadline
-        /// only guards against a hang.
+        /// How long `until` gives a condition: the deadline only guards a
+        /// hang, and running out of it is a failure.
+        const UNTIL: std::time::Duration = std::time::Duration::from_secs(30);
+
+        /// Runs frames until `done`, for at most [`UNTIL`]. Panics when the
+        /// condition never holds: a wait that gave up in silence made nine
+        /// tests spend half a minute each on a predicate that could not come
+        /// true, and a test that waited for what it then asserted looked
+        /// exactly like one whose condition held.
+        #[track_caller]
         fn until(&mut self, done: impl Fn(&Harness) -> bool) {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let deadline = std::time::Instant::now() + Self::UNTIL;
             while std::time::Instant::now() < deadline {
                 if done(self) {
                     return;
@@ -4474,6 +4482,7 @@ pub(crate) mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(5));
                 self.frames(1, vec![]);
             }
+            panic!("the condition never held within {:?}", Self::UNTIL);
         }
 
         /// Presses `key` and lets go of it, in one frame, as a tap does:
@@ -5650,11 +5659,6 @@ pub(crate) mod tests {
         // The page jumped to is the one a byte can hold, so it is the one
         // that shows the jump was taken.
         h.until(|_| engine.0.pages().iter().any(|&page| page >= 4));
-        assert!(
-            engine.0.pages().iter().any(|&page| page >= 4),
-            "the jump never rendered: {:?}",
-            engine.0.pages()
-        );
         h.frames(2, vec![]);
         // The focus the app keeps its window around.
         let focus = h
@@ -8059,10 +8063,6 @@ pub(crate) mod tests {
         // The title is the one line the page surely draws; the section that
         // names the font may be below the fold of a window this short.
         h.until(|h| h.text_rect("Document info").is_some());
-        assert!(
-            h.text_rect("Document info").is_some(),
-            "the page drew nothing"
-        );
         h.frames(3, vec![]);
         let modal = h
             .ctx
@@ -12154,17 +12154,9 @@ pub(crate) mod tests {
         // The first render is under way, not merely asked for: the sleeps
         // this replaces could pass while the pool had not started it.
         h.until(|_| engine.started.load(std::sync::atomic::Ordering::SeqCst) > 0);
-        assert!(
-            engine.started.load(std::sync::atomic::Ordering::SeqCst) > 0,
-            "no render started"
-        );
         // Closed while it is on its way; it arrives meanwhile.
         h.press(egui::Key::F9, Modifiers::NONE);
         h.until(|_| engine.finished.load(std::sync::atomic::Ordering::SeqCst) > 0);
-        assert!(
-            engine.finished.load(std::sync::atomic::Ordering::SeqCst) > 0,
-            "the render never arrived"
-        );
         h.frames(2, vec![]);
         h.press(egui::Key::F9, Modifiers::NONE);
         let all_sharp = |h: &Harness| {
@@ -12906,11 +12898,6 @@ pub(crate) mod tests {
         // The opening read covers the visible pages as one batch: wait for the
         // batch, not for its first page, or the count below is a sample.
         h.until(|_| engine.calls() >= visible);
-        assert!(
-            engine.calls() >= visible,
-            "read only {} of {visible}",
-            engine.calls()
-        );
         h.frames(2, vec![]);
         assert_eq!(engine.calls(), visible);
     }
@@ -12942,11 +12929,6 @@ pub(crate) mod tests {
         // The batch is waited for, not sampled: a count taken part way through
         // would be overrun by the rest of it during the focus below.
         h.until(|_| engine.calls() >= visible);
-        assert!(
-            engine.calls() >= visible,
-            "read only {} of {visible}",
-            engine.calls()
-        );
         h.frames(2, vec![]);
         let shown = engine.calls();
         assert!(shown < 10, "opening read {shown} pages");
@@ -13874,10 +13856,6 @@ pub(crate) mod tests {
         // sees it, so the pages rendered say nothing about what was wanted
         // kept; this reads the window the app kept.
         h.until(|_| !engine.rendered.lock().unwrap().is_empty());
-        assert!(
-            !engine.rendered.lock().unwrap().is_empty(),
-            "nothing rendered"
-        );
         h.frames(2, vec![]);
         let keep = h.app.renderer.keep();
         assert!(
@@ -14883,7 +14861,6 @@ pub(crate) mod tests {
         // An answer comes for a name the document has not got, and is taken
         // in: that is what makes the wait a fact rather than a timeout.
         h.until(|h| h.app.links.named_replies() > 0);
-        assert!(h.app.links.named_replies() > 0, "the answer never came");
         assert_eq!(h.app.current_page(), Some(0));
         assert!(h.app.history.back_entries().is_empty());
     }
@@ -14914,7 +14891,6 @@ pub(crate) mod tests {
         let page = h.centre().page;
         engine.open_link_gate();
         h.until(|h| h.app.links.named_replies() > 0);
-        assert!(h.app.links.named_replies() > 0, "the answer never came");
         assert_eq!(h.centre().page, page);
     }
 
@@ -14968,7 +14944,6 @@ pub(crate) mod tests {
         h.frames(1, vec![]);
         engine.open_link_gate();
         h.until(|h| h.app.links.named_replies() > 0);
-        assert!(h.app.links.named_replies() > 0, "the answer never came");
         assert_eq!(h.app.current_page(), Some(2));
     }
 
