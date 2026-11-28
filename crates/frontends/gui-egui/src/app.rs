@@ -13866,15 +13866,25 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn without_search_only_window_is_rendered() {
+    fn without_search_only_the_window_is_kept() {
         let engine = far_cats();
         let mut h = searching(&engine);
         h.frames(30, vec![]);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        h.frames(5, vec![]);
-        let rendered = engine.rendered.lock().unwrap().clone();
-        assert!(!rendered.is_empty());
-        assert!(rendered.iter().all(|&p| p < 30), "{rendered:?}");
+        // The renderer drops a page outside the keep window before the engine
+        // sees it, so the pages rendered say nothing about what was wanted
+        // kept; this reads the window the app kept.
+        h.until(|_| !engine.rendered.lock().unwrap().is_empty());
+        assert!(
+            !engine.rendered.lock().unwrap().is_empty(),
+            "nothing rendered"
+        );
+        h.frames(2, vec![]);
+        let keep = h.app.renderer.keep();
+        assert!(
+            keep.extra.is_empty(),
+            "kept outside the window: {:?}",
+            keep.extra
+        );
     }
 
     #[test]
